@@ -1,5 +1,7 @@
 mod traits;
 mod apt;
+mod dnf;
+mod pacman;
 mod flatpak;
 mod snap;
 mod npm;
@@ -9,6 +11,8 @@ mod appimage;
 
 pub use traits::*;
 pub use apt::AptBackend;
+pub use dnf::DnfBackend;
+pub use pacman::PacmanBackend;
 pub use flatpak::FlatpakBackend;
 pub use snap::SnapBackend;
 pub use npm::NpmBackend;
@@ -32,6 +36,12 @@ impl PackageManager {
         // Add available backends
         if AptBackend::is_available() {
             backends.insert(PackageSource::Apt, Box::new(AptBackend::new()));
+        }
+        if DnfBackend::is_available() {
+            backends.insert(PackageSource::Dnf, Box::new(DnfBackend::new()));
+        }
+        if PacmanBackend::is_available() {
+            backends.insert(PackageSource::Pacman, Box::new(PacmanBackend::new()));
         }
         if FlatpakBackend::is_available() {
             backends.insert(PackageSource::Flatpak, Box::new(FlatpakBackend::new()));

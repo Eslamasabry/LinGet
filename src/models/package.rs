@@ -5,6 +5,8 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum PackageSource {
     Apt,
+    Dnf,
+    Pacman,
     Flatpak,
     Snap,
     Npm,
@@ -17,6 +19,8 @@ impl fmt::Display for PackageSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PackageSource::Apt => write!(f, "APT"),
+            PackageSource::Dnf => write!(f, "DNF"),
+            PackageSource::Pacman => write!(f, "Pacman"),
             PackageSource::Flatpak => write!(f, "Flatpak"),
             PackageSource::Snap => write!(f, "Snap"),
             PackageSource::Npm => write!(f, "npm"),
@@ -31,6 +35,8 @@ impl PackageSource {
     pub fn icon_name(&self) -> &'static str {
         match self {
             PackageSource::Apt => "package-x-generic-symbolic",
+            PackageSource::Dnf => "system-software-install-symbolic",
+            PackageSource::Pacman => "package-x-generic-symbolic",
             PackageSource::Flatpak => "system-software-install-symbolic",
             PackageSource::Snap => "snap-symbolic",
             PackageSource::Npm => "text-x-script-symbolic",
@@ -43,6 +49,8 @@ impl PackageSource {
     pub fn color_class(&self) -> &'static str {
         match self {
             PackageSource::Apt => "source-apt",
+            PackageSource::Dnf => "source-dnf",
+            PackageSource::Pacman => "source-pacman",
             PackageSource::Flatpak => "source-flatpak",
             PackageSource::Snap => "source-snap",
             PackageSource::Npm => "source-npm",
@@ -55,6 +63,8 @@ impl PackageSource {
     pub fn description(&self) -> &'static str {
         match self {
             PackageSource::Apt => "System packages (Debian/Ubuntu)",
+            PackageSource::Dnf => "System packages (Fedora/RHEL)",
+            PackageSource::Pacman => "System packages (Arch Linux)",
             PackageSource::Flatpak => "Sandboxed applications",
             PackageSource::Snap => "Snap packages (Ubuntu)",
             PackageSource::Npm => "Node.js packages (global)",
