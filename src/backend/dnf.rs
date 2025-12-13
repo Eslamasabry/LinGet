@@ -163,4 +163,43 @@ impl PackageBackend for DnfBackend {
             anyhow::bail!("Failed to update dnf package {}", name)
         }
     }
+
+    async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        // dnf search query
+        let output = Command::new("dnf")
+            .args(["search", "-q", query])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to search dnf packages")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+
+        // Output format:
+        // name.arch : summary
+        for line in stdout.lines() {
+            if let Some((name_part, summary)) = line.split_once(" : ") {
+                let name = name_part.split('.').next().unwrap_or(name_part).trim().to_string();
+                
+                packages.push(Package {
+                    name,
+                    version: String::new(),
+                    available_version: None,
+                    description: summary.trim().to_string(),
+                    source: PackageSource::Dnf,
+                    status: PackageStatus::NotInstalled,
+                    size: None,
+                    homepage: None,
+                    license: None,
+                    maintainer: None,
+                    dependencies: Vec::new(),
+                    install_date: None,
+                });
+            }
+        }
+
+        Ok(packages)
+    }
 }

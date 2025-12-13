@@ -144,4 +144,39 @@ impl PackageBackend for FlatpakBackend {
             anyhow::bail!("Failed to update flatpak {}", name)
         }
     }
+
+    async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        let output = Command::new("flatpak")
+            .args(["search", query, "--columns=application,version,name,description"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to search flatpak")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 3 {
+                packages.push(Package {
+                    name: parts[0].to_string(),
+                    version: parts.get(1).unwrap_or(&"").to_string(),
+                    available_version: None,
+                    description: parts.get(2).unwrap_or(&"").to_string(),
+                    source: PackageSource::Flatpak,
+                    status: PackageStatus::NotInstalled,
+                    size: None,
+                    homepage: None,
+                    license: None,
+                    maintainer: None,
+                    dependencies: Vec::new(),
+                    install_date: None,
+                });
+            }
+        }
+
+        Ok(packages)
+    }
 }

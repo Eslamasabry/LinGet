@@ -131,6 +131,27 @@ impl PackageManager {
             anyhow::bail!("No backend available for {:?}", package.source)
         }
     }
+
+    pub async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        use futures::future::join_all;
+
+        let futures: Vec<_> = self.backends.values()
+            .map(|backend| backend.search(query))
+            .collect();
+
+        let results = join_all(futures).await;
+
+        let mut all_results = Vec::new();
+        for result in results {
+            match result {
+                Ok(packages) => all_results.extend(packages),
+                Err(e) => tracing::warn!("Search failed: {}", e),
+            }
+        }
+
+        all_results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(all_results)
+    }
 }
 
 impl Default for PackageManager {

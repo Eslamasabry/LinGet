@@ -162,4 +162,60 @@ impl PackageBackend for PipBackend {
             anyhow::bail!("Failed to update pip package {}", name)
         }
     }
+
+    async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        // pip search is disabled on PyPI, so we use pip index versions as a workaround
+        // This only works if you know the exact package name
+        // For now, return empty results - user should use PyPI website for searching
+        tracing::info!("pip search is not available - PyPI disabled this feature");
+
+        // Try to get info about the exact package name
+        let pip = Self::get_pip_command();
+        let output = Command::new(pip)
+            .args(["show", query])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+
+        let mut packages = Vec::new();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut name = String::new();
+                let mut version = String::new();
+                let mut description = String::new();
+
+                for line in stdout.lines() {
+                    if let Some(value) = line.strip_prefix("Name: ") {
+                        name = value.to_string();
+                    } else if let Some(value) = line.strip_prefix("Version: ") {
+                        version = value.to_string();
+                    } else if let Some(value) = line.strip_prefix("Summary: ") {
+                        description = value.to_string();
+                    }
+                }
+
+                if !name.is_empty() {
+                    packages.push(Package {
+                        name,
+                        version,
+                        available_version: None,
+                        description,
+                        source: PackageSource::Pip,
+                        status: PackageStatus::NotInstalled,
+                        size: None,
+                        homepage: None,
+                        license: None,
+                        maintainer: None,
+                        dependencies: Vec::new(),
+                        install_date: None,
+                    });
+                }
+            }
+        }
+
+        Ok(packages)
+    }
 }

@@ -208,4 +208,58 @@ impl PackageBackend for PacmanBackend {
             anyhow::bail!("Failed to update pacman package {}", name)
         }
     }
+
+    async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        // pacman -Ss query
+        let output = Command::new("pacman")
+            .args(["-Ss", query])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to search pacman packages")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+        
+        let lines: Vec<&str> = stdout.lines().collect();
+        // Output format:
+        // repo/name version [installed]
+        //     Description
+        
+        let mut i = 0;
+        while i < lines.len() {
+            let line1 = lines[i];
+            if let Some((repo_name, version_status)) = line1.split_once(' ') {
+                if let Some((_, name)) = repo_name.split_once('/') {
+                    let version = version_status.split_whitespace().next().unwrap_or("").to_string();
+                    let description = if i + 1 < lines.len() {
+                        lines[i + 1].trim().to_string()
+                    } else {
+                        String::new()
+                    };
+                    
+                    packages.push(Package {
+                        name: name.to_string(),
+                        version,
+                        available_version: None,
+                        description,
+                        source: PackageSource::Pacman,
+                        status: PackageStatus::NotInstalled,
+                        size: None,
+                        homepage: None,
+                        license: None,
+                        maintainer: None,
+                        dependencies: Vec::new(),
+                        install_date: None,
+                    });
+                    i += 2;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        Ok(packages)
+    }
 }

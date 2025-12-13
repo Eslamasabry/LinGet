@@ -156,4 +156,9 @@ impl PackageBackend for AppImageBackend {
     async fn update(&self, _name: &str) -> Result<()> {
         anyhow::bail!("AppImage updates must be done manually by downloading the new version")
     }
+
+    async fn search(&self, _query: &str) -> Result<Vec<Package>> {
+        // Can't search AppImages - they're local files
+        Ok(Vec::new())
+    }
 }

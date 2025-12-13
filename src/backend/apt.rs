@@ -165,4 +165,40 @@ impl PackageBackend for AptBackend {
             anyhow::bail!("Failed to update package {}", name)
         }
     }
+
+    async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        let output = Command::new("apt-cache")
+            .args(["search", query])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to search packages")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+
+        for line in stdout.lines().take(50) {
+            // Limit results
+            let parts: Vec<&str> = line.splitn(2, " - ").collect();
+            if parts.len() == 2 {
+                packages.push(Package {
+                    name: parts[0].to_string(),
+                    version: String::new(),
+                    available_version: None,
+                    description: parts[1].to_string(),
+                    source: PackageSource::Apt,
+                    status: PackageStatus::NotInstalled,
+                    size: None,
+                    homepage: None,
+                    license: None,
+                    maintainer: None,
+                    dependencies: Vec::new(),
+                    install_date: None,
+                });
+            }
+        }
+
+        Ok(packages)
+    }
 }

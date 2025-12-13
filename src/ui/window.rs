@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
+    Discover,
     AllPackages,
     Updates,
 }
@@ -47,6 +48,9 @@ pub struct LinGetWindow {
     config: Rc<RefCell<Config>>,
     filter_state: Rc<RefCell<FilterState>>,
     selection_mode: Rc<RefCell<bool>>,
+    // Discover view
+    discover_list_box: gtk::ListBox,
+    discover_rows: Rc<RefCell<Vec<PackageRow>>>,
     // All packages view
     all_list_box: gtk::ListBox,
     all_rows: Rc<RefCell<Vec<PackageRow>>>,
@@ -85,6 +89,7 @@ impl LinGetWindow {
         let config = Rc::new(RefCell::new(Config::load()));
         let package_manager = Arc::new(Mutex::new(PackageManager::new()));
         let packages: Rc<RefCell<Vec<Package>>> = Rc::new(RefCell::new(Vec::new()));
+        let discover_rows: Rc<RefCell<Vec<PackageRow>>> = Rc::new(RefCell::new(Vec::new()));
         let all_rows: Rc<RefCell<Vec<PackageRow>>> = Rc::new(RefCell::new(Vec::new()));
         let updates_rows: Rc<RefCell<Vec<PackageRow>>> = Rc::new(RefCell::new(Vec::new()));
         let current_view = Rc::new(RefCell::new(ViewMode::AllPackages));
@@ -110,8 +115,10 @@ impl LinGetWindow {
 
         let (
             content_area, 
+            discover_stack,
             all_stack, 
             updates_stack, 
+            discover_list_box,
             all_list_box, 
             updates_list_box, 
             content_stack, 
@@ -216,6 +223,8 @@ impl LinGetWindow {
             config,
             filter_state,
             selection_mode,
+            discover_list_box,
+            discover_rows,
             all_list_box,
             all_rows,
             updates_list_box,
@@ -248,6 +257,7 @@ impl LinGetWindow {
             select_button,
             nav_list,
             update_all_btn,
+            discover_stack,
             all_stack,
             updates_stack,
             apt_btn,
@@ -383,13 +393,22 @@ impl LinGetWindow {
             .css_classes(vec!["navigation-sidebar"])
             .build();
 
+        // Discover
+        let discover_row = gtk::ListBoxRow::new();
+        discover_row.add_css_class("nav-row");
+        let discover_box = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(12).margin_top(10).margin_bottom(10).margin_start(12).margin_end(12).build();
+        discover_box.append(&gtk::Image::from_icon_name("system-search-symbolic"));
+        discover_box.append(&gtk::Label::builder().label("Discover").hexpand(true).xalign(0.0).build());
+        discover_row.set_child(Some(&discover_box));
+        nav_list.append(&discover_row);
+
         // All Packages
         let all_row = gtk::ListBoxRow::new();
         all_row.add_css_class("nav-row");
         let all_box = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(12).margin_top(10).margin_bottom(10).margin_start(12).margin_end(12).build();
         let all_count_label = gtk::Label::builder().label("0").css_classes(vec!["dim-label", "caption"]).build();
         all_box.append(&gtk::Image::from_icon_name("view-grid-symbolic"));
-        all_box.append(&gtk::Label::builder().label("All Packages").hexpand(true).xalign(0.0).build());
+        all_box.append(&gtk::Label::builder().label("Library").hexpand(true).xalign(0.0).build());
         all_box.append(&all_count_label);
         all_row.set_child(Some(&all_box));
         nav_list.append(&all_row);
@@ -456,12 +475,37 @@ impl LinGetWindow {
     }
 
     fn build_content_area() -> (
-        gtk::Box, gtk::Stack, gtk::Stack, gtk::ListBox, gtk::ListBox, gtk::Stack, gtk::DropDown, gtk::Button
+        gtk::Box, gtk::Stack, gtk::Stack, gtk::Stack, gtk::ListBox, gtk::ListBox, gtk::ListBox, gtk::Stack, gtk::DropDown, gtk::Button
     ) {
         let content_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
         
         let content_stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeftRight).transition_duration(200).hexpand(true).build();
         
+        // Discover View
+        let discover_list_box = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(vec!["boxed-list"]).build();
+        let discover_scrolled = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&discover_list_box).build();
+        
+        let discover_content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+        let discover_label = gtk::Label::builder()
+            .label("Search for new packages above")
+            .css_classes(vec!["dim-label"])
+            .margin_top(24)
+            .margin_bottom(24)
+            .build();
+        discover_content.append(&discover_label);
+        discover_content.append(&adw::Clamp::builder().maximum_size(1000).child(&discover_scrolled).margin_top(8).margin_bottom(24).margin_start(12).margin_end(12).build());
+
+        let discover_empty = adw::StatusPage::builder()
+            .icon_name("system-search-symbolic")
+            .title("Discover Packages")
+            .description("Type in the search bar to find new software")
+            .build();
+            
+        let discover_stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(150).build();
+        discover_stack.add_named(&discover_content, Some("list"));
+        discover_stack.add_named(&discover_empty, Some("empty"));
+        discover_stack.set_visible_child_name("empty");
+
         // All Packages View
         let filter_bar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(8).margin_start(24).margin_end(24).margin_top(12).margin_bottom(8).build();
         filter_bar.append(&gtk::Label::new(Some("Filter:")));
@@ -504,11 +548,12 @@ impl LinGetWindow {
         updates_stack.add_named(&updates_content, Some("list"));
         updates_stack.add_named(&updates_empty, Some("empty"));
 
+        content_stack.add_named(&discover_stack, Some("discover"));
         content_stack.add_named(&all_stack, Some("all"));
         content_stack.add_named(&updates_stack, Some("updates"));
         content_box.append(&content_stack);
 
-        (content_box, all_stack, updates_stack, all_list_box, updates_list_box, content_stack, sort_dropdown, update_all_btn)
+        (content_box, discover_stack, all_stack, updates_stack, discover_list_box, all_list_box, updates_list_box, content_stack, sort_dropdown, update_all_btn)
     }
 
     fn build_progress_overlay() -> (gtk::Box, gtk::ProgressBar, gtk::Label) {
@@ -783,6 +828,7 @@ impl LinGetWindow {
         select_button: gtk::ToggleButton,
         nav_list: gtk::ListBox,
         update_all_btn: gtk::Button,
+        discover_stack: gtk::Stack,
         all_stack: gtk::Stack,
         updates_stack: gtk::Stack,
         apt_btn: gtk::ToggleButton,

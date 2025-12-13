@@ -24,6 +24,9 @@ pub trait PackageBackend: Send + Sync {
 
     /// Update a package by name
     async fn update(&self, name: &str) -> Result<()>;
+
+    /// Search for new packages
+    async fn search(&self, query: &str) -> Result<Vec<Package>>;
 }
 
 // We need async_trait for async trait methods

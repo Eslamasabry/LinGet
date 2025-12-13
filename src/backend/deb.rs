@@ -169,4 +169,9 @@ impl PackageBackend for DebBackend {
     async fn update(&self, _name: &str) -> Result<()> {
         anyhow::bail!("Local .deb packages cannot be updated automatically")
     }
+
+    async fn search(&self, _query: &str) -> Result<Vec<Package>> {
+        // Can't search local .deb files
+        Ok(Vec::new())
+    }
 }

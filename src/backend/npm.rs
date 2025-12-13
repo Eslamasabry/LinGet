@@ -157,4 +157,45 @@ impl PackageBackend for NpmBackend {
             anyhow::bail!("Failed to update npm package {}", name)
         }
     }
+
+    async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        let output = Command::new("npm")
+            .args(["search", query, "--json", "--long"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to search npm packages")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+
+        #[derive(Deserialize)]
+        struct NpmSearchResult {
+            name: String,
+            version: Option<String>,
+            description: Option<String>,
+        }
+
+        if let Ok(results) = serde_json::from_str::<Vec<NpmSearchResult>>(&stdout) {
+            for result in results.into_iter().take(50) {
+                packages.push(Package {
+                    name: result.name,
+                    version: result.version.unwrap_or_default(),
+                    available_version: None,
+                    description: result.description.unwrap_or_default(),
+                    source: PackageSource::Npm,
+                    status: PackageStatus::NotInstalled,
+                    size: None,
+                    homepage: None,
+                    license: None,
+                    maintainer: None,
+                    dependencies: Vec::new(),
+                    install_date: None,
+                });
+            }
+        }
+
+        Ok(packages)
+    }
 }

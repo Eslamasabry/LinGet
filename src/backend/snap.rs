@@ -160,4 +160,49 @@ impl PackageBackend for SnapBackend {
             anyhow::bail!("Failed to update snap {}", name)
         }
     }
+
+    async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        let output = Command::new("snap")
+            .args(["find", query])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to search snaps")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+
+        // Skip header line
+        for line in stdout.lines().skip(1).take(50) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let name = parts[0].to_string();
+                let version = parts[1].to_string();
+                // Description is the rest after publisher and notes
+                let description = if parts.len() > 4 {
+                    parts[4..].join(" ")
+                } else {
+                    String::new()
+                };
+
+                packages.push(Package {
+                    name,
+                    version,
+                    available_version: None,
+                    description,
+                    source: PackageSource::Snap,
+                    status: PackageStatus::NotInstalled,
+                    size: None,
+                    homepage: None,
+                    license: None,
+                    maintainer: None,
+                    dependencies: Vec::new(),
+                    install_date: None,
+                });
+            }
+        }
+
+        Ok(packages)
+    }
 }
