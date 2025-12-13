@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev build-essential pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Build Debian Package
+        run: cargo deb
+
+      - name: Create Tarball
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          mkdir -p dist
+          cp target/release/linget dist/
+          cp -r data dist/
+          cp install.sh dist/
+          cp README.md dist/
+          cp LICENSE dist/
+          cd dist
+          tar -czvf ../linget-v${VERSION}-linux-x86_64.tar.gz *
+          cd ..
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            linget-v*-linux-x86_64.tar.gz
+            target/debian/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
