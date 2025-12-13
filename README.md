@@ -20,7 +20,9 @@
 - **Modern UI** - Built with GTK4 and Libadwaita for a native GNOME experience.
 - **Smart Filtering** - Toggle sources on/off instantly to find what you need.
 - **Bulk Operations** - Select multiple packages to update or remove them all at once.
+- **Backup & Restore** - Export your package list to a file and restore it on another machine.
 - **Update Center** - See all available updates across your system in one view.
+- **Ignore Updates** - Pin specific packages to prevent them from being updated.
 - **Real-time Stats** - Live counters for installed packages and available updates.
 - **Package Details** - View detailed info, version history, and manage individual packages.
 - **Caching** - Instant startup times thanks to local caching.

@@ -272,9 +272,17 @@ impl LinGetWindow {
 
         // Menu
         let menu = gio::Menu::new();
-        menu.append(Some("Preferences"), Some("app.preferences"));
-        menu.append(Some("Keyboard Shortcuts"), Some("app.shortcuts"));
-        menu.append(Some("About LinGet"), Some("app.about"));
+        
+        let backup_section = gio::Menu::new();
+        backup_section.append(Some("Import Packages..."), Some("app.import"));
+        backup_section.append(Some("Export Packages..."), Some("app.export"));
+        menu.append_section(Some("Backup"), &backup_section);
+
+        let app_section = gio::Menu::new();
+        app_section.append(Some("Preferences"), Some("app.preferences"));
+        app_section.append(Some("Keyboard Shortcuts"), Some("app.shortcuts"));
+        app_section.append(Some("About LinGet"), Some("app.about"));
+        menu.append_section(None, &app_section);
 
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
@@ -567,6 +575,169 @@ impl LinGetWindow {
     }
 
     fn setup_actions(&self, app: &adw::Application) {
+        // Import action
+        let import_action = gio::SimpleAction::new("import", None);
+        let window_import = self.window.clone();
+        let pm_import = self.package_manager.clone();
+        let toast_import = self.toast_overlay.clone();
+        let progress_overlay_import = self.progress_overlay.clone();
+        let progress_bar_import = self.progress_bar.clone();
+        let progress_label_import = self.progress_label.clone();
+        
+        import_action.connect_activate(move |_, _| {
+            let dialog = gtk::FileChooserDialog::builder()
+                .title("Import Packages")
+                .action(gtk::FileChooserAction::Open)
+                .modal(true)
+                .transient_for(&window_import)
+                .build();
+            
+            dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+            dialog.add_button("Import", gtk::ResponseType::Accept);
+            
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("JSON Files"));
+            filter.add_pattern("*.json");
+            dialog.add_filter(&filter);
+            
+            let _window = window_import.clone();
+            let pm = pm_import.clone();
+            let toast = toast_import.clone();
+            let progress_overlay = progress_overlay_import.clone();
+            let progress_bar = progress_bar_import.clone();
+            let progress_label = progress_label_import.clone();
+            
+            dialog.connect_response(move |d, response| {
+                if response == gtk::ResponseType::Accept {
+                    if let Some(file) = d.file() {
+                        if let Some(path) = file.path() {
+                            if let Ok(content) = std::fs::read_to_string(path) {
+                                if let Ok(list) = serde_json::from_str::<crate::models::PackageList>(&content) {
+                                    d.close();
+                                    
+                                    // Start import process
+                                    let total = list.packages.len();
+                                    if total == 0 {
+                                        let t = adw::Toast::new("No packages found in backup file");
+                                        toast.add_toast(t);
+                                        return;
+                                    }
+                                    
+                                    progress_overlay.set_visible(true);
+                                    progress_label.set_label(&format!("Importing {} packages...", total));
+                                    
+                                    let pm = pm.clone();
+                                    let toast = toast.clone();
+                                    let progress_overlay = progress_overlay.clone();
+                                    let progress_bar = progress_bar.clone();
+                                    
+                                    glib::spawn_future_local(async move {
+                                        let mut success = 0;
+                                        let mut failed = 0;
+                                        
+                                        let manager = pm.lock().await;
+                                        
+                                        for (i, backup_pkg) in list.packages.iter().enumerate() {
+                                            progress_bar.set_fraction((i as f64) / (total as f64));
+                                            progress_bar.set_text(Some(&format!("{}/{} - {}", i + 1, total, backup_pkg.name)));
+                                            
+                                            // Construct a temporary package object to pass to install
+                                            let pkg = crate::models::Package {
+                                                name: backup_pkg.name.clone(),
+                                                version: String::new(),
+                                                available_version: None,
+                                                description: String::new(),
+                                                source: backup_pkg.source,
+                                                status: crate::models::PackageStatus::NotInstalled,
+                                                size: None,
+                                                homepage: None,
+                                                license: None,
+                                                maintainer: None,
+                                                dependencies: Vec::new(),
+                                                install_date: None,
+                                            };
+                                            
+                                            if manager.install(&pkg).await.is_ok() {
+                                                success += 1;
+                                            } else {
+                                                failed += 1;
+                                            }
+                                        }
+                                        drop(manager);
+                                        
+                                        progress_overlay.set_visible(false);
+                                        
+                                        let msg = format!("Import complete: {} installed, {} failed", success, failed);
+                                        let t = adw::Toast::new(&msg);
+                                        t.set_timeout(5);
+                                        toast.add_toast(t);
+                                    });
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                d.close();
+            });
+            
+            dialog.show();
+        });
+        app.add_action(&import_action);
+
+        // Export action
+        let export_action = gio::SimpleAction::new("export", None);
+        let window_export = self.window.clone();
+        let packages_export = self.packages.clone();
+        let toast_export = self.toast_overlay.clone();
+        
+        export_action.connect_activate(move |_, _| {
+            let dialog = gtk::FileChooserDialog::builder()
+                .title("Export Packages")
+                .action(gtk::FileChooserAction::Save)
+                .modal(true)
+                .transient_for(&window_export)
+                .build();
+            
+            dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+            dialog.add_button("Export", gtk::ResponseType::Accept);
+            dialog.set_current_name("linget-backup.json");
+            
+            let packages = packages_export.clone();
+            let toast = toast_export.clone();
+            
+            dialog.connect_response(move |d, response| {
+                if response == gtk::ResponseType::Accept {
+                    if let Some(file) = d.file() {
+                        if let Some(path) = file.path() {
+                            let pkgs = packages.borrow();
+                            let list = crate::models::PackageList::new(&pkgs);
+                            
+                            match serde_json::to_string_pretty(&list) {
+                                Ok(json) => {
+                                    if let Err(e) = std::fs::write(path, json) {
+                                        let t = adw::Toast::new(&format!("Export failed: {}", e));
+                                        toast.add_toast(t);
+                                    } else {
+                                        let t = adw::Toast::new("Packages exported successfully");
+                                        toast.add_toast(t);
+                                    }
+                                }
+                                Err(e) => {
+                                    let t = adw::Toast::new(&format!("Serialization failed: {}", e));
+                                    toast.add_toast(t);
+                                }
+                            }
+                        }
+                    }
+                }
+                d.close();
+            });
+            
+            dialog.show();
+        });
+        app.add_action(&export_action);
+
         let prefs_action = gio::SimpleAction::new("preferences", None);
         let config = self.config.clone();
         let window = self.window.clone();
@@ -627,6 +798,7 @@ impl LinGetWindow {
         remove_selected_btn: gtk::Button,
         sort_dropdown: gtk::DropDown,
     ) {
+        let config = self.config.clone();
         let pm = self.package_manager.clone();
         let packages = self.packages.clone();
         let all_rows = self.all_rows.clone();
@@ -693,6 +865,7 @@ impl LinGetWindow {
             let window = window.clone();
             let pm = pm.clone();
             let toast_overlay = toast_overlay.clone();
+            let config = config.clone();
             let all_stack = all_stack.clone();
             let updates_stack = updates_stack.clone();
             let selection_mode = selection_mode.clone();
@@ -748,8 +921,8 @@ impl LinGetWindow {
                     }
                 };
 
-                Self::populate_list(&all_list_box, &filtered_all, &all_rows, &window, &pm, &toast_overlay, sel_mode, on_source_click.clone());
-                Self::populate_list(&updates_list_box, &filtered_updates, &updates_rows, &window, &pm, &toast_overlay, sel_mode, on_source_click);
+                Self::populate_list(&all_list_box, &filtered_all, &all_rows, &window, &pm, &toast_overlay, &config, sel_mode, on_source_click.clone());
+                Self::populate_list(&updates_list_box, &filtered_updates, &updates_rows, &window, &pm, &toast_overlay, &config, sel_mode, on_source_click);
 
                 if filtered_all.is_empty() { all_stack.set_visible_child_name("empty"); } else { all_stack.set_visible_child_name("list"); }
                 if filtered_updates.is_empty() { updates_stack.set_visible_child_name("empty"); } else { updates_stack.set_visible_child_name("list"); }
@@ -770,6 +943,7 @@ impl LinGetWindow {
             let update_source_counts = update_source_counts.clone();
             let apply_filters = apply_filters.clone();
             let refresh_button = refresh_button.clone();
+            let config = config.clone(); // Capture config
 
             move || {
                 let pm = pm.clone();
@@ -780,6 +954,7 @@ impl LinGetWindow {
                 let update_source_counts = update_source_counts.clone();
                 let apply_filters = apply_filters.clone();
                 let refresh_button = refresh_button.clone();
+                let config = config.clone();
 
                 glib::spawn_future_local(async move {
                     let initial_load = packages.borrow().is_empty();
@@ -800,7 +975,16 @@ impl LinGetWindow {
                     let updates = manager.check_all_updates().await.unwrap_or_default();
                     drop(manager);
 
+                    // Get ignored packages
+                    let ignored = &config.borrow().ignored_packages;
+
                     for update in &updates {
+                        // Skip if ignored
+                        let update_id = update.id();
+                        if ignored.contains(&update_id) {
+                            continue;
+                        }
+
                         if let Some(pkg) = all_packages.iter_mut().find(|p| p.name == update.name && p.source == update.source) {
                             pkg.status = PackageStatus::UpdateAvailable;
                             pkg.available_version = update.available_version.clone();
@@ -838,10 +1022,22 @@ impl LinGetWindow {
              let update_source_counts = update_source_counts.clone();
              let apply_filters = apply_filters.clone();
              let main_stack = main_stack.clone();
+             let config = config.clone(); // Capture config
 
              move || {
-                 if let Some(cache) = PackageCache::load() {
+                 if let Some(mut cache) = PackageCache::load() {
                      let is_stale = cache.is_stale();
+                     
+                     // Filter out ignored updates from cached packages
+                     let ignored = &config.borrow().ignored_packages;
+                     for pkg in cache.packages.iter_mut() {
+                         if pkg.has_update() && ignored.contains(&pkg.id()) {
+                             // Revert status to Installed if update is ignored
+                             pkg.status = PackageStatus::Installed;
+                             pkg.available_version = None;
+                         }
+                     }
+                     
                      update_source_counts(&cache.packages);
                      *packages.borrow_mut() = cache.packages;
                      apply_filters();
@@ -1129,6 +1325,7 @@ impl LinGetWindow {
         window: &adw::ApplicationWindow,
         pm: &Arc<Mutex<PackageManager>>,
         toast_overlay: &adw::ToastOverlay,
+        config: &Rc<RefCell<Config>>,
         selection_mode: bool,
         on_source_click: F,
     ) where
@@ -1147,9 +1344,10 @@ impl LinGetWindow {
             let win = window.clone();
             let pm_details = pm.clone();
             let toast_details = toast_overlay.clone();
+            let config_details = config.clone();
             
             row.widget.connect_activated(move |_| {
-                PackageDetailsDialog::show(&pkg, &win, pm_details.clone(), toast_details.clone());
+                PackageDetailsDialog::show(&pkg, &win, pm_details.clone(), toast_details.clone(), config_details.clone());
             });
 
             let source = package.source;

@@ -30,6 +30,10 @@ pub struct Config {
 
     /// Whether window was maximized
     pub window_maximized: bool,
+
+    /// List of ignored package IDs (format: "Source:Name")
+    #[serde(default)]
+    pub ignored_packages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +74,7 @@ impl Default for Config {
             window_width: 1000,
             window_height: 700,
             window_maximized: false,
+            ignored_packages: Vec::new(),
         }
     }
 }

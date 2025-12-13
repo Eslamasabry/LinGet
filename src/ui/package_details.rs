@@ -1,9 +1,11 @@
 use crate::backend::PackageManager;
-use crate::models::{Package, PackageStatus};
+use crate::models::{Config, Package, PackageStatus};
 use gtk4::prelude::*;
 use gtk4::{self as gtk, glib};
 use libadwaita::prelude::*;
 use libadwaita as adw;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -15,6 +17,7 @@ impl PackageDetailsDialog {
         parent: &impl IsA<gtk::Window>,
         pm: Arc<Mutex<PackageManager>>,
         toast_overlay: adw::ToastOverlay,
+        config: Rc<RefCell<Config>>,
     ) {
         let dialog = gtk::Window::builder()
             .title(&package.name)
@@ -124,6 +127,48 @@ impl PackageDetailsDialog {
             .subtitle(package.source.description())
             .build();
         details_group.add(&source_row);
+
+        // Ignore Updates row
+        let ignore_row = adw::ActionRow::builder()
+            .title("Ignore Updates")
+            .subtitle("Prevent this package from being updated")
+            .build();
+            
+        let ignore_switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .build();
+            
+        // Set initial state
+        let pkg_id = package.id();
+        let is_ignored = config.borrow().ignored_packages.contains(&pkg_id);
+        ignore_switch.set_active(is_ignored);
+        
+        let config_clone = config.clone();
+        let pkg_id_clone = pkg_id.clone();
+        let toast_clone = toast_overlay.clone();
+        
+        ignore_switch.connect_state_set(move |_, state| {
+            let mut cfg = config_clone.borrow_mut();
+            if state {
+                if !cfg.ignored_packages.contains(&pkg_id_clone) {
+                    cfg.ignored_packages.push(pkg_id_clone.clone());
+                    let _ = cfg.save();
+                    let t = adw::Toast::new("Package updates ignored");
+                    toast_clone.add_toast(t);
+                }
+            } else {
+                if let Some(pos) = cfg.ignored_packages.iter().position(|x| x == &pkg_id_clone) {
+                    cfg.ignored_packages.remove(pos);
+                    let _ = cfg.save();
+                    let t = adw::Toast::new("Package updates enabled");
+                    toast_clone.add_toast(t);
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        
+        ignore_row.add_suffix(&ignore_switch);
+        details_group.add(&ignore_row);
 
         content.append(&details_group);
 

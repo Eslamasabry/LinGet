@@ -126,6 +126,10 @@ impl Package {
             None => String::from("Unknown"),
         }
     }
+
+    pub fn id(&self) -> String {
+        format!("{}:{}", self.source, self.name)
+    }
 }
 
 impl PartialEq for Package {
