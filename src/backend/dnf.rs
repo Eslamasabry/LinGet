@@ -1,4 +1,5 @@
 use super::PackageBackend;
+use super::{run_pkexec, Suggest};
 use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -83,10 +84,8 @@ impl PackageBackend for DnfBackend {
         let mut packages = Vec::new();
 
         // Skip potential header lines or system messages until we see package list
-        let mut in_list = false;
         for line in stdout.lines() {
             if line.trim().is_empty() {
-                in_list = true; // Often an empty line separates headers
                 continue;
             }
             // Heuristic: lines with 3 columns are likely packages
@@ -96,7 +95,7 @@ impl PackageBackend for DnfBackend {
                 if parts[0].ends_with(':') {
                     continue;
                 }
-                
+
                 // dnf output often includes architecture in name (e.g. package.x86_64)
                 let name_arch = parts[0];
                 let name = name_arch.split('.').next().unwrap_or(name_arch).to_string();
@@ -123,45 +122,51 @@ impl PackageBackend for DnfBackend {
     }
 
     async fn install(&self, name: &str) -> Result<()> {
-        let status = Command::new("pkexec")
-            .args(["dnf", "install", "-y", name])
-            .status()
-            .await
-            .context("Failed to install dnf package")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to install dnf package {}", name)
-        }
+        run_pkexec(
+            "dnf",
+            &["install", "-y", "--", name],
+            &format!("Failed to install dnf package {}", name),
+            Suggest {
+                command: format!("sudo dnf install -y -- {}", name),
+            },
+        )
+        .await
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
-        let status = Command::new("pkexec")
-            .args(["dnf", "remove", "-y", name])
-            .status()
-            .await
-            .context("Failed to remove dnf package")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to remove dnf package {}", name)
-        }
+        run_pkexec(
+            "dnf",
+            &["remove", "-y", "--", name],
+            &format!("Failed to remove dnf package {}", name),
+            Suggest {
+                command: format!("sudo dnf remove -y -- {}", name),
+            },
+        )
+        .await
     }
 
     async fn update(&self, name: &str) -> Result<()> {
-        let status = Command::new("pkexec")
-            .args(["dnf", "update", "-y", name])
-            .status()
-            .await
-            .context("Failed to update dnf package")?;
+        run_pkexec(
+            "dnf",
+            &["update", "-y", "--", name],
+            &format!("Failed to update dnf package {}", name),
+            Suggest {
+                command: format!("sudo dnf update -y -- {}", name),
+            },
+        )
+        .await
+    }
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to update dnf package {}", name)
-        }
+    async fn downgrade(&self, name: &str) -> Result<()> {
+        run_pkexec(
+            "dnf",
+            &["downgrade", "-y", "--", name],
+            &format!("Failed to downgrade dnf package {}", name),
+            Suggest {
+                command: format!("sudo dnf downgrade -y -- {}", name),
+            },
+        )
+        .await
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
@@ -181,8 +186,13 @@ impl PackageBackend for DnfBackend {
         // name.arch : summary
         for line in stdout.lines() {
             if let Some((name_part, summary)) = line.split_once(" : ") {
-                let name = name_part.split('.').next().unwrap_or(name_part).trim().to_string();
-                
+                let name = name_part
+                    .split('.')
+                    .next()
+                    .unwrap_or(name_part)
+                    .trim()
+                    .to_string();
+
                 packages.push(Package {
                     name,
                     version: String::new(),

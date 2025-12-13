@@ -1,4 +1,5 @@
 use super::PackageBackend;
+use crate::backend::SUGGEST_PREFIX;
 use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -36,6 +37,13 @@ struct NpmOutdatedEntry {
     current: Option<String>,
     _wanted: Option<String>,
     latest: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum NpmVersions {
+    One(String),
+    Many(Vec<String>),
 }
 
 #[async_trait]
@@ -156,6 +164,63 @@ impl PackageBackend for NpmBackend {
         } else {
             anyhow::bail!("Failed to update npm package {}", name)
         }
+    }
+
+    async fn downgrade_to(&self, name: &str, version: &str) -> Result<()> {
+        let spec = format!("{}@{}", name, version);
+        let output = Command::new("npm")
+            .args(["install", "-g", &spec])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to install a specific npm package version")?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let lowered = stderr.to_lowercase();
+        if lowered.contains("eacces")
+            || lowered.contains("permission")
+            || lowered.contains("access")
+        {
+            anyhow::bail!(
+                "Failed to install {}.\n\n{} sudo npm install -g {}\n",
+                spec,
+                SUGGEST_PREFIX,
+                spec
+            );
+        }
+
+        anyhow::bail!("Failed to install {}: {}", spec, stderr);
+    }
+
+    async fn available_downgrade_versions(&self, name: &str) -> Result<Vec<String>> {
+        let output = Command::new("npm")
+            .args(["view", name, "versions", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to query npm versions")?;
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed = serde_json::from_str::<NpmVersions>(&stdout).ok();
+        let mut versions = match parsed {
+            Some(NpmVersions::One(v)) => vec![v],
+            Some(NpmVersions::Many(v)) => v,
+            None => Vec::new(),
+        };
+
+        // Present newest first.
+        versions.reverse();
+        Ok(versions)
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {

@@ -1,4 +1,5 @@
 use super::PackageBackend;
+use super::{run_pkexec, Suggest};
 use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -32,7 +33,7 @@ impl PackageBackend for PacmanBackend {
         // `expac` is better but extra dependency.
         // Let's iterate `pacman -Q` and maybe fetch details on demand or just basic info.
         // For basic list, let's use `pacman -Qi` and parse blocks.
-        
+
         let output = Command::new("pacman")
             .arg("-Qi")
             .stdout(Stdio::piped())
@@ -43,7 +44,7 @@ impl PackageBackend for PacmanBackend {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut packages = Vec::new();
-        
+
         let mut current_pkg = Package {
             name: String::new(),
             version: String::new(),
@@ -58,7 +59,7 @@ impl PackageBackend for PacmanBackend {
             dependencies: Vec::new(),
             install_date: None,
         };
-        
+
         let mut has_data = false;
 
         for line in stdout.lines() {
@@ -87,7 +88,7 @@ impl PackageBackend for PacmanBackend {
             if let Some((key, value)) = line.split_once(':') {
                 let key = key.trim();
                 let value = value.trim().to_string();
-                
+
                 match key {
                     "Name" => {
                         current_pkg.name = value;
@@ -105,7 +106,7 @@ impl PackageBackend for PacmanBackend {
                 }
             }
         }
-        
+
         // Push last one
         if has_data && !current_pkg.name.is_empty() {
             packages.push(current_pkg);
@@ -118,18 +119,18 @@ impl PackageBackend for PacmanBackend {
         // pacman -Qu lists upgradable packages
         // Requires DB sync first (pacman -Sy), but usually done by system or we can do `checkupdates` script if available
         // Let's assume `checkupdates` or `pacman -Qu`. `checkupdates` is safer as it uses temp DB.
-        
+
         let cmd = if which::which("checkupdates").is_ok() {
             "checkupdates"
         } else {
             "pacman"
         };
-        
+
         let mut command = Command::new(cmd);
         if cmd == "pacman" {
             command.arg("-Qu");
         }
-        
+
         let output = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -168,45 +169,39 @@ impl PackageBackend for PacmanBackend {
     }
 
     async fn install(&self, name: &str) -> Result<()> {
-        let status = Command::new("pkexec")
-            .args(["pacman", "-S", "--noconfirm", name])
-            .status()
-            .await
-            .context("Failed to install pacman package")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to install pacman package {}", name)
-        }
+        run_pkexec(
+            "pacman",
+            &["-S", "--noconfirm", "--", name],
+            &format!("Failed to install pacman package {}", name),
+            Suggest {
+                command: format!("sudo pacman -S --noconfirm -- {}", name),
+            },
+        )
+        .await
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
-        let status = Command::new("pkexec")
-            .args(["pacman", "-Rs", "--noconfirm", name])
-            .status()
-            .await
-            .context("Failed to remove pacman package")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to remove pacman package {}", name)
-        }
+        run_pkexec(
+            "pacman",
+            &["-Rs", "--noconfirm", "--", name],
+            &format!("Failed to remove pacman package {}", name),
+            Suggest {
+                command: format!("sudo pacman -Rs --noconfirm -- {}", name),
+            },
+        )
+        .await
     }
 
     async fn update(&self, name: &str) -> Result<()> {
-        let status = Command::new("pkexec")
-            .args(["pacman", "-S", "--noconfirm", name])
-            .status()
-            .await
-            .context("Failed to update pacman package")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to update pacman package {}", name)
-        }
+        run_pkexec(
+            "pacman",
+            &["-S", "--noconfirm", "--", name],
+            &format!("Failed to update pacman package {}", name),
+            Suggest {
+                command: format!("sudo pacman -S --noconfirm -- {}", name),
+            },
+        )
+        .await
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
@@ -221,24 +216,28 @@ impl PackageBackend for PacmanBackend {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut packages = Vec::new();
-        
+
         let lines: Vec<&str> = stdout.lines().collect();
         // Output format:
         // repo/name version [installed]
         //     Description
-        
+
         let mut i = 0;
         while i < lines.len() {
             let line1 = lines[i];
             if let Some((repo_name, version_status)) = line1.split_once(' ') {
                 if let Some((_, name)) = repo_name.split_once('/') {
-                    let version = version_status.split_whitespace().next().unwrap_or("").to_string();
+                    let version = version_status
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
                     let description = if i + 1 < lines.len() {
                         lines[i + 1].trim().to_string()
                     } else {
                         String::new()
                     };
-                    
+
                     packages.push(Package {
                         name: name.to_string(),
                         version,

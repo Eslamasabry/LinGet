@@ -2,8 +2,10 @@ use super::PackageBackend;
 use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 pub struct AppImageBackend;
 
@@ -29,7 +31,7 @@ impl AppImageBackend {
         dirs
     }
 
-    fn is_appimage(path: &PathBuf) -> bool {
+    fn is_appimage(path: &Path) -> bool {
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             let lower = name.to_lowercase();
             if lower.ends_with(".appimage") {
@@ -41,10 +43,12 @@ impl AppImageBackend {
                     let perms = metadata.permissions();
                     if perms.mode() & 0o111 != 0 {
                         // Check for AppImage magic bytes
-                        if let Ok(bytes) = std::fs::read(path) {
-                            // AppImage magic: "AI" at offset 8
-                            if bytes.len() > 10 && &bytes[8..10] == b"AI" {
-                                return true;
+                        if let Ok(mut file) = File::open(path) {
+                            if file.seek(SeekFrom::Start(8)).is_ok() {
+                                let mut magic = [0u8; 2];
+                                if file.read_exact(&mut magic).is_ok() && magic == *b"AI" {
+                                    return true;
+                                }
                             }
                         }
                     }
@@ -54,15 +58,11 @@ impl AppImageBackend {
         false
     }
 
-    fn extract_name(path: &PathBuf) -> String {
+    fn extract_name(path: &Path) -> String {
         path.file_stem()
             .and_then(|s| s.to_str())
             .map(|s| {
-                // Remove version numbers and clean up name
-                let name = s.replace(".AppImage", "")
-                    .replace(".appimage", "")
-                    .replace('-', " ")
-                    .replace('_', " ");
+                let name = s.replace(['-', '_'], " ");
                 // Capitalize first letter
                 let mut chars = name.chars();
                 match chars.next() {

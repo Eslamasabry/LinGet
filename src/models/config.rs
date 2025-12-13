@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
+
+use super::PackageSource;
 
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,10 +43,20 @@ pub struct Config {
 #[serde(default)]
 pub struct EnabledSources {
     pub apt: bool,
+    pub dnf: bool,
+    pub pacman: bool,
+    pub zypper: bool,
     pub flatpak: bool,
     pub snap: bool,
     pub npm: bool,
     pub pip: bool,
+    pub pipx: bool,
+    pub cargo: bool,
+    pub brew: bool,
+    pub aur: bool,
+    pub conda: bool,
+    pub mamba: bool,
+    pub dart: bool,
     pub deb: bool,
     pub appimage: bool,
 }
@@ -52,13 +65,81 @@ impl Default for EnabledSources {
     fn default() -> Self {
         Self {
             apt: true,
+            dnf: true,
+            pacman: true,
+            zypper: true,
             flatpak: true,
             snap: true,
             npm: true,
             pip: true,
+            pipx: true,
+            cargo: true,
+            brew: true,
+            aur: true,
+            conda: true,
+            mamba: true,
+            dart: true,
             deb: true,
             appimage: true,
         }
+    }
+}
+
+impl EnabledSources {
+    pub fn to_sources(&self) -> HashSet<PackageSource> {
+        let mut sources = HashSet::new();
+        if self.apt {
+            sources.insert(PackageSource::Apt);
+        }
+        if self.dnf {
+            sources.insert(PackageSource::Dnf);
+        }
+        if self.pacman {
+            sources.insert(PackageSource::Pacman);
+        }
+        if self.zypper {
+            sources.insert(PackageSource::Zypper);
+        }
+        if self.flatpak {
+            sources.insert(PackageSource::Flatpak);
+        }
+        if self.snap {
+            sources.insert(PackageSource::Snap);
+        }
+        if self.npm {
+            sources.insert(PackageSource::Npm);
+        }
+        if self.pip {
+            sources.insert(PackageSource::Pip);
+        }
+        if self.pipx {
+            sources.insert(PackageSource::Pipx);
+        }
+        if self.cargo {
+            sources.insert(PackageSource::Cargo);
+        }
+        if self.brew {
+            sources.insert(PackageSource::Brew);
+        }
+        if self.aur {
+            sources.insert(PackageSource::Aur);
+        }
+        if self.conda {
+            sources.insert(PackageSource::Conda);
+        }
+        if self.mamba {
+            sources.insert(PackageSource::Mamba);
+        }
+        if self.dart {
+            sources.insert(PackageSource::Dart);
+        }
+        if self.deb {
+            sources.insert(PackageSource::Deb);
+        }
+        if self.appimage {
+            sources.insert(PackageSource::AppImage);
+        }
+        sources
     }
 }
 

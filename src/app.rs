@@ -1,7 +1,7 @@
 use crate::models::init_icon_cache;
 use crate::ui::LinGetWindow;
-use gtk4::prelude::*;
 use gtk4::gio;
+use gtk4::prelude::*;
 use libadwaita as adw;
 
 pub const APP_ID: &str = "io.github.linget";
@@ -72,4 +72,3 @@ fn build_ui(app: &adw::Application) {
     window.present();
     tracing::info!("UI built and presented.");
 }
-

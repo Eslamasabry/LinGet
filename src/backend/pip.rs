@@ -1,4 +1,5 @@
 use super::PackageBackend;
+use crate::backend::SUGGEST_PREFIX;
 use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -161,6 +162,72 @@ impl PackageBackend for PipBackend {
         } else {
             anyhow::bail!("Failed to update pip package {}", name)
         }
+    }
+
+    async fn downgrade_to(&self, name: &str, version: &str) -> Result<()> {
+        let pip = Self::get_pip_command();
+        let spec = format!("{}=={}", name, version);
+        let output = Command::new(pip)
+            .args(["install", "--user", &spec])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to install a specific pip package version")?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let lowered = stderr.to_lowercase();
+        if lowered.contains("can not perform a '--user' install")
+            || lowered.contains("user site-packages are not visible")
+        {
+            anyhow::bail!(
+                "pip rejected a --user install (likely a virtualenv).\n\n{} {} install {}\n",
+                SUGGEST_PREFIX,
+                pip,
+                spec
+            );
+        }
+
+        anyhow::bail!("Failed to install {}: {}", spec, stderr);
+    }
+
+    async fn available_downgrade_versions(&self, name: &str) -> Result<Vec<String>> {
+        let pip = Self::get_pip_command();
+        let output = Command::new(pip)
+            .args(["index", "versions", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+
+        let Ok(output) = output else {
+            return Ok(Vec::new());
+        };
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        // Output example:
+        //   <name> (<installed>) - Available versions: x, y, z
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut versions: Vec<String> = Vec::new();
+        for line in stdout.lines() {
+            let Some((_, tail)) = line.split_once("Available versions:") else {
+                continue;
+            };
+            for v in tail.split(',') {
+                let v = v.trim();
+                if !v.is_empty() {
+                    versions.push(v.to_string());
+                }
+            }
+        }
+
+        Ok(versions)
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {

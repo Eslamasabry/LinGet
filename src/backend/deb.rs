@@ -1,6 +1,7 @@
 use super::PackageBackend;
+use super::{run_pkexec, Suggest};
 use crate::models::{Package, PackageSource, PackageStatus};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -30,7 +31,10 @@ impl DebBackend {
     async fn get_deb_info(path: &PathBuf) -> Option<(String, String, String)> {
         // Use dpkg-deb to get package info
         let output = Command::new("dpkg-deb")
-            .args(["--show", "--showformat=${Package}\n${Version}\n${Description}"])
+            .args([
+                "--show",
+                "--showformat=${Package}\n${Version}\n${Description}",
+            ])
             .arg(path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -82,7 +86,9 @@ impl PackageBackend for DebBackend {
                     let path = entry.path();
                     if let Some(ext) = path.extension() {
                         if ext == "deb" {
-                            if let Some((name, version, description)) = Self::get_deb_info(&path).await {
+                            if let Some((name, version, description)) =
+                                Self::get_deb_info(&path).await
+                            {
                                 packages.push(Package {
                                     name,
                                     version,
@@ -123,23 +129,28 @@ impl PackageBackend for DebBackend {
                             if let Some((pkg_name, _, _)) = Self::get_deb_info(&path).await {
                                 if pkg_name == name {
                                     // Install using dpkg
-                                    let status = Command::new("pkexec")
-                                        .args(["dpkg", "-i"])
-                                        .arg(&path)
-                                        .status()
-                                        .await
-                                        .context("Failed to install .deb package")?;
+                                    run_pkexec(
+                                        "dpkg",
+                                        &["-i"],
+                                        "Failed to install .deb package",
+                                        Suggest {
+                                            command: format!("sudo dpkg -i \"{}\"", path.display()),
+                                        },
+                                    )
+                                    .await?;
 
-                                    if status.success() {
-                                        // Fix dependencies
-                                        let _ = Command::new("pkexec")
-                                            .args(["apt-get", "install", "-f", "-y"])
-                                            .status()
-                                            .await;
-                                        return Ok(());
-                                    } else {
-                                        anyhow::bail!("Failed to install {}", name);
-                                    }
+                                    // Fix dependencies (best-effort)
+                                    let _ = run_pkexec(
+                                        "apt-get",
+                                        &["install", "-f", "-y"],
+                                        "Failed to fix dependencies",
+                                        Suggest {
+                                            command: "sudo apt-get install -f -y".to_string(),
+                                        },
+                                    )
+                                    .await;
+
+                                    return Ok(());
                                 }
                             }
                         }
@@ -153,17 +164,15 @@ impl PackageBackend for DebBackend {
 
     async fn remove(&self, name: &str) -> Result<()> {
         // Remove using dpkg
-        let status = Command::new("pkexec")
-            .args(["dpkg", "-r", name])
-            .status()
-            .await
-            .context("Failed to remove package")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to remove {}", name)
-        }
+        run_pkexec(
+            "dpkg",
+            &["-r", "--", name],
+            &format!("Failed to remove {}", name),
+            Suggest {
+                command: format!("sudo dpkg -r -- {}", name),
+            },
+        )
+        .await
     }
 
     async fn update(&self, _name: &str) -> Result<()> {

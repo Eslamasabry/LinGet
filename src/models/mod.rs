@@ -1,11 +1,11 @@
-mod package;
-mod config;
-mod cache;
-mod icons;
 mod backup;
+mod cache;
+mod config;
+mod icons;
+mod package;
 
-pub use package::*;
-pub use config::*;
-pub use cache::*;
-pub use icons::*;
 pub use backup::*;
+pub use cache::*;
+pub use config::*;
+pub use icons::*;
+pub use package::*;

@@ -25,7 +25,8 @@ fmt:
 run:
 	cargo run
 
-install: release
+install:
+	@test -x target/release/linget || (echo "Missing target/release/linget. Run 'make release' first." && exit 1)
 	install -Dm755 target/release/linget $(DESTDIR)$(BINDIR)/linget
 	install -Dm644 data/io.github.linget.desktop $(DESTDIR)$(APPDIR)/io.github.linget.desktop
 	install -Dm644 data/icons/hicolor/scalable/apps/io.github.linget.svg $(DESTDIR)$(ICONDIR)/scalable/apps/io.github.linget.svg

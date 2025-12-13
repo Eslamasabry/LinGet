@@ -14,6 +14,13 @@
 
 ---
 
+## Disclaimer (Read This)
+
+**LinGet is experimental software. It is provided “AS IS”, without warranty of any kind.**  
+Use it at your own risk. LinGet can run package-management commands (some may require elevated privileges), and mistakes can potentially break your system or remove software you care about.
+
+Also: parts of this project were **vibe-coded** (rapidly prototyped with AI assistance). That means rough edges may exist, and you should review what it does before trusting it on important machines.
+
 ## Features
 
 - **Unified Library** - View and manage packages from multiple sources in a single list.
@@ -36,6 +43,14 @@
 | **Snap** | Ubuntu Snap packages | List, Install, Remove, Update |
 | **npm** | Global Node.js packages | List, Install, Remove, Update |
 | **pip** | User Python packages | List, Install, Remove, Update |
+| **pipx** | Python app packages | List, Install, Remove, Update |
+| **cargo** | Rust crates | List, Install, Remove, Update |
+| **brew** | Homebrew (Linuxbrew) | List, Install, Remove, Update |
+| **Conda** | Conda packages (base env) | List, Install, Remove, Update |
+| **Mamba** | Mamba packages (base env) | List, Install, Remove, Update |
+| **Zypper** | System packages (openSUSE) | List, Install, Remove, Update |
+| **AUR** | Arch User Repository | List, Check Updates, Search (Install/Remove/Update not yet) |
+| **Dart** | Dart/Flutter global tools (pub global) | List, Install, Remove, Update |
 | **Deb** | Local .deb files | List, Install, Remove |
 | **AppImage** | Portable AppImages | List, Remove |
 
@@ -70,8 +85,8 @@ curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/main/install.sh 
 
 2. **Clone the repository:**
    ```bash
-   git clone https://github.com/linget/linget.git
-   cd linget
+   git clone https://github.com/Eslamasabry/LinGet.git
+   cd LinGet
    ```
 
 3. **Build and Run:**
@@ -81,6 +96,7 @@ curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/main/install.sh 
 
 4. **Install System-wide (Optional):**
    ```bash
+   make release
    sudo make install
    ```
 

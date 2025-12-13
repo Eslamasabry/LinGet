@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use crate::models::PackageSource;
@@ -11,11 +11,25 @@ static ICON_CACHE: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
 pub fn get_package_icon(name: &str, source: PackageSource) -> String {
     // Check cache first
     let cache_key = format!("{}:{}", source, name);
+    let name_lower = name.to_lowercase();
+    let cache_key_lower = format!("{}:{}", source, name_lower);
+    let last_segment_lower = name_lower
+        .split('.')
+        .next_back()
+        .unwrap_or(&name_lower)
+        .to_string();
 
     if let Ok(cache) = ICON_CACHE.read() {
         if let Some(ref map) = *cache {
-            if let Some(icon) = map.get(&cache_key) {
-                return icon.clone();
+            for key in [
+                &cache_key,
+                &cache_key_lower,
+                &name_lower,
+                &last_segment_lower,
+            ] {
+                if let Some(icon) = map.get(key) {
+                    return icon.clone();
+                }
             }
         }
     }
@@ -79,7 +93,9 @@ fn find_snap_icon(name: &str) -> Option<String> {
                 let path = entry.path();
                 if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
                     // Snap desktop files are usually named like "snapname_appname.desktop"
-                    if filename.starts_with(&format!("{}_", name)) || filename.starts_with(&format!("{}.", name)) {
+                    if filename.starts_with(&format!("{}_", name))
+                        || filename.starts_with(&format!("{}.", name))
+                    {
                         if let Some(icon) = parse_desktop_icon(&path) {
                             return Some(icon);
                         }
@@ -126,7 +142,7 @@ fn find_desktop_icon(name: &str) -> Option<String> {
 }
 
 /// Parse Icon= line from a desktop file
-fn parse_desktop_icon(path: &PathBuf) -> Option<String> {
+fn parse_desktop_icon(path: &Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
 
     for line in content.lines() {
@@ -166,12 +182,15 @@ pub fn init_icon_cache() {
                 for entry in entries.flatten().take(500) {
                     let path = entry.path();
                     if path.extension().map(|e| e == "desktop").unwrap_or(false) {
-                        if let (Some(name), Some(icon)) = (
+                        if let (Some(stem), Some(icon)) = (
                             path.file_stem().and_then(|s| s.to_str()),
                             parse_desktop_icon(&path),
                         ) {
-                            // Store with lowercase name for easier lookup
-                            cache.insert(name.to_lowercase(), icon);
+                            let stem_lower = stem.to_lowercase();
+                            cache.insert(stem_lower.clone(), icon.clone());
+                            if let Some(last) = stem_lower.split('.').next_back() {
+                                cache.entry(last.to_string()).or_insert(icon);
+                            }
                         }
                     }
                 }

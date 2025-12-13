@@ -1,4 +1,5 @@
 use super::PackageBackend;
+use super::{run_pkexec, Suggest};
 use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -125,45 +126,77 @@ impl PackageBackend for AptBackend {
     }
 
     async fn install(&self, name: &str) -> Result<()> {
-        let status = Command::new("pkexec")
-            .args(["apt", "install", "-y", name])
-            .status()
-            .await
-            .context("Failed to install package")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to install package {}", name)
-        }
+        run_pkexec(
+            "apt",
+            &["install", "-y", "--", name],
+            &format!("Failed to install package {}", name),
+            Suggest {
+                command: format!("sudo apt install -y -- {}", name),
+            },
+        )
+        .await
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
-        let status = Command::new("pkexec")
-            .args(["apt", "remove", "-y", name])
-            .status()
-            .await
-            .context("Failed to remove package")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to remove package {}", name)
-        }
+        run_pkexec(
+            "apt",
+            &["remove", "-y", "--", name],
+            &format!("Failed to remove package {}", name),
+            Suggest {
+                command: format!("sudo apt remove -y -- {}", name),
+            },
+        )
+        .await
     }
 
     async fn update(&self, name: &str) -> Result<()> {
-        let status = Command::new("pkexec")
-            .args(["apt", "install", "--only-upgrade", "-y", name])
-            .status()
-            .await
-            .context("Failed to update package")?;
+        run_pkexec(
+            "apt",
+            &["install", "--only-upgrade", "-y", "--", name],
+            &format!("Failed to update package {}", name),
+            Suggest {
+                command: format!("sudo apt install --only-upgrade -y -- {}", name),
+            },
+        )
+        .await
+    }
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to update package {}", name)
+    async fn available_downgrade_versions(&self, name: &str) -> Result<Vec<String>> {
+        // `apt-cache madison <pkg>` output:
+        //  pkg | 1.2.3-1 | http://... focal/main amd64 Packages
+        let output = Command::new("apt-cache")
+            .args(["madison", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to list package versions")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut versions = Vec::new();
+        for line in stdout.lines() {
+            let cols: Vec<&str> = line.split('|').map(|s| s.trim()).collect();
+            if cols.len() >= 2 && !cols[1].is_empty() {
+                versions.push(cols[1].to_string());
+            }
         }
+        versions.sort();
+        versions.dedup();
+        versions.reverse(); // newest first
+        Ok(versions)
+    }
+
+    async fn downgrade_to(&self, name: &str, version: &str) -> Result<()> {
+        let target = format!("{}={}", name, version);
+        run_pkexec(
+            "apt",
+            &["install", "-y", "--allow-downgrades", "--", &target],
+            &format!("Failed to downgrade package {}", name),
+            Suggest {
+                command: format!("sudo apt install -y --allow-downgrades -- {}", target),
+            },
+        )
+        .await
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {

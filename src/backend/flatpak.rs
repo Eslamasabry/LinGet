@@ -66,7 +66,12 @@ impl PackageBackend for FlatpakBackend {
 
     async fn check_updates(&self) -> Result<Vec<Package>> {
         let output = Command::new("flatpak")
-            .args(["remote-ls", "--updates", "--app", "--columns=application,version,name"])
+            .args([
+                "remote-ls",
+                "--updates",
+                "--app",
+                "--columns=application,version,name",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -147,7 +152,11 @@ impl PackageBackend for FlatpakBackend {
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
         let output = Command::new("flatpak")
-            .args(["search", query, "--columns=application,version,name,description"])
+            .args([
+                "search",
+                query,
+                "--columns=application,version,name,description",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()

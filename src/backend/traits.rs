@@ -25,6 +25,21 @@ pub trait PackageBackend: Send + Sync {
     /// Update a package by name
     async fn update(&self, name: &str) -> Result<()>;
 
+    /// Downgrade/revert a package by name (best-effort; optional per backend)
+    async fn downgrade(&self, _name: &str) -> Result<()> {
+        anyhow::bail!("Downgrade is not supported for this source")
+    }
+
+    /// Downgrade/revert a package to a specific version/revision (optional per backend)
+    async fn downgrade_to(&self, _name: &str, _version: &str) -> Result<()> {
+        anyhow::bail!("Downgrade to a specific version is not supported for this source")
+    }
+
+    /// List available downgrade target versions (optional per backend)
+    async fn available_downgrade_versions(&self, _name: &str) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
     /// Search for new packages
     async fn search(&self, query: &str) -> Result<Vec<Package>>;
 }

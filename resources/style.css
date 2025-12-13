@@ -1,7 +1,7 @@
 /* LinGet Style Sheet */
 
-/* Source badges */
-.source-apt {
+/* Source chips (used in rows/details) */
+.chip.source-apt {
     background-color: alpha(@orange_3, 0.2);
     color: @orange_5;
     padding: 2px 8px;
@@ -9,7 +9,23 @@
     font-weight: 700;
 }
 
-.source-flatpak {
+.chip.source-dnf {
+    background-color: alpha(@red_2, 0.18);
+    color: @red_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-pacman {
+    background-color: alpha(@purple_3, 0.2);
+    color: @purple_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-flatpak {
     background-color: alpha(@blue_3, 0.2);
     color: @blue_4;
     padding: 2px 8px;
@@ -17,7 +33,7 @@
     font-weight: 700;
 }
 
-.source-npm {
+.chip.source-npm {
     background-color: alpha(@red_3, 0.2);
     color: @red_4;
     padding: 2px 8px;
@@ -25,7 +41,7 @@
     font-weight: 700;
 }
 
-.source-pip {
+.chip.source-pip {
     background-color: alpha(@yellow_4, 0.2);
     color: @yellow_5;
     padding: 2px 8px;
@@ -33,7 +49,71 @@
     font-weight: 700;
 }
 
-.source-snap {
+.chip.source-pipx {
+    background-color: alpha(@yellow_3, 0.18);
+    color: @yellow_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-cargo {
+    background-color: alpha(@blue_3, 0.18);
+    color: @blue_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-brew {
+    background-color: alpha(@orange_2, 0.18);
+    color: @orange_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-aur {
+    background-color: alpha(@purple_2, 0.18);
+    color: @purple_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-conda {
+    background-color: alpha(@cyan_2, 0.18);
+    color: @cyan_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-mamba {
+    background-color: alpha(@cyan_3, 0.18);
+    color: @cyan_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-zypper {
+    background-color: alpha(@green_2, 0.18);
+    color: @green_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-dart {
+    background-color: alpha(@blue_2, 0.18);
+    color: @blue_5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+}
+
+.chip.source-snap {
     background-color: alpha(@green_3, 0.2);
     color: @green_5;
     padding: 2px 8px;
@@ -41,7 +121,7 @@
     font-weight: 700;
 }
 
-.source-deb {
+.chip.source-deb {
     background-color: alpha(@purple_3, 0.2);
     color: @purple_4;
     padding: 2px 8px;
@@ -49,7 +129,7 @@
     font-weight: 700;
 }
 
-.source-appimage {
+.chip.source-appimage {
     background-color: alpha(@cyan_3, 0.2);
     color: @cyan_5;
     padding: 2px 8px;
@@ -57,10 +137,75 @@
     font-weight: 700;
 }
 
+/* Source dots (sidebar list) */
+.source-dot {
+    min-width: 10px;
+    min-height: 10px;
+    border-radius: 999px;
+    margin-right: 2px;
+    opacity: 0.9;
+}
+
+.source-dot.source-apt {
+    background-color: @orange_5;
+}
+.source-dot.source-dnf {
+    background-color: @red_5;
+}
+.source-dot.source-pacman {
+    background-color: @purple_5;
+}
+.source-dot.source-zypper {
+    background-color: @green_5;
+}
+.source-dot.source-flatpak {
+    background-color: @blue_4;
+}
+.source-dot.source-snap {
+    background-color: @green_5;
+}
+.source-dot.source-npm {
+    background-color: @red_4;
+}
+.source-dot.source-pip {
+    background-color: @yellow_5;
+}
+.source-dot.source-pipx {
+    background-color: @yellow_5;
+}
+.source-dot.source-cargo {
+    background-color: @blue_5;
+}
+.source-dot.source-brew {
+    background-color: @orange_5;
+}
+.source-dot.source-aur {
+    background-color: @purple_5;
+}
+.source-dot.source-conda {
+    background-color: @cyan_5;
+}
+.source-dot.source-mamba {
+    background-color: @cyan_5;
+}
+.source-dot.source-dart {
+    background-color: @blue_5;
+}
+.source-dot.source-deb {
+    background-color: @purple_4;
+}
+.source-dot.source-appimage {
+    background-color: @cyan_5;
+}
+
 /* Sidebar Styling */
 .sidebar {
     background-color: @sidebar_bg_color;
     border-right: 1px solid @borders;
+}
+
+.app-icon {
+    opacity: 0.9;
 }
 
 .navigation-sidebar {
@@ -104,12 +249,22 @@
     background-color: alpha(@view_fg_color, 0.04);
 }
 
+.source-filter-btn.source-unavailable,
+.source-filter-btn.source-disabled {
+    opacity: 0.28;
+}
+
+.source-all {
+    margin-bottom: 6px;
+}
+
 /* Package List */
 .boxed-list {
     background-color: @card_bg_color;
     border-radius: 12px;
     margin: 0;
     padding: 0;
+    border: 1px solid alpha(@borders, 0.6);
 }
 
 .boxed-list > row {
@@ -127,6 +282,27 @@
     background-color: alpha(@view_fg_color, 0.03);
 }
 
+/* Package row affordances */
+.pkg-row .row-action {
+    opacity: 0.18;
+    transition: opacity 140ms ease;
+}
+
+.pkg-row:hover .row-action,
+.pkg-row:focus-within .row-action {
+    opacity: 1.0;
+}
+
+.pkg-row .row-chevron {
+    opacity: 0.0;
+    transition: opacity 140ms ease;
+}
+
+.pkg-row:hover .row-chevron,
+.pkg-row:focus-within .row-chevron {
+    opacity: 0.35;
+}
+
 /* Badges */
 .badge-accent {
     background-color: @accent_bg_color;
@@ -135,6 +311,32 @@
     border-radius: 12px;
     font-weight: 800;
     font-size: 0.9em;
+}
+
+/* Chips (version/source pills) */
+.chip {
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-weight: 700;
+    font-size: 9pt;
+    opacity: 1.0;
+}
+
+.chip-muted {
+    background-color: alpha(@view_fg_color, 0.06);
+    color: alpha(@view_fg_color, 0.7);
+    border: 1px solid alpha(@borders, 0.35);
+}
+
+.icon-frame {
+    border-radius: 10px;
+    background-color: alpha(@view_fg_color, 0.04);
+    border: 1px solid alpha(@borders, 0.35);
+    padding: 6px;
+}
+
+.nav-chevron {
+    opacity: 0.35;
 }
 
 /* Search Entry */
@@ -170,6 +372,22 @@
 
 .dim-label {
     opacity: 0.55;
+}
+
+.monospace {
+    font-family: monospace;
+}
+
+/* Progress overlay */
+.progress-scrim {
+    background-color: alpha(@window_bg_color, 0.55);
+}
+
+.progress-card {
+    background-color: @card_bg_color;
+    border: 1px solid alpha(@borders, 0.6);
+    border-radius: 16px;
+    padding: 18px 18px;
 }
 
 /* Loading Spinner */
