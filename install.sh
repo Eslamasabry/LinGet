@@ -1,96 +1,97 @@
 #!/bin/bash
 set -e
 
+REPO="Eslamasabry/LinGet"
 APP_NAME="linget"
 APP_ID="io.github.linget"
-
-cd "$(dirname "$0")"
-
-echo "=== LinGet Installer ==="
-echo ""
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# Check for cargo
-if ! command -v cargo &> /dev/null; then
-    if [ -f "$HOME/.cargo/bin/cargo" ]; then
-        export PATH="$HOME/.cargo/bin:$PATH"
-    else
-        echo -e "${RED}Error: cargo not found. Please install Rust first.${NC}"
-        exit 1
+echo -e "${BLUE}=== LinGet Installer ===${NC}"
+
+# Check if running as root
+is_root() {
+    if [ "$EUID" -ne 0 ]; then
+        return 1
     fi
+    return 0
+}
+
+# Function to run with sudo if needed
+run_priv() {
+    if is_root; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+# Check if we are in the extracted directory (local install)
+if [ -f "./$APP_NAME" ] && [ -d "./data" ]; then
+    echo -e "${GREEN}Installing from local directory...${NC}"
+    
+    echo "Installing binary..."
+    run_priv install -Dm755 "$APP_NAME" "/usr/local/bin/$APP_NAME"
+    
+    echo "Installing icons..."
+    run_priv install -Dm644 "data/icons/hicolor/scalable/apps/$APP_ID.svg" \
+        "/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
+    run_priv install -Dm644 "data/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg" \
+        "/usr/share/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg"
+        
+    echo "Installing desktop file..."
+    run_priv install -Dm644 "data/applications/$APP_ID.desktop" \
+        "/usr/share/applications/$APP_ID.desktop"
+        
+    echo "Updating system caches..."
+    run_priv gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+    run_priv update-desktop-database /usr/share/applications 2>/dev/null || true
+    
+    echo -e "${GREEN}Success! Run '$APP_NAME' to start.${NC}"
+    exit 0
 fi
 
-# Step 1: Uninstall existing version
-echo -e "${YELLOW}[1/4] Removing existing installation...${NC}"
+# Remote install mode
+echo "Fetching latest release..."
 
-# Remove binary
-if [ -f "/usr/local/bin/$APP_NAME" ]; then
-    sudo rm -f "/usr/local/bin/$APP_NAME"
-    echo "  Removed /usr/local/bin/$APP_NAME"
+# Get latest release tag
+LATEST_TAG=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+
+if [ -z "$LATEST_TAG" ]; then
+    echo -e "${RED}Error: Could not find latest release.${NC}"
+    exit 1
 fi
 
-# Remove desktop file
-if [ -f "/usr/share/applications/$APP_ID.desktop" ]; then
-    sudo rm -f "/usr/share/applications/$APP_ID.desktop"
-    echo "  Removed desktop file"
+echo "Latest version: $LATEST_TAG"
+
+# Determine arch (simple check for now)
+ARCH="x86_64"
+FILENAME="$APP_NAME-$LATEST_TAG-linux-$ARCH.tar.gz"
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$FILENAME"
+
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+echo "Downloading $DOWNLOAD_URL..."
+curl -L -o "$TMP_DIR/$FILENAME" "$DOWNLOAD_URL"
+
+echo "Extracting..."
+tar -xzf "$TMP_DIR/$FILENAME" -C "$TMP_DIR"
+
+# Find extracted dir (tarball usually contains a subdir)
+EXTRACTED_DIR=$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+
+if [ -z "$EXTRACTED_DIR" ]; then
+    # Fallback if tarball didn't have a root folder
+    EXTRACTED_DIR="$TMP_DIR"
 fi
 
-# Remove icons
-if [ -f "/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg" ]; then
-    sudo rm -f "/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
-    echo "  Removed scalable icon"
-fi
+echo "Running installer..."
+cd "$EXTRACTED_DIR"
+./install.sh
 
-if [ -f "/usr/share/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg" ]; then
-    sudo rm -f "/usr/share/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg"
-    echo "  Removed symbolic icon"
-fi
-
-echo -e "${GREEN}  Done${NC}"
-
-# Step 2: Build release version
-echo -e "${YELLOW}[2/4] Building release version...${NC}"
-cargo build --release
-echo -e "${GREEN}  Done${NC}"
-
-# Step 3: Install
-echo -e "${YELLOW}[3/4] Installing...${NC}"
-
-# Install binary
-sudo install -Dm755 target/release/$APP_NAME /usr/local/bin/$APP_NAME
-echo "  Installed binary to /usr/local/bin/$APP_NAME"
-
-# Install icons
-sudo install -Dm644 data/icons/hicolor/scalable/apps/$APP_ID.svg \
-    /usr/share/icons/hicolor/scalable/apps/$APP_ID.svg
-echo "  Installed scalable icon"
-
-sudo install -Dm644 data/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg \
-    /usr/share/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg
-echo "  Installed symbolic icon"
-
-# Install desktop file
-sudo install -Dm644 data/applications/$APP_ID.desktop \
-    /usr/share/applications/$APP_ID.desktop
-echo "  Installed desktop file"
-
-echo -e "${GREEN}  Done${NC}"
-
-# Step 4: Update caches
-echo -e "${YELLOW}[4/4] Updating system caches...${NC}"
-sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
-sudo update-desktop-database /usr/share/applications 2>/dev/null || true
-echo -e "${GREEN}  Done${NC}"
-
-echo ""
-echo -e "${GREEN}=== Installation Complete ===${NC}"
-echo ""
-echo "You can now run LinGet by:"
-echo "  - Typing '$APP_NAME' in the terminal"
-echo "  - Searching for 'LinGet' in your application menu"
 echo ""

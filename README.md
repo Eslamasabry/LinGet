@@ -41,33 +41,24 @@
 
 ## Installation
 
-### Download Binary
+### Quick Install (Recommended)
 
-You can download the latest pre-compiled binary from the [Releases page](https://github.com/Eslamasabry/LinGet/releases).
+Run this one-line command to download and install the latest version:
 
-1.  Download `linget-v0.1.0-linux-x86_64.tar.gz`.
-2.  Extract the archive: `tar -xvf linget-v0.1.0-linux-x86_64.tar.gz`
-3.  Run the binary: `./linget`
-4.  (Optional) Install to `/usr/local/bin`: `sudo cp linget /usr/local/bin/`
-
-### Prerequisites
-
-You need the following dependencies installed on your system:
-
-**Ubuntu/Debian:**
 ```bash
-sudo apt install libgtk-4-dev libadwaita-1-dev build-essential pkg-config
+curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/main/install.sh | bash
 ```
 
-**Fedora:**
-```bash
-sudo dnf install gtk4-devel libadwaita-devel gcc pkg-config
-```
+### Manual Installation
 
-**Arch Linux:**
-```bash
-sudo pacman -S gtk4 libadwaita base-devel pkgconf
-```
+1.  Download the latest release tarball from the [Releases page](https://github.com/Eslamasabry/LinGet/releases).
+2.  Extract the archive.
+3.  Run the installer script inside:
+    ```bash
+    ./install.sh
+    ```
+
+### Dependencies
 
 ### Building from Source
 
