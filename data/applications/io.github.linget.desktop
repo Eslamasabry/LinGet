@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=LinGet
+Comment=A modern package manager for Linux
+Exec=linget
+Icon=io.github.linget
+Terminal=false
+Type=Application
+Categories=System;PackageManager;GTK;
+Keywords=package;manager;apt;flatpak;snap;npm;pip;software;
+StartupNotify=true
+StartupWMClass=io.github.linget
