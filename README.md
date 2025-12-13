@@ -39,6 +39,15 @@
 
 ## Installation
 
+### Download Binary
+
+You can download the latest pre-compiled binary from the [Releases page](https://github.com/Eslamasabry/LinGet/releases).
+
+1.  Download `linget-v0.1.0-linux-x86_64.tar.gz`.
+2.  Extract the archive: `tar -xvf linget-v0.1.0-linux-x86_64.tar.gz`
+3.  Run the binary: `./linget`
+4.  (Optional) Install to `/usr/local/bin`: `sudo cp linget /usr/local/bin/`
+
 ### Prerequisites
 
 You need the following dependencies installed on your system:
