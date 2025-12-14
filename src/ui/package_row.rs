@@ -28,7 +28,11 @@ impl PackageRow {
             .replace('\'', "&apos;")
     }
 
-    pub fn new(package: Package, _check_group: Option<&gtk::CheckButton>) -> Self {
+    pub fn new(
+        package: Package,
+        _check_group: Option<&gtk::CheckButton>,
+        show_icons: bool,
+    ) -> Self {
         let package = Rc::new(RefCell::new(package));
         let pkg = package.borrow();
 
@@ -74,6 +78,7 @@ impl PackageRow {
             .build();
         icon_frame.add_css_class("icon-frame");
         icon_frame.append(&app_icon);
+        icon_frame.set_visible(show_icons);
         row.add_prefix(&icon_frame);
 
         // Right side content box

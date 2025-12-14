@@ -196,6 +196,7 @@ struct ContentWidgets {
     update_all_btn: gtk::Button,
     toolbar_source_filters: Vec<SourceFilterWidgets>,
     toolbar_search_chips: Vec<gtk::Button>,
+    view_spinners: Vec<gtk::Spinner>,
 }
 
 pub struct LinGetWindow {
@@ -234,6 +235,7 @@ pub struct LinGetWindow {
     // Top toolbar source filter popovers (All/Updates/Discover)
     toolbar_source_filters: Vec<SourceFilterWidgets>,
     toolbar_search_chips: Vec<gtk::Button>,
+    view_spinners: Vec<gtk::Spinner>,
     // Command center
     command_center: CommandCenter,
     command_center_flap: adw::Flap,
@@ -296,10 +298,7 @@ impl LinGetWindow {
         ) = Self::build_selection_bar();
 
         // Loading view
-        let spinner = gtk::Spinner::builder()
-            .width_request(48)
-            .height_request(48)
-            .build();
+        let spinner = gtk::Spinner::builder().visible(false).build();
 
         let loading_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -308,6 +307,8 @@ impl LinGetWindow {
             .halign(gtk::Align::Center)
             .vexpand(true)
             .hexpand(true)
+            .margin_start(24)
+            .margin_end(24)
             .build();
 
         let loading_label = gtk::Label::builder()
@@ -318,8 +319,51 @@ impl LinGetWindow {
         loading_label.add_css_class("title-2");
         loading_label.add_css_class("dim-label");
 
+        let skeleton_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["boxed-list", "skeleton-list"])
+            .build();
+        for _ in 0..10 {
+            let row = gtk::ListBoxRow::new();
+            row.add_css_class("skeleton-row");
+            let r = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(12)
+                .margin_top(12)
+                .margin_bottom(12)
+                .margin_start(16)
+                .margin_end(16)
+                .build();
+            let icon = gtk::Box::builder()
+                .width_request(36)
+                .height_request(36)
+                .build();
+            icon.add_css_class("skeleton-block");
+            let lines = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(8)
+                .hexpand(true)
+                .build();
+            let line1 = gtk::Box::builder().height_request(12).hexpand(true).build();
+            line1.add_css_class("skeleton-block");
+            let line2 = gtk::Box::builder().height_request(10).hexpand(true).build();
+            line2.add_css_class("skeleton-block");
+            lines.append(&line1);
+            lines.append(&line2);
+            r.append(&icon);
+            r.append(&lines);
+            row.set_child(Some(&r));
+            skeleton_list.append(&row);
+        }
+
         loading_box.append(&spinner);
         loading_box.append(&loading_label);
+        loading_box.append(
+            &adw::Clamp::builder()
+                .maximum_size(900)
+                .child(&skeleton_list)
+                .build(),
+        );
 
         // Main Stack
         let main_stack = gtk::Stack::builder()
@@ -417,6 +461,7 @@ impl LinGetWindow {
             enable_detected_btn: sidebar_widgets.enable_detected_btn.clone(),
             toolbar_source_filters: content_widgets.toolbar_source_filters.clone(),
             toolbar_search_chips: content_widgets.toolbar_search_chips.clone(),
+            view_spinners: content_widgets.view_spinners.clone(),
             command_center,
             command_center_flap: command_center_flap.clone(),
             command_center_btn,
@@ -690,7 +735,16 @@ impl LinGetWindow {
         enable_detected_btn.add_css_class("flat");
         enable_detected_btn.add_css_class("pill");
 
+        let providers_toggle = gtk::ToggleButton::builder()
+            .icon_name("pan-down-symbolic")
+            .active(true)
+            .tooltip_text("Show/hide providers")
+            .build();
+        providers_toggle.add_css_class("flat");
+        providers_toggle.add_css_class("circular");
+
         providers_header.append(&providers_label);
+        providers_header.append(&providers_toggle);
         providers_header.append(&enable_detected_btn);
         sidebar_box.append(&providers_header);
 
@@ -711,7 +765,18 @@ impl LinGetWindow {
             provider_rows.insert(source, row);
         }
 
-        sidebar_box.append(&providers_box);
+        let providers_revealer = gtk::Revealer::builder()
+            .reveal_child(true)
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .child(&providers_box)
+            .build();
+
+        providers_toggle.connect_toggled({
+            let providers_revealer = providers_revealer.clone();
+            move |b| providers_revealer.set_reveal_child(b.is_active())
+        });
+
+        sidebar_box.append(&providers_revealer);
 
         // Spacer and Footer
         sidebar_box.append(&gtk::Box::builder().vexpand(true).build());
@@ -830,41 +895,32 @@ impl LinGetWindow {
             .child(&discover_list_box)
             .build();
 
-        let discover_toolbar = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .css_classes(vec!["top-toolbar"])
+        let discover_header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
             .build();
-        let discover_title = gtk::Label::builder()
-            .label("Discover")
-            .hexpand(true)
-            .xalign(0.0)
-            .build();
-        discover_title.add_css_class("title-3");
-        let discover_chips = gtk::Box::builder()
+        discover_header.add_css_class("view-toolbar");
+        discover_header
+            .set_title_widget(Some(&adw::WindowTitle::builder().title("Discover").build()));
+
+        let discover_filters = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
-            .hexpand(true)
             .build();
-        discover_chips.append(&discover_source_filter.menu_btn);
-        discover_chips.append(&discover_search_chip);
-        discover_toolbar.append(&discover_title);
-        discover_toolbar.append(&discover_chips);
+        discover_filters.append(&discover_source_filter.menu_btn);
+        discover_filters.append(&discover_search_chip);
+        discover_header.pack_start(&discover_filters);
+        let discover_spinner = gtk::Spinner::builder().visible(false).build();
+        discover_header.pack_end(&discover_spinner);
 
-        let discover_content = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
+        let discover_list_area = adw::Clamp::builder()
+            .maximum_size(1000)
+            .child(&discover_scrolled)
+            .margin_top(8)
+            .margin_bottom(24)
+            .margin_start(12)
+            .margin_end(12)
             .build();
-        discover_content.append(&discover_toolbar);
-        discover_content.append(
-            &adw::Clamp::builder()
-                .maximum_size(1000)
-                .child(&discover_scrolled)
-                .margin_top(8)
-                .margin_bottom(24)
-                .margin_start(12)
-                .margin_end(12)
-                .build(),
-        );
 
         let discover_empty = adw::StatusPage::builder()
             .icon_name("system-search-symbolic")
@@ -876,30 +932,31 @@ impl LinGetWindow {
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(150)
             .build();
-        discover_stack.add_named(&discover_content, Some("list"));
+        discover_stack.add_named(&discover_list_area, Some("list"));
         discover_stack.add_named(&discover_empty, Some("empty"));
         discover_stack.set_visible_child_name("empty");
 
-        // All Packages View
-        let all_toolbar = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .css_classes(vec!["top-toolbar"])
+        let discover_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
             .build();
-        let all_title = gtk::Label::builder()
-            .label("Library")
-            .hexpand(true)
-            .xalign(0.0)
-            .build();
-        all_title.add_css_class("title-3");
+        discover_view.append(&discover_header);
+        discover_view.append(&discover_stack);
 
-        let all_chips = gtk::Box::builder()
+        // All Packages View
+        let all_header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .build();
+        all_header.add_css_class("view-toolbar");
+        all_header.set_title_widget(Some(&adw::WindowTitle::builder().title("Library").build()));
+
+        let all_filters = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
-            .hexpand(true)
             .build();
-        all_chips.append(&all_source_filter.menu_btn);
-        all_chips.append(&all_search_chip);
+        all_filters.append(&all_source_filter.menu_btn);
+        all_filters.append(&all_search_chip);
+        all_header.pack_start(&all_filters);
 
         let sort_options =
             gtk::StringList::new(&["Name (A-Z)", "Name (Z-A)", "Source", "Recently Added"]);
@@ -908,9 +965,9 @@ impl LinGetWindow {
             .tooltip_text("Sort by")
             .build();
         sort_dropdown.add_css_class("flat");
-        all_toolbar.append(&all_title);
-        all_toolbar.append(&all_chips);
-        all_toolbar.append(&sort_dropdown);
+        all_header.pack_end(&sort_dropdown);
+        let all_spinner = gtk::Spinner::builder().visible(false).build();
+        all_header.pack_end(&all_spinner);
 
         let all_list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
@@ -921,20 +978,14 @@ impl LinGetWindow {
             .vexpand(true)
             .child(&all_list_box)
             .build();
-        let all_content = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
+        let all_list_area = adw::Clamp::builder()
+            .maximum_size(1000)
+            .child(&all_scrolled)
+            .margin_top(8)
+            .margin_bottom(24)
+            .margin_start(12)
+            .margin_end(12)
             .build();
-        all_content.append(&all_toolbar);
-        all_content.append(
-            &adw::Clamp::builder()
-                .maximum_size(1000)
-                .child(&all_scrolled)
-                .margin_top(8)
-                .margin_bottom(24)
-                .margin_start(12)
-                .margin_end(12)
-                .build(),
-        );
 
         let all_empty = adw::StatusPage::builder()
             .icon_name("package-x-generic-symbolic")
@@ -945,8 +996,14 @@ impl LinGetWindow {
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(150)
             .build();
-        all_stack.add_named(&all_content, Some("list"));
+        all_stack.add_named(&all_list_area, Some("list"));
         all_stack.add_named(&all_empty, Some("empty"));
+
+        let all_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        all_view.append(&all_header);
+        all_view.append(&all_stack);
 
         // Updates View
         let updates_list_box = gtk::ListBox::builder()
@@ -958,46 +1015,37 @@ impl LinGetWindow {
             .vexpand(true)
             .child(&updates_list_box)
             .build();
-        let updates_header = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .css_classes(vec!["top-toolbar"])
+        let updates_header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
             .build();
-        let updates_title = gtk::Label::builder()
-            .label("Updates")
-            .hexpand(true)
-            .xalign(0.0)
-            .build();
-        updates_title.add_css_class("title-3");
-        let updates_chips = gtk::Box::builder()
+        updates_header.add_css_class("view-toolbar");
+        updates_header
+            .set_title_widget(Some(&adw::WindowTitle::builder().title("Updates").build()));
+
+        let updates_filters = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
-            .hexpand(true)
             .build();
-        updates_chips.append(&updates_source_filter.menu_btn);
-        updates_chips.append(&updates_search_chip);
+        updates_filters.append(&updates_source_filter.menu_btn);
+        updates_filters.append(&updates_search_chip);
+        updates_header.pack_start(&updates_filters);
         let update_all_btn = gtk::Button::builder()
             .label("Update All")
             .css_classes(vec!["suggested-action", "pill"])
             .build();
-        updates_header.append(&updates_title);
-        updates_header.append(&updates_chips);
-        updates_header.append(&update_all_btn);
+        updates_header.pack_end(&update_all_btn);
+        let updates_spinner = gtk::Spinner::builder().visible(false).build();
+        updates_header.pack_end(&updates_spinner);
 
-        let updates_content = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
+        let updates_list_area = adw::Clamp::builder()
+            .maximum_size(1000)
+            .child(&updates_scrolled)
+            .margin_top(8)
+            .margin_bottom(24)
+            .margin_start(12)
+            .margin_end(12)
             .build();
-        updates_content.append(&updates_header);
-        updates_content.append(
-            &adw::Clamp::builder()
-                .maximum_size(1000)
-                .child(&updates_scrolled)
-                .margin_top(8)
-                .margin_bottom(24)
-                .margin_start(12)
-                .margin_end(12)
-                .build(),
-        );
 
         let updates_empty = adw::StatusPage::builder()
             .icon_name("emblem-ok-symbolic")
@@ -1009,12 +1057,18 @@ impl LinGetWindow {
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(150)
             .build();
-        updates_stack.add_named(&updates_content, Some("list"));
+        updates_stack.add_named(&updates_list_area, Some("list"));
         updates_stack.add_named(&updates_empty, Some("empty"));
 
-        content_stack.add_named(&discover_stack, Some("discover"));
-        content_stack.add_named(&all_stack, Some("all"));
-        content_stack.add_named(&updates_stack, Some("updates"));
+        let updates_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        updates_view.append(&updates_header);
+        updates_view.append(&updates_stack);
+
+        content_stack.add_named(&discover_view, Some("discover"));
+        content_stack.add_named(&all_view, Some("all"));
+        content_stack.add_named(&updates_view, Some("updates"));
         content_stack.set_visible_child_name("all");
         content_box.append(&content_stack);
 
@@ -1035,6 +1089,7 @@ impl LinGetWindow {
                 updates_source_filter,
             ],
             toolbar_search_chips: vec![discover_search_chip, all_search_chip, updates_search_chip],
+            view_spinners: vec![discover_spinner, all_spinner, updates_spinner],
         }
     }
 
@@ -1522,6 +1577,7 @@ impl LinGetWindow {
         let selection_bar = self.selection_bar.clone();
         let selected_count_label = self.selected_count_label.clone();
         let enable_detected_btn = self.enable_detected_btn.clone();
+        let view_spinners: Rc<Vec<gtk::Spinner>> = Rc::new(self.view_spinners.clone());
 
         let reveal_command_center: Rc<dyn Fn(bool)> = Rc::new({
             let command_center_flap = command_center_flap.clone();
@@ -2203,6 +2259,7 @@ impl LinGetWindow {
                 let refresh_button = refresh_button.clone();
                 let config = config.clone();
                 let refresh_in_progress = refresh_in_progress.clone();
+                let view_spinners = view_spinners.clone();
 
                 glib::spawn_future_local(async move {
                     let initial_load = packages.borrow().is_empty();
@@ -2211,6 +2268,10 @@ impl LinGetWindow {
                         main_stack.set_visible_child_name("loading");
                         spinner.start();
                     } else {
+                        for s in view_spinners.iter() {
+                            s.set_visible(true);
+                            s.start();
+                        }
                         refresh_button.set_sensitive(false);
                         // Optional: Show a small toast
                         let t = adw::Toast::new("Checking for updates...");
@@ -2270,6 +2331,10 @@ impl LinGetWindow {
                         spinner.stop();
                         main_stack.set_visible_child_name("content");
                     } else {
+                        for s in view_spinners.iter() {
+                            s.stop();
+                            s.set_visible(false);
+                        }
                         refresh_button.set_sensitive(true);
                         let update_count =
                             packages.borrow().iter().filter(|p| p.has_update()).count();
@@ -2961,6 +3026,10 @@ impl LinGetWindow {
         let reload_packages = reload_packages.clone();
         let command_center = command_center.clone();
         let reveal_command_center = reveal_command_center.clone();
+        let (show_icons, compact) = {
+            let cfg = config.borrow();
+            (cfg.ui_show_icons, cfg.ui_compact)
+        };
         let packages: Vec<Package> = packages.to_vec();
         let on_source_click = Rc::new(on_source_click);
 
@@ -2972,8 +3041,13 @@ impl LinGetWindow {
 
             while start < end {
                 let package = packages[start].clone();
-                let row = PackageRow::new(package.clone(), None);
+                let row = PackageRow::new(package.clone(), None, show_icons);
                 row.set_selection_mode(selection_mode);
+                let list_row = gtk::ListBoxRow::new();
+                if compact {
+                    list_row.add_css_class("compact-row");
+                }
+                list_row.set_child(Some(&row.widget));
 
                 let pkg = package.clone();
                 let win = window.clone();
@@ -3191,7 +3265,7 @@ impl LinGetWindow {
                     });
                 });
 
-                list_box_for_idle.append(&row.widget);
+                list_box_for_idle.append(&list_row);
                 rows.borrow_mut().push(row);
 
                 start += 1;

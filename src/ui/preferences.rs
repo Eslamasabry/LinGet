@@ -107,6 +107,56 @@ impl PreferencesDialog {
 
         general_page.add(&notif_group);
 
+        // Appearance group
+        let appearance_group = adw::PreferencesGroup::builder()
+            .title("Appearance")
+            .description("Adjust list density and visuals")
+            .build();
+
+        let compact_switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .active(config.borrow().ui_compact)
+            .build();
+        let compact_row = adw::ActionRow::builder()
+            .title("Compact list density")
+            .subtitle("Use smaller rows for more packages on screen")
+            .activatable_widget(&compact_switch)
+            .build();
+        compact_row.add_suffix(&compact_switch);
+        compact_switch.connect_active_notify({
+            let config = config.clone();
+            let reload_packages = reload_packages.clone();
+            move |s| {
+                config.borrow_mut().ui_compact = s.is_active();
+                let _ = config.borrow().save();
+                reload_packages();
+            }
+        });
+        appearance_group.add(&compact_row);
+
+        let icons_switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .active(config.borrow().ui_show_icons)
+            .build();
+        let icons_row = adw::ActionRow::builder()
+            .title("Show app icons")
+            .subtitle("Display application icons in package lists")
+            .activatable_widget(&icons_switch)
+            .build();
+        icons_row.add_suffix(&icons_switch);
+        icons_switch.connect_active_notify({
+            let config = config.clone();
+            let reload_packages = reload_packages.clone();
+            move |s| {
+                config.borrow_mut().ui_show_icons = s.is_active();
+                let _ = config.borrow().save();
+                reload_packages();
+            }
+        });
+        appearance_group.add(&icons_row);
+
+        general_page.add(&appearance_group);
+
         dialog.add(&general_page);
 
         // Sources page

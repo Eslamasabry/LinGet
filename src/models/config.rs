@@ -37,6 +37,18 @@ pub struct Config {
     /// List of ignored package IDs (format: "Source:Name")
     #[serde(default)]
     pub ignored_packages: Vec<String>,
+
+    /// Compact list density (smaller rows)
+    #[serde(default)]
+    pub ui_compact: bool,
+
+    /// Show app icons in lists
+    #[serde(default = "default_ui_show_icons")]
+    pub ui_show_icons: bool,
+}
+
+fn default_ui_show_icons() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +168,8 @@ impl Default for Config {
             window_height: 700,
             window_maximized: false,
             ignored_packages: Vec::new(),
+            ui_compact: false,
+            ui_show_icons: default_ui_show_icons(),
         }
     }
 }
