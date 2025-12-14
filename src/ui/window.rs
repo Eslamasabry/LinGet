@@ -124,6 +124,28 @@ fn set_enabled_in_config(config: &mut Config, source: PackageSource, enabled: bo
     }
 }
 
+fn provider_install_hint(source: PackageSource) -> (&'static str, Option<&'static str>) {
+    match source {
+        PackageSource::Apt => ("Install APT (Debian/Ubuntu)", None),
+        PackageSource::Dnf => ("Not detected", Some("Install `dnf` (Fedora/RHEL)")),
+        PackageSource::Pacman => ("Not detected", Some("Install `pacman` (Arch Linux)")),
+        PackageSource::Zypper => ("Not detected", Some("Install `zypper` (openSUSE)")),
+        PackageSource::Flatpak => ("Not detected", Some("Install `flatpak`")),
+        PackageSource::Snap => ("Not detected", Some("Install `snapd`")),
+        PackageSource::Npm => ("Not detected", Some("Install Node.js + `npm`")),
+        PackageSource::Pip => ("Not detected", Some("Install Python + `pip` (python3-pip)")),
+        PackageSource::Pipx => ("Not detected", Some("Install `pipx` (and Python)")),
+        PackageSource::Cargo => ("Not detected", Some("Install Rust (rustup)")),
+        PackageSource::Brew => ("Not detected", Some("Install Homebrew")),
+        PackageSource::Aur => ("Not detected", Some("Install an AUR helper (e.g. `yay`)")),
+        PackageSource::Conda => ("Not detected", Some("Install Conda (Miniforge/Anaconda)")),
+        PackageSource::Mamba => ("Not detected", Some("Install Mamba (Miniforge/Mambaforge)")),
+        PackageSource::Dart => ("Not detected", Some("Install Dart/Flutter SDK")),
+        PackageSource::Deb => ("Not detected", Some("Install `dpkg`/APT (Debian-based)")),
+        PackageSource::AppImage => ("Not detected", Some("Install AppImage tooling (optional)")),
+    }
+}
+
 /// Filter state for the package list
 #[derive(Clone, Default)]
 struct FilterState {
@@ -158,6 +180,7 @@ struct SidebarWidgets {
     providers_box: gtk::Box,
     provider_rows: HashMap<PackageSource, ProviderRowWidgets>,
     provider_counts: HashMap<PackageSource, gtk::Label>,
+    enable_detected_btn: gtk::Button,
 }
 
 struct ContentWidgets {
@@ -207,6 +230,7 @@ pub struct LinGetWindow {
     source_count_labels: HashMap<PackageSource, gtk::Label>,
     provider_rows: HashMap<PackageSource, ProviderRowWidgets>,
     providers_box: gtk::Box,
+    enable_detected_btn: gtk::Button,
     // Top toolbar source filter popovers (All/Updates/Discover)
     toolbar_source_filters: Vec<SourceFilterWidgets>,
     toolbar_search_chips: Vec<gtk::Button>,
@@ -390,6 +414,7 @@ impl LinGetWindow {
             source_count_labels: sidebar_widgets.provider_counts.clone(),
             provider_rows: sidebar_widgets.provider_rows.clone(),
             providers_box: sidebar_widgets.providers_box.clone(),
+            enable_detected_btn: sidebar_widgets.enable_detected_btn.clone(),
             toolbar_source_filters: content_widgets.toolbar_source_filters.clone(),
             toolbar_search_chips: content_widgets.toolbar_search_chips.clone(),
             command_center,
@@ -658,7 +683,15 @@ impl LinGetWindow {
         providers_label.add_css_class("caption");
         providers_label.add_css_class("dim-label");
 
+        let enable_detected_btn = gtk::Button::builder()
+            .label("Enable detected")
+            .tooltip_text("Enable all detected providers")
+            .build();
+        enable_detected_btn.add_css_class("flat");
+        enable_detected_btn.add_css_class("pill");
+
         providers_header.append(&providers_label);
+        providers_header.append(&enable_detected_btn);
         sidebar_box.append(&providers_header);
 
         let providers_box = gtk::Box::builder()
@@ -707,6 +740,7 @@ impl LinGetWindow {
             providers_box,
             provider_rows,
             provider_counts,
+            enable_detected_btn,
         }
     }
 
@@ -1487,6 +1521,7 @@ impl LinGetWindow {
         let progress_label = self.progress_label.clone();
         let selection_bar = self.selection_bar.clone();
         let selected_count_label = self.selected_count_label.clone();
+        let enable_detected_btn = self.enable_detected_btn.clone();
 
         let reveal_command_center: Rc<dyn Fn(bool)> = Rc::new({
             let command_center_flap = command_center_flap.clone();
@@ -2034,6 +2069,12 @@ impl LinGetWindow {
                         } else {
                             row.row.add_css_class("provider-unavailable");
                             row.status_label.set_visible(true);
+                            let (primary, secondary) = provider_install_hint(source);
+                            let label = match secondary {
+                                Some(s) => format!("{primary} • {s}"),
+                                None => primary.to_string(),
+                            };
+                            row.status_label.set_label(&label);
                         }
                     }
                 }
@@ -2289,6 +2330,39 @@ impl LinGetWindow {
                 load_packages();
             }
         };
+
+        // Enable all detected providers.
+        enable_detected_btn.connect_clicked({
+            let enabled_sources = enabled_sources.clone();
+            let available_sources = available_sources.clone();
+            let config = config.clone();
+            let pm = pm.clone();
+            let apply_enabled_sources_ui = apply_enabled_sources_ui.clone();
+            let reload_holder = reload_holder.clone();
+            move |_| {
+                let available = available_sources.borrow().clone();
+                *enabled_sources.borrow_mut() = available.clone();
+
+                {
+                    let mut cfg = config.borrow_mut();
+                    for source in ALL_SOURCES {
+                        set_enabled_in_config(&mut cfg, source, available.contains(&source));
+                    }
+                    let _ = cfg.save();
+                }
+
+                let sources = enabled_sources.borrow().clone();
+                let pm = pm.clone();
+                glib::spawn_future_local(async move {
+                    pm.lock().await.set_enabled_sources(sources);
+                });
+
+                apply_enabled_sources_ui();
+                if let Some(reload) = reload_holder.borrow().as_ref() {
+                    reload();
+                }
+            }
+        });
 
         let load_fn_refresh = load_packages.clone();
         refresh_button.connect_clicked(move |_| load_fn_refresh());

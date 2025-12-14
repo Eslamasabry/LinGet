@@ -1,6 +1,6 @@
 use crate::models::{get_package_icon, Package, PackageStatus};
 use gtk4::prelude::*;
-use gtk4::{self as gtk, pango};
+use gtk4::{self as gtk, glib, pango};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
@@ -151,6 +151,32 @@ impl PackageRow {
         row.add_suffix(&nav_icon);
 
         drop(pkg);
+
+        // Responsive suffix: when space is tight, show only one chip.
+        // Prefer version for update rows; otherwise prefer source (for filtering).
+        row.connect_local(
+            "size-allocate",
+            false,
+            glib::clone!(@strong package, @strong version_label, @strong source_button => move |values| {
+                let allocation = values
+                    .get(1)
+                    .and_then(|v| v.get::<gtk::Allocation>().ok())
+                    .unwrap_or_else(|| gtk::Allocation::new(0, 0, 0, 0));
+
+                let width = allocation.width();
+                let is_narrow = width > 0 && width < 560;
+                if !is_narrow {
+                    version_label.set_visible(true);
+                    source_button.set_visible(true);
+                    return None;
+                }
+
+                let prefer_version = package.borrow().has_update();
+                version_label.set_visible(prefer_version);
+                source_button.set_visible(!prefer_version);
+                None
+            }),
+        );
 
         Self {
             widget: row,

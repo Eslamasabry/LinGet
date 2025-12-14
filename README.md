@@ -99,6 +99,14 @@ curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/main/install.sh 
    make release
    sudo make install
    ```
+   Note: don’t run `make release` with `sudo` (it may not have `cargo` in `PATH`).
+
+### Local Install (No sudo)
+
+```bash
+cargo install --path .
+~/.cargo/bin/linget
+```
 
 ## Usage
 
