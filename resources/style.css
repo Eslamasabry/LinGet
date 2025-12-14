@@ -258,6 +258,13 @@
     margin-bottom: 6px;
 }
 
+/* Keep the Sources header actions visually small and aligned */
+.sidebar button.circular {
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+}
+
 /* Package List */
 .boxed-list {
     background-color: @card_bg_color;
@@ -288,6 +295,13 @@
     transition: opacity 140ms ease;
 }
 
+.pkg-row .row-action,
+.pkg-row .row-spinner,
+.pkg-row .row-chevron {
+    min-width: 36px;
+    min-height: 36px;
+}
+
 .pkg-row:hover .row-action,
 .pkg-row:focus-within .row-action {
     opacity: 1.0;
@@ -301,6 +315,28 @@
 .pkg-row:hover .row-chevron,
 .pkg-row:focus-within .row-chevron {
     opacity: 0.35;
+}
+
+/* View toolbars */
+.top-toolbar {
+    margin: 12px 24px 8px 24px;
+}
+
+.chip-btn {
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-weight: 700;
+    font-size: 9pt;
+}
+
+.chip-btn:active,
+.chip-btn:hover {
+    background-color: alpha(@view_fg_color, 0.06);
+}
+
+.command-center {
+    background-color: @sidebar_bg_color;
+    border-left: 1px solid @borders;
 }
 
 /* Badges */

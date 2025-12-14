@@ -1,6 +1,6 @@
 use crate::models::{get_package_icon, Package, PackageStatus};
 use gtk4::prelude::*;
-use gtk4::{self as gtk};
+use gtk4::{self as gtk, pango};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
@@ -83,10 +83,18 @@ impl PackageRow {
             .build();
 
         // Version label
-        let version_label = gtk::Label::builder().label(pkg.display_version()).build();
+        let version_text = pkg.display_version();
+        let version_label = gtk::Label::builder().label(&version_text).build();
         version_label.add_css_class("chip");
         version_label.add_css_class("chip-muted");
+        version_label.set_max_width_chars(18);
+        version_label.set_ellipsize(pango::EllipsizeMode::End);
+        if !version_text.is_empty() {
+            version_label.set_tooltip_text(Some(&version_text));
+        }
         suffix_box.append(&version_label);
+
+        // Keep the version chip compact; long versions still remain accessible via tooltip.
 
         // Source badge (clickable to filter)
         let source_button = gtk::Button::builder()

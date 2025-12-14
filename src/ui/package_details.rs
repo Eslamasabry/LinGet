@@ -1,5 +1,6 @@
 use crate::backend::PackageManager;
 use crate::models::{Config, Package, PackageSource, PackageStatus};
+use crate::ui::{CommandCenter, CommandEventKind};
 use gtk4::prelude::*;
 use gtk4::{self as gtk, glib};
 use libadwaita as adw;
@@ -86,6 +87,7 @@ fn show_action_required_dialog(parent: &impl IsA<gtk::Window>, details: &str, co
 }
 
 impl PackageDetailsDialog {
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         package: &Package,
         parent: &impl IsA<gtk::Window>,
@@ -93,6 +95,8 @@ impl PackageDetailsDialog {
         toast_overlay: adw::ToastOverlay,
         config: Rc<RefCell<Config>>,
         reload_packages: Option<Rc<dyn Fn()>>,
+        command_center: Option<CommandCenter>,
+        reveal_command_center: Option<Rc<dyn Fn(bool)>>,
     ) {
         let dialog = gtk::Window::builder()
             .title(&package.name)
@@ -269,6 +273,8 @@ impl PackageDetailsDialog {
             let toast_clone = toast_overlay.clone();
             let dialog_clone = dialog.clone();
             let reload_packages_downgrade = reload_packages.clone();
+            let command_center_clone = command_center.clone();
+            let reveal_command_center_clone = reveal_command_center.clone();
 
             downgrade_btn.connect_clicked(move |btn| {
                 let pkg = pkg_clone.clone();
@@ -277,6 +283,8 @@ impl PackageDetailsDialog {
                 let dialog = dialog_clone.clone();
                 let btn = btn.clone();
                 let reload_packages_downgrade = reload_packages_downgrade.clone();
+                let command_center = command_center_clone.clone();
+                let reveal_command_center = reveal_command_center_clone.clone();
 
                 btn.set_sensitive(false);
                 btn.set_label(if matches!(pkg.source, PackageSource::Snap) {
@@ -302,6 +310,14 @@ impl PackageDetailsDialog {
                             let t = adw::Toast::new(&format!("{} {}", verb, pkg.name));
                             t.set_timeout(3);
                             toast.add_toast(t);
+                            if let Some(center) = command_center.as_ref() {
+                                center.add_event(
+                                    CommandEventKind::Success,
+                                    format!("{} {}", verb, pkg.name),
+                                    format!("Source: {}", pkg.source),
+                                    None,
+                                );
+                            }
                         }
                         Err(e) => {
                             let prefix = if matches!(pkg.source, PackageSource::Snap) {
@@ -311,7 +327,19 @@ impl PackageDetailsDialog {
                             };
                             let msg = format!("{} failed: {}", prefix, e);
                             if let Some((details, command)) = parse_suggestion(&msg) {
-                                show_action_required_dialog(&dialog, &details, &command);
+                                if let Some(center) = command_center.as_ref() {
+                                    center.add_event(
+                                        CommandEventKind::Error,
+                                        "Action required",
+                                        &details,
+                                        Some(command.clone()),
+                                    );
+                                    if let Some(reveal) = reveal_command_center.as_ref() {
+                                        reveal(true);
+                                    }
+                                } else {
+                                    show_action_required_dialog(&dialog, &details, &command);
+                                }
                                 let t = adw::Toast::new("Action required");
                                 t.set_timeout(5);
                                 toast.add_toast(t);
@@ -319,6 +347,17 @@ impl PackageDetailsDialog {
                                 let t = adw::Toast::new(&msg);
                                 t.set_timeout(5);
                                 toast.add_toast(t);
+                                if let Some(center) = command_center.as_ref() {
+                                    center.add_event(
+                                        CommandEventKind::Error,
+                                        "Operation failed",
+                                        &msg,
+                                        None,
+                                    );
+                                    if let Some(reveal) = reveal_command_center.as_ref() {
+                                        reveal(true);
+                                    }
+                                }
                             }
                         }
                     }
@@ -614,6 +653,8 @@ impl PackageDetailsDialog {
             let toast_clone = toast_overlay.clone();
             let dialog_clone = dialog.clone();
             let reload_packages_update = reload_packages.clone();
+            let command_center_clone = command_center.clone();
+            let reveal_command_center_clone = reveal_command_center.clone();
 
             update_btn.connect_clicked(move |btn| {
                 let pkg = pkg_clone.clone();
@@ -622,6 +663,8 @@ impl PackageDetailsDialog {
                 let dialog = dialog_clone.clone();
                 let btn = btn.clone();
                 let reload_packages_update = reload_packages_update.clone();
+                let command_center = command_center_clone.clone();
+                let reveal_command_center = reveal_command_center_clone.clone();
 
                 btn.set_sensitive(false);
                 btn.set_label("Updating...");
@@ -638,11 +681,31 @@ impl PackageDetailsDialog {
                             let t = adw::Toast::new(&format!("Updated {}", pkg.name));
                             t.set_timeout(3);
                             toast.add_toast(t);
+                            if let Some(center) = command_center.as_ref() {
+                                center.add_event(
+                                    CommandEventKind::Success,
+                                    format!("Updated {}", pkg.name),
+                                    format!("Source: {}", pkg.source),
+                                    None,
+                                );
+                            }
                         }
                         Err(e) => {
                             let msg = format!("Update failed: {}", e);
                             if let Some((details, command)) = parse_suggestion(&msg) {
-                                show_action_required_dialog(&dialog, &details, &command);
+                                if let Some(center) = command_center.as_ref() {
+                                    center.add_event(
+                                        CommandEventKind::Error,
+                                        "Action required",
+                                        &details,
+                                        Some(command.clone()),
+                                    );
+                                    if let Some(reveal) = reveal_command_center.as_ref() {
+                                        reveal(true);
+                                    }
+                                } else {
+                                    show_action_required_dialog(&dialog, &details, &command);
+                                }
                                 let t = adw::Toast::new("Action required");
                                 t.set_timeout(5);
                                 toast.add_toast(t);
@@ -650,6 +713,17 @@ impl PackageDetailsDialog {
                                 let t = adw::Toast::new(&msg);
                                 t.set_timeout(5);
                                 toast.add_toast(t);
+                                if let Some(center) = command_center.as_ref() {
+                                    center.add_event(
+                                        CommandEventKind::Error,
+                                        "Update failed",
+                                        &msg,
+                                        None,
+                                    );
+                                    if let Some(reveal) = reveal_command_center.as_ref() {
+                                        reveal(true);
+                                    }
+                                }
                             }
                         }
                     }
@@ -680,6 +754,8 @@ impl PackageDetailsDialog {
             let toast_clone = toast_overlay.clone();
             let dialog_clone = dialog.clone();
             let reload_packages_remove = reload_packages.clone();
+            let command_center_clone = command_center.clone();
+            let reveal_command_center_clone = reveal_command_center.clone();
 
             remove_btn.connect_clicked(move |btn| {
                 let pkg = pkg_clone.clone();
@@ -688,6 +764,8 @@ impl PackageDetailsDialog {
                 let dialog = dialog_clone.clone();
                 let btn = btn.clone();
                 let reload_packages_remove = reload_packages_remove.clone();
+                let command_center = command_center_clone.clone();
+                let reveal_command_center = reveal_command_center_clone.clone();
 
                 // Confirm dialog could be here, but for now direct action
                 btn.set_sensitive(false);
@@ -705,11 +783,31 @@ impl PackageDetailsDialog {
                             let t = adw::Toast::new(&format!("Removed {}", pkg.name));
                             t.set_timeout(3);
                             toast.add_toast(t);
+                            if let Some(center) = command_center.as_ref() {
+                                center.add_event(
+                                    CommandEventKind::Success,
+                                    format!("Removed {}", pkg.name),
+                                    format!("Source: {}", pkg.source),
+                                    None,
+                                );
+                            }
                         }
                         Err(e) => {
                             let msg = format!("Remove failed: {}", e);
                             if let Some((details, command)) = parse_suggestion(&msg) {
-                                show_action_required_dialog(&dialog, &details, &command);
+                                if let Some(center) = command_center.as_ref() {
+                                    center.add_event(
+                                        CommandEventKind::Error,
+                                        "Action required",
+                                        &details,
+                                        Some(command.clone()),
+                                    );
+                                    if let Some(reveal) = reveal_command_center.as_ref() {
+                                        reveal(true);
+                                    }
+                                } else {
+                                    show_action_required_dialog(&dialog, &details, &command);
+                                }
                                 let t = adw::Toast::new("Action required");
                                 t.set_timeout(5);
                                 toast.add_toast(t);
@@ -717,6 +815,17 @@ impl PackageDetailsDialog {
                                 let t = adw::Toast::new(&msg);
                                 t.set_timeout(5);
                                 toast.add_toast(t);
+                                if let Some(center) = command_center.as_ref() {
+                                    center.add_event(
+                                        CommandEventKind::Error,
+                                        "Remove failed",
+                                        &msg,
+                                        None,
+                                    );
+                                    if let Some(reveal) = reveal_command_center.as_ref() {
+                                        reveal(true);
+                                    }
+                                }
                             }
                         }
                     }

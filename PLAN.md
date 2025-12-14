@@ -13,12 +13,15 @@ This document tracks planned UI/UX improvements and the order to implement them.
 - [x] Add an **All** filter chip/button (clear source filters).
 - [x] Show an **active filter count** (“All” or `N`) next to the Sources header.
 - [x] Add **Reset** (clear filters + search) next to Select All/Unselect.
+- [x] Make Sources header actions icon-only (less clutter).
 - [ ] Make selection states consistent across views (All/Updates/Discover).
 - [ ] Persist filter state (optional) per session.
 
 ### 2) Package List Rows (Polish)
 - [x] Refine row layout (icon frame, spacing, chips for version/source).
 - [x] Hover affordances (show actions on hover, reduce persistent chevrons).
+- [x] Clamp long version chips (ellipsis + tooltip).
+- [x] Align suffix actions (consistent icon sizing).
 - [ ] Inline per-row operation progress for the active package.
 - [x] Live row state refresh (Update → Updated, Install → Installed).
 
@@ -39,7 +42,7 @@ This document tracks planned UI/UX improvements and the order to implement them.
 - [ ] Avoid noisy toasts; show a single consolidated “activity” surface.
 
 ### 6) Command Center & Error UX
-- [ ] Replace many toasts with an expandable **Command Center** panel.
+- [x] Replace many toasts with an expandable **Command Center** panel.
 - [x] “Copy command” actions for privilege-required failures.
 - [x] Structured diagnostics export (already present; expand content).
 
