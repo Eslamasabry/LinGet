@@ -155,6 +155,7 @@ struct FilterState {
 
 type LocalFn = Rc<dyn Fn()>;
 type LocalFnHolder = Rc<RefCell<Option<LocalFn>>>;
+type SourceClickHolder = Rc<RefCell<Option<Rc<dyn Fn(PackageSource)>>>>;
 
 #[derive(Clone)]
 struct SourceFilterWidgets {
@@ -189,8 +190,10 @@ struct ContentWidgets {
     all_stack: gtk::Stack,
     updates_stack: gtk::Stack,
     discover_list_box: gtk::ListBox,
-    all_list_box: gtk::ListBox,
-    updates_list_box: gtk::ListBox,
+    all_list_view: gtk::ListView,
+    all_store: gio::ListStore,
+    updates_list_view: gtk::ListView,
+    updates_store: gio::ListStore,
     content_stack: gtk::Stack,
     sort_dropdown: gtk::DropDown,
     update_all_btn: gtk::Button,
@@ -212,11 +215,15 @@ pub struct LinGetWindow {
     discover_list_box: gtk::ListBox,
     discover_rows: Rc<RefCell<Vec<PackageRow>>>,
     // All packages view
-    all_list_box: gtk::ListBox,
-    all_rows: Rc<RefCell<Vec<PackageRow>>>,
+    all_list_view: gtk::ListView,
+    all_store: gio::ListStore,
+    last_filtered_all: Rc<RefCell<Vec<Package>>>,
     // Updates view
-    updates_list_box: gtk::ListBox,
-    updates_rows: Rc<RefCell<Vec<PackageRow>>>,
+    updates_list_view: gtk::ListView,
+    updates_store: gio::ListStore,
+    last_filtered_updates: Rc<RefCell<Vec<Package>>>,
+    // Bulk selection
+    selected_ids: Rc<RefCell<HashSet<String>>>,
     // UI elements
     search_entry: gtk::SearchEntry,
     content_stack: gtk::Stack,
@@ -250,6 +257,49 @@ pub struct LinGetWindow {
 }
 
 impl LinGetWindow {
+    fn populate_list_store(
+        list_view: &gtk::ListView,
+        store: &gio::ListStore,
+        packages: &[Package],
+    ) {
+        const CHUNK_SIZE: usize = 250;
+
+        unsafe {
+            if let Some(prev) = list_view.steal_data::<glib::SourceId>("populate_source") {
+                try_remove_source(prev);
+            }
+        }
+
+        store.remove_all();
+        if packages.is_empty() {
+            return;
+        }
+
+        let store = store.clone();
+        let list_view = list_view.clone();
+        let packages: Vec<Package> = packages.to_vec();
+        let index = Rc::new(RefCell::new(0usize));
+
+        let source_id = glib::idle_add_local(move || {
+            let mut start = *index.borrow();
+            let end = (start + CHUNK_SIZE).min(packages.len());
+            while start < end {
+                store.append(&glib::BoxedAnyObject::new(packages[start].clone()));
+                start += 1;
+            }
+            *index.borrow_mut() = start;
+            if start >= packages.len() {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+
+        unsafe {
+            list_view.set_data("populate_source", source_id);
+        }
+    }
+
     pub fn new(app: &adw::Application) -> Self {
         let config = Rc::new(RefCell::new(Config::load()));
         let manager = PackageManager::new();
@@ -272,11 +322,12 @@ impl LinGetWindow {
         }
         let packages: Rc<RefCell<Vec<Package>>> = Rc::new(RefCell::new(Vec::new()));
         let discover_rows: Rc<RefCell<Vec<PackageRow>>> = Rc::new(RefCell::new(Vec::new()));
-        let all_rows: Rc<RefCell<Vec<PackageRow>>> = Rc::new(RefCell::new(Vec::new()));
-        let updates_rows: Rc<RefCell<Vec<PackageRow>>> = Rc::new(RefCell::new(Vec::new()));
         let current_view = Rc::new(RefCell::new(ViewMode::AllPackages));
         let filter_state = Rc::new(RefCell::new(FilterState::default()));
         let selection_mode = Rc::new(RefCell::new(false));
+        let selected_ids: Rc<RefCell<HashSet<String>>> = Rc::new(RefCell::new(HashSet::new()));
+        let last_filtered_all: Rc<RefCell<Vec<Package>>> = Rc::new(RefCell::new(Vec::new()));
+        let last_filtered_updates: Rc<RefCell<Vec<Package>>> = Rc::new(RefCell::new(Vec::new()));
 
         // Create UI components
         let (header, search_entry, refresh_button, select_button, command_center_btn, cmd_badge) =
@@ -443,10 +494,13 @@ impl LinGetWindow {
             selection_mode,
             discover_list_box: content_widgets.discover_list_box.clone(),
             discover_rows,
-            all_list_box: content_widgets.all_list_box.clone(),
-            all_rows,
-            updates_list_box: content_widgets.updates_list_box.clone(),
-            updates_rows,
+            all_list_view: content_widgets.all_list_view.clone(),
+            all_store: content_widgets.all_store.clone(),
+            last_filtered_all,
+            updates_list_view: content_widgets.updates_list_view.clone(),
+            updates_store: content_widgets.updates_store.clone(),
+            last_filtered_updates,
+            selected_ids,
             search_entry,
             content_stack: content_widgets.content_stack.clone(),
             main_stack,
@@ -969,14 +1023,14 @@ impl LinGetWindow {
         let all_spinner = gtk::Spinner::builder().visible(false).build();
         all_header.pack_end(&all_spinner);
 
-        let all_list_box = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
-            .build();
+        let all_store = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let all_model = gtk::NoSelection::new(Some(all_store.clone()));
+        let all_list_view = gtk::ListView::new(Some(all_model), None::<gtk::ListItemFactory>);
+        all_list_view.add_css_class("boxed-list");
         let all_scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
-            .child(&all_list_box)
+            .child(&all_list_view)
             .build();
         let all_list_area = adw::Clamp::builder()
             .maximum_size(1000)
@@ -1006,14 +1060,15 @@ impl LinGetWindow {
         all_view.append(&all_stack);
 
         // Updates View
-        let updates_list_box = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
-            .build();
+        let updates_store = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let updates_model = gtk::NoSelection::new(Some(updates_store.clone()));
+        let updates_list_view =
+            gtk::ListView::new(Some(updates_model), None::<gtk::ListItemFactory>);
+        updates_list_view.add_css_class("boxed-list");
         let updates_scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
-            .child(&updates_list_box)
+            .child(&updates_list_view)
             .build();
         let updates_header = adw::HeaderBar::builder()
             .show_start_title_buttons(false)
@@ -1078,8 +1133,10 @@ impl LinGetWindow {
             all_stack,
             updates_stack,
             discover_list_box,
-            all_list_box,
-            updates_list_box,
+            all_list_view,
+            all_store,
+            updates_list_view,
+            updates_store,
             content_stack,
             sort_dropdown,
             update_all_btn,
@@ -1548,10 +1605,13 @@ impl LinGetWindow {
         let packages = self.packages.clone();
         let discover_rows = self.discover_rows.clone();
         let discover_list_box = self.discover_list_box.clone();
-        let all_rows = self.all_rows.clone();
-        let updates_rows = self.updates_rows.clone();
-        let all_list_box = self.all_list_box.clone();
-        let updates_list_box = self.updates_list_box.clone();
+        let all_list_view = self.all_list_view.clone();
+        let all_store = self.all_store.clone();
+        let updates_list_view = self.updates_list_view.clone();
+        let updates_store = self.updates_store.clone();
+        let last_filtered_all = self.last_filtered_all.clone();
+        let last_filtered_updates = self.last_filtered_updates.clone();
+        let selected_ids = self.selected_ids.clone();
         let main_stack = self.main_stack.clone();
         let spinner = self.spinner.clone();
         let toast_overlay = self.toast_overlay.clone();
@@ -1883,29 +1943,361 @@ impl LinGetWindow {
 
         let skip_filter = Rc::new(RefCell::new(false));
         let apply_filters_holder: LocalFnHolder = Rc::new(RefCell::new(None));
+        let on_source_click_holder: SourceClickHolder = Rc::new(RefCell::new(None));
+
+        // ListView factories (All + Updates) - set up once.
+        {
+            let make_factory = |list_view: &gtk::ListView| {
+                let factory = gtk::SignalListItemFactory::new();
+
+                factory.connect_setup({
+                    let pm = pm.clone();
+                    let toast_overlay = toast_overlay.clone();
+                    let config = config.clone();
+                    let window = window.clone();
+                    let selection_mode = selection_mode.clone();
+                    let selected_ids = selected_ids.clone();
+                    let selected_count_label = selected_count_label.clone();
+                    let reload_holder = reload_holder.clone();
+                    let command_center = command_center.clone();
+                    let reveal_command_center = reveal_command_center.clone();
+                    let on_source_click_holder = on_source_click_holder.clone();
+                    move |_, item| {
+                        let placeholder = Package {
+                            name: "".to_string(),
+                            version: "".to_string(),
+                            available_version: None,
+                            description: "".to_string(),
+                            source: PackageSource::Apt,
+                            status: PackageStatus::Installed,
+                            size: None,
+                            homepage: None,
+                            license: None,
+                            maintainer: None,
+                            dependencies: Vec::new(),
+                            install_date: None,
+                        };
+
+                        let row = PackageRow::new(placeholder, None, true);
+                        let wrapper = gtk::Box::builder()
+                            .orientation(gtk::Orientation::Vertical)
+                            .css_classes(vec!["boxed-row"])
+                            .build();
+                        wrapper.append(&row.widget);
+                        item.set_child(Some(&wrapper));
+
+                        let skip_check = Rc::new(RefCell::new(false));
+
+                        // Open details
+                        row.widget.connect_activated({
+                            let row_pkg = row.package.clone();
+                            let window = window.clone();
+                            let pm = pm.clone();
+                            let toast_overlay = toast_overlay.clone();
+                            let config = config.clone();
+                            let reload_holder = reload_holder.clone();
+                            let command_center = command_center.clone();
+                            let reveal_command_center = reveal_command_center.clone();
+                            move |_| {
+                                let pkg = row_pkg.borrow().clone();
+                                PackageDetailsDialog::show(
+                                    &pkg,
+                                    &window,
+                                    pm.clone(),
+                                    toast_overlay.clone(),
+                                    config.clone(),
+                                    reload_holder.borrow().clone(),
+                                    Some(command_center.clone()),
+                                    Some(reveal_command_center.clone()),
+                                );
+                            }
+                        });
+
+                        // Filter by source
+                        row.source_button.connect_clicked({
+                            let row_pkg = row.package.clone();
+                            let on_source_click_holder = on_source_click_holder.clone();
+                            move |_| {
+                                if let Some(cb) = on_source_click_holder.borrow().as_ref() {
+                                    cb(row_pkg.borrow().source);
+                                }
+                            }
+                        });
+
+                        // Selection toggle
+                        row.checkbox.connect_toggled({
+                            let row_pkg = row.package.clone();
+                            let selected_ids = selected_ids.clone();
+                            let selection_mode = selection_mode.clone();
+                            let selected_count_label = selected_count_label.clone();
+                            let skip_check = skip_check.clone();
+                            move |cb| {
+                                if !*selection_mode.borrow() || *skip_check.borrow() {
+                                    return;
+                                }
+                                let id = row_pkg.borrow().id();
+                                if cb.is_active() {
+                                    selected_ids.borrow_mut().insert(id);
+                                } else {
+                                    selected_ids.borrow_mut().remove(&id);
+                                }
+                                selected_count_label.set_label(&format!(
+                                    "{} selected",
+                                    selected_ids.borrow().len()
+                                ));
+                            }
+                        });
+
+                        // Action button
+                        row.action_button.connect_clicked({
+                            let pm = pm.clone();
+                            let toast_overlay = toast_overlay.clone();
+                            let row_widget = row.widget.clone();
+                            let row_progress = row.progress_bar.clone();
+                            let row_pkg = row.package.clone();
+                            let row_update_icon = row.update_icon.clone();
+                            let spinner = row.spinner.clone();
+                            let btn = row.action_button.clone();
+                            let reload_holder = reload_holder.clone();
+                            let command_center = command_center.clone();
+                            let reveal_command_center = reveal_command_center.clone();
+                            move |_| {
+                                let pkg = row_pkg.borrow().clone();
+                                btn.set_visible(false);
+                                spinner.set_visible(true);
+                                spinner.start();
+
+                                let task = command_center.begin_task(
+                                    format!("Working on {}", pkg.name),
+                                    format!("Source: {}", pkg.source),
+                                    Some(RetrySpec::Package {
+                                        package: Box::new(pkg.clone()),
+                                        op: match pkg.status {
+                                            PackageStatus::UpdateAvailable => PackageOp::Update,
+                                            PackageStatus::Installed => PackageOp::Remove,
+                                            PackageStatus::NotInstalled => PackageOp::Install,
+                                            _ => PackageOp::Update,
+                                        },
+                                    }),
+                                );
+
+                                row_widget.set_subtitle("Working…");
+                                row_progress.set_fraction(0.0);
+                                row_progress.set_visible(true);
+
+                                let progress_bar_pulse = row_progress.clone();
+                                let pulser_id = glib::timeout_add_local(
+                                    Duration::from_millis(120),
+                                    move || {
+                                        progress_bar_pulse.pulse();
+                                        glib::ControlFlow::Continue
+                                    },
+                                );
+
+                                glib::spawn_future_local({
+                                    let pm = pm.clone();
+                                    let toast_overlay = toast_overlay.clone();
+                                    let row_widget = row_widget.clone();
+                                    let row_progress = row_progress.clone();
+                                    let row_pkg = row_pkg.clone();
+                                    let row_update_icon = row_update_icon.clone();
+                                    let spinner = spinner.clone();
+                                    let btn = btn.clone();
+                                    let reload_holder = reload_holder.clone();
+                                    let reveal_command_center = reveal_command_center.clone();
+                                    async move {
+                                        let handle = tokio::spawn(async move {
+                                            let manager = pm.lock().await;
+                                            let result = match pkg.status {
+                                                PackageStatus::UpdateAvailable => {
+                                                    manager.update(&pkg).await
+                                                }
+                                                PackageStatus::Installed => {
+                                                    manager.remove(&pkg).await
+                                                }
+                                                PackageStatus::NotInstalled => {
+                                                    manager.install(&pkg).await
+                                                }
+                                                _ => Ok(()),
+                                            };
+                                            (pkg, result)
+                                        });
+
+                                        let (pkg, result) = match handle.await {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                try_remove_source(pulser_id);
+                                                row_progress.set_visible(false);
+                                                spinner.stop();
+                                                spinner.set_visible(false);
+                                                btn.set_visible(true);
+                                                row_widget.set_subtitle("");
+                                                task.finish(
+                                                    CommandEventKind::Error,
+                                                    "Operation failed",
+                                                    format!("Task join error: {}", e),
+                                                    None,
+                                                    true,
+                                                );
+                                                reveal_command_center(true);
+                                                let t = adw::Toast::new(
+                                                    "Operation failed (see Command Center)",
+                                                );
+                                                t.set_timeout(5);
+                                                toast_overlay.add_toast(t);
+                                                return;
+                                            }
+                                        };
+
+                                        try_remove_source(pulser_id);
+                                        row_progress.set_visible(false);
+                                        spinner.stop();
+                                        spinner.set_visible(false);
+                                        btn.set_visible(true);
+
+                                        let ok = result.is_ok();
+                                        match result {
+                                            Ok(_) => {
+                                                task.finish(
+                                                    CommandEventKind::Success,
+                                                    "Done",
+                                                    format!("{}: {}", pkg.source, pkg.name),
+                                                    None,
+                                                    true,
+                                                );
+                                                {
+                                                    let mut p = row_pkg.borrow_mut();
+                                                    p.status = match p.status {
+                                                        PackageStatus::UpdateAvailable => {
+                                                            PackageStatus::Installed
+                                                        }
+                                                        PackageStatus::Installed => {
+                                                            PackageStatus::NotInstalled
+                                                        }
+                                                        PackageStatus::NotInstalled => {
+                                                            PackageStatus::Installed
+                                                        }
+                                                        other => other,
+                                                    };
+                                                    p.available_version = None;
+                                                    row_update_icon.set_visible(
+                                                        p.status == PackageStatus::UpdateAvailable,
+                                                    );
+                                                    PackageRow::apply_action_button_style(
+                                                        &btn, p.status,
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let raw = format!("Error: {}", e);
+                                                let (details, command) = parse_suggestion(&raw)
+                                                    .map(|(d, c)| (d, Some(c)))
+                                                    .unwrap_or((raw, None));
+                                                task.finish(
+                                                    CommandEventKind::Error,
+                                                    "Operation failed",
+                                                    details.clone(),
+                                                    command.clone(),
+                                                    true,
+                                                );
+                                                reveal_command_center(true);
+                                                let t = adw::Toast::new(
+                                                    "Operation failed (see Command Center)",
+                                                );
+                                                t.set_timeout(5);
+                                                toast_overlay.add_toast(t);
+                                            }
+                                        }
+
+                                        if ok {
+                                            if let Some(reload) = reload_holder.borrow().as_ref() {
+                                                reload();
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        });
+
+                        unsafe {
+                            item.set_data("pkg_row", row);
+                            item.set_data("pkg_wrapper", wrapper);
+                            item.set_data("pkg_skip_check", skip_check);
+                        }
+                    }
+                });
+
+                factory.connect_bind({
+                    let config = config.clone();
+                    let selection_mode = selection_mode.clone();
+                    let selected_ids = selected_ids.clone();
+                    move |_, item| {
+                        let obj = item
+                            .item()
+                            .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok());
+                        let Some(obj) = obj else { return };
+                        let pkg = obj.borrow::<Package>().clone();
+
+                        let row = unsafe {
+                            item.data::<PackageRow>("pkg_row")
+                                .expect("pkg_row missing")
+                                .as_ref()
+                        };
+                        let wrapper = unsafe {
+                            item.data::<gtk::Box>("pkg_wrapper")
+                                .expect("pkg_wrapper missing")
+                                .as_ref()
+                        };
+                        let skip_check = unsafe {
+                            item.data::<Rc<RefCell<bool>>>("pkg_skip_check")
+                                .expect("pkg_skip_check missing")
+                                .as_ref()
+                        };
+
+                        let cfg = config.borrow();
+                        row.update_from_package(&pkg, cfg.ui_show_icons);
+
+                        if cfg.ui_compact {
+                            wrapper.add_css_class("compact-row");
+                        } else {
+                            wrapper.remove_css_class("compact-row");
+                        }
+
+                        row.checkbox.set_visible(*selection_mode.borrow());
+                        *skip_check.borrow_mut() = true;
+                        row.checkbox
+                            .set_active(selected_ids.borrow().contains(&pkg.id()));
+                        *skip_check.borrow_mut() = false;
+                    }
+                });
+
+                list_view.set_factory(Some(&factory));
+            };
+
+            make_factory(&all_list_view);
+            make_factory(&updates_list_view);
+        }
 
         let apply_filters: Rc<dyn Fn()> = Rc::new({
             let packages = packages.clone();
             let filter_state = filter_state.clone();
-            let all_list_box = all_list_box.clone();
-            let all_rows = all_rows.clone();
-            let updates_list_box = updates_list_box.clone();
-            let updates_rows = updates_rows.clone();
-            let window = window.clone();
-            let pm = pm.clone();
-            let toast_overlay = toast_overlay.clone();
-            let config = config.clone();
+            let all_list_view = all_list_view.clone();
+            let all_store = all_store.clone();
+            let updates_list_view = updates_list_view.clone();
+            let updates_store = updates_store.clone();
             let all_stack = all_stack.clone();
             let updates_stack = updates_stack.clone();
             let selection_mode = selection_mode.clone();
             let skip_filter = skip_filter.clone();
             let apply_filters_holder = apply_filters_holder.clone();
             let enabled_sources = enabled_sources.clone();
-            let reload_holder = reload_holder.clone();
             let update_top_chips = update_top_chips.clone();
             let toolbar_source_filters = toolbar_source_filters.clone();
-            let command_center = command_center.clone();
-            let reveal_command_center = reveal_command_center.clone();
+            let on_source_click_holder = on_source_click_holder.clone();
+            let last_filtered_all = last_filtered_all.clone();
+            let last_filtered_updates = last_filtered_updates.clone();
+            let selected_ids = selected_ids.clone();
+            let selected_count_label = selected_count_label.clone();
 
             move || {
                 if *skip_filter.borrow() {
@@ -1976,35 +2368,19 @@ impl LinGetWindow {
                     }
                 };
 
-                let reload_packages = reload_holder.borrow().clone();
-                Self::populate_list(
-                    &all_list_box,
-                    &filtered_all,
-                    &all_rows,
-                    &window,
-                    &pm,
-                    &toast_overlay,
-                    &config,
-                    sel_mode,
-                    on_source_click.clone(),
-                    reload_packages.clone(),
-                    &command_center,
-                    reveal_command_center.clone(),
-                );
-                Self::populate_list(
-                    &updates_list_box,
-                    &filtered_updates,
-                    &updates_rows,
-                    &window,
-                    &pm,
-                    &toast_overlay,
-                    &config,
-                    sel_mode,
-                    on_source_click,
-                    reload_packages,
-                    &command_center,
-                    reveal_command_center.clone(),
-                );
+                *on_source_click_holder.borrow_mut() = Some(Rc::new(on_source_click.clone()));
+
+                *last_filtered_all.borrow_mut() = filtered_all.clone();
+                *last_filtered_updates.borrow_mut() = filtered_updates.clone();
+
+                // Keep selection count label accurate.
+                if sel_mode {
+                    let count = selected_ids.borrow().len();
+                    selected_count_label.set_label(&format!("{} selected", count));
+                }
+
+                Self::populate_list_store(&all_list_view, &all_store, &filtered_all);
+                Self::populate_list_store(&updates_list_view, &updates_store, &filtered_updates);
 
                 if filtered_all.is_empty() {
                     all_stack.set_visible_child_name("empty");
@@ -2572,10 +2948,11 @@ impl LinGetWindow {
         // Selection Toggle
         let selection_bar_toggle = selection_bar.clone();
         let selection_mode_toggle = selection_mode.clone();
-        let all_rows_toggle = all_rows.clone();
+        let selected_ids_toggle = selected_ids.clone();
         let selected_count_toggle = selected_count_label.clone();
         let nav_list_toggle = nav_list.clone();
         let current_view_toggle = current_view.clone();
+        let apply_filters_toggle = apply_filters.clone();
         select_button.connect_toggled(move |btn| {
             let active = btn.is_active();
 
@@ -2588,35 +2965,45 @@ impl LinGetWindow {
             *selection_mode_toggle.borrow_mut() = active;
             selection_bar_toggle.set_visible(active);
 
-            for row in all_rows_toggle.borrow().iter() {
-                row.set_selection_mode(active);
-                if !active {
-                    row.checkbox.set_active(false);
-                }
-            }
             if !active {
+                selected_ids_toggle.borrow_mut().clear();
                 selected_count_toggle.set_label("0 selected");
             }
+            apply_filters_toggle();
         });
 
         // Select/Deselect All
-        let all_rows_sel = all_rows.clone();
+        let selected_ids_select_all = selected_ids.clone();
         let selected_count = selected_count_label.clone();
+        let selection_mode_select_all = selection_mode.clone();
+        let last_filtered_all_select_all = last_filtered_all.clone();
+        let apply_filters_select_all = apply_filters.clone();
         select_all_btn.connect_clicked(move |_| {
-            let rows = all_rows_sel.borrow();
-            for row in rows.iter() {
-                row.checkbox.set_active(true);
+            if !*selection_mode_select_all.borrow() {
+                return;
             }
-            selected_count.set_label(&format!("{} selected", rows.len()));
+            let ids: HashSet<String> = last_filtered_all_select_all
+                .borrow()
+                .iter()
+                .map(|p| p.id())
+                .collect();
+            let count = ids.len();
+            *selected_ids_select_all.borrow_mut() = ids;
+            selected_count.set_label(&format!("{} selected", count));
+            apply_filters_select_all();
         });
 
-        let all_rows_desel = all_rows.clone();
+        let selected_ids_desel = selected_ids.clone();
         let selected_count_desel = selected_count_label.clone();
+        let selection_mode_desel = selection_mode.clone();
+        let apply_filters_desel = apply_filters.clone();
         deselect_all_btn.connect_clicked(move |_| {
-            for row in all_rows_desel.borrow().iter() {
-                row.checkbox.set_active(false);
+            if !*selection_mode_desel.borrow() {
+                return;
             }
+            selected_ids_desel.borrow_mut().clear();
             selected_count_desel.set_label("0 selected");
+            apply_filters_desel();
         });
 
         // Navigation
@@ -2745,7 +3132,6 @@ impl LinGetWindow {
         });
 
         // Update Selected
-        let all_rows_upd = all_rows.clone();
         let pm_upd = pm.clone();
         let toast_upd = toast_overlay.clone();
         let progress_overlay_upd = progress_overlay.clone();
@@ -2754,13 +3140,16 @@ impl LinGetWindow {
         let load_fn_upd = load_packages.clone();
         let command_center_upd = command_center.clone();
         let reveal_command_center_upd = reveal_command_center.clone();
+        let selected_ids_upd = selected_ids.clone();
+        let packages_upd = packages.clone();
 
         update_selected_btn.connect_clicked(move |btn| {
-            let selected: Vec<Package> = all_rows_upd
+            let selected_set = selected_ids_upd.borrow().clone();
+            let selected: Vec<Package> = packages_upd
                 .borrow()
                 .iter()
-                .filter(|r| r.checkbox.is_active() && r.package.borrow().has_update())
-                .map(|r| r.package.borrow().clone())
+                .filter(|p| selected_set.contains(&p.id()) && p.has_update())
+                .cloned()
                 .collect();
             if selected.is_empty() {
                 let toast = adw::Toast::new("No updatable packages selected");
@@ -2847,7 +3236,6 @@ impl LinGetWindow {
         });
 
         // Remove Selected
-        let all_rows_rem = all_rows.clone();
         let pm_rem = pm.clone();
         let toast_rem = toast_overlay.clone();
         let progress_overlay_rem = progress_overlay.clone();
@@ -2856,13 +3244,16 @@ impl LinGetWindow {
         let load_fn_rem = load_packages.clone();
         let command_center_rem = command_center.clone();
         let reveal_command_center_rem = reveal_command_center.clone();
+        let selected_ids_rem = selected_ids.clone();
+        let packages_rem = packages.clone();
 
         remove_selected_btn.connect_clicked(move |btn| {
-            let selected: Vec<Package> = all_rows_rem
+            let selected_set = selected_ids_rem.borrow().clone();
+            let selected: Vec<Package> = packages_rem
                 .borrow()
                 .iter()
-                .filter(|r| r.checkbox.is_active())
-                .map(|r| r.package.borrow().clone())
+                .filter(|p| selected_set.contains(&p.id()))
+                .cloned()
                 .collect();
 
             if selected.is_empty() {

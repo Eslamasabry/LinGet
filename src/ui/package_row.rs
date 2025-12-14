@@ -11,9 +11,11 @@ pub struct PackageRow {
     pub widget: adw::ActionRow,
     pub package: Rc<RefCell<Package>>,
     pub checkbox: gtk::CheckButton,
+    pub icon_frame: gtk::Box,
     pub action_button: gtk::Button,
     pub spinner: gtk::Spinner,
     pub progress_bar: gtk::ProgressBar,
+    pub version_label: gtk::Label,
     pub source_button: gtk::Button,
     pub update_icon: gtk::Image,
 }
@@ -187,12 +189,64 @@ impl PackageRow {
             widget: row,
             package,
             checkbox,
+            icon_frame,
             action_button,
             spinner,
             progress_bar,
+            version_label,
             source_button,
             update_icon,
         }
+    }
+
+    pub fn update_from_package(&self, pkg: &Package, show_icons: bool) {
+        *self.package.borrow_mut() = pkg.clone();
+
+        self.widget.set_title(&pkg.name);
+        let subtitle = if pkg.description.is_empty() {
+            pkg.source.to_string()
+        } else {
+            Self::escape_markup(&pkg.description)
+        };
+        self.widget.set_subtitle(&subtitle);
+
+        self.icon_frame.set_visible(show_icons);
+
+        let version_text = pkg.display_version();
+        self.version_label.set_label(&version_text);
+        self.version_label
+            .set_tooltip_text((!version_text.is_empty()).then_some(version_text.as_str()));
+
+        self.source_button.set_label(&pkg.source.to_string());
+        self.source_button
+            .set_tooltip_text(Some(&format!("Filter by {}", pkg.source)));
+
+        for source_class in [
+            "source-apt",
+            "source-dnf",
+            "source-pacman",
+            "source-zypper",
+            "source-flatpak",
+            "source-snap",
+            "source-npm",
+            "source-pip",
+            "source-pipx",
+            "source-cargo",
+            "source-brew",
+            "source-aur",
+            "source-conda",
+            "source-mamba",
+            "source-dart",
+            "source-deb",
+            "source-appimage",
+        ] {
+            self.source_button.remove_css_class(source_class);
+        }
+        self.source_button.add_css_class(pkg.source.color_class());
+
+        self.update_icon
+            .set_visible(pkg.status == PackageStatus::UpdateAvailable);
+        Self::apply_action_button_style(&self.action_button, pkg.status);
     }
 
     fn create_action_button(pkg: &Package) -> gtk::Button {
