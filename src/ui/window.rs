@@ -59,8 +59,6 @@ struct SidebarWidgets {
     sources_all_btn: gtk::ToggleButton,
     source_buttons: HashMap<PackageSource, gtk::ToggleButton>,
     source_counts: HashMap<PackageSource, gtk::Label>,
-    sources_select_all_btn: gtk::Button,
-    sources_unselect_all_btn: gtk::Button,
 }
 
 struct ContentWidgets {
@@ -319,8 +317,6 @@ impl LinGetWindow {
             content_widgets.discover_stack.clone(),
             content_widgets.all_stack.clone(),
             content_widgets.updates_stack.clone(),
-            sidebar_widgets.sources_select_all_btn.clone(),
-            sidebar_widgets.sources_unselect_all_btn.clone(),
             select_all_btn,
             deselect_all_btn,
             update_selected_btn,
@@ -580,25 +576,9 @@ impl LinGetWindow {
         sources_reset_btn.add_css_class("flat");
         sources_reset_btn.add_css_class("circular");
 
-        let sources_unselect_all_btn = gtk::Button::builder()
-            .icon_name("edit-select-none-symbolic")
-            .tooltip_text("Clear source filters (show all)")
-            .build();
-        sources_unselect_all_btn.add_css_class("flat");
-        sources_unselect_all_btn.add_css_class("circular");
-
-        let sources_select_all_btn = gtk::Button::builder()
-            .icon_name("edit-select-all-symbolic")
-            .tooltip_text("Select all available sources")
-            .build();
-        sources_select_all_btn.add_css_class("flat");
-        sources_select_all_btn.add_css_class("circular");
-
         sources_header.append(&sources_label);
         sources_header.append(&sources_filter_badge);
         sources_header.append(&sources_reset_btn);
-        sources_header.append(&sources_unselect_all_btn);
-        sources_header.append(&sources_select_all_btn);
         sidebar_box.append(&sources_header);
 
         let sources_box = gtk::Box::builder()
@@ -760,8 +740,6 @@ impl LinGetWindow {
             sources_all_btn,
             source_buttons,
             source_counts,
-            sources_select_all_btn,
-            sources_unselect_all_btn,
         }
     }
 
@@ -1443,8 +1421,6 @@ impl LinGetWindow {
         discover_stack: gtk::Stack,
         all_stack: gtk::Stack,
         updates_stack: gtk::Stack,
-        sources_select_all_btn: gtk::Button,
-        sources_unselect_all_btn: gtk::Button,
         select_all_btn: gtk::Button,
         deselect_all_btn: gtk::Button,
         update_selected_btn: gtk::Button,
@@ -1528,13 +1504,7 @@ impl LinGetWindow {
                 let sources_label = if sources.is_empty() {
                     None
                 } else {
-                    let first = sources[0].to_string();
-                    let label = if sources.len() == 1 {
-                        format!("Sources: {}", first)
-                    } else {
-                        format!("Sources: {} +{}", first, sources.len() - 1)
-                    };
-                    Some(label)
+                    Some(format!("Source: {}", sources[0]))
                 };
 
                 let mut query_label = query.clone();
@@ -2324,34 +2294,39 @@ impl LinGetWindow {
             *discover_debounce_holder.borrow_mut() = Some(id);
         });
 
-        // Source Filter Buttons
-        let create_source_handler = |source: PackageSource| {
+        // Source Filter Buttons (radio-style: one source at a time, or All)
+        for (source, btn) in &source_filter_buttons {
+            let source = *source;
+            let btn = btn.clone();
             let filter_state = filter_state.clone();
             let apply_filters = apply_filters.clone();
             let skip_filter = skip_filter.clone();
             let sources_all_btn = sources_all_btn.clone();
-            move |btn: &gtk::ToggleButton| {
+            let source_filter_buttons = source_filter_buttons.clone();
+
+            btn.connect_toggled(move |b| {
                 if *skip_filter.borrow() {
                     return;
                 }
-                let mut state = filter_state.borrow_mut();
-                if btn.is_active() {
-                    if !state.sources.contains(&source) {
-                        state.sources.push(source);
-                    }
-                } else {
-                    state.sources.retain(|&s| s != source);
-                }
-                let empty = state.sources.is_empty();
-                drop(state);
+
                 *skip_filter.borrow_mut() = true;
-                sources_all_btn.set_active(empty);
+                if b.is_active() {
+                    // Ensure only one source button is active at a time.
+                    for (s, other) in &source_filter_buttons {
+                        if *s != source {
+                            other.set_active(false);
+                        }
+                    }
+                    filter_state.borrow_mut().sources = vec![source];
+                    sources_all_btn.set_active(false);
+                } else {
+                    // If the active source is toggled off, return to All.
+                    filter_state.borrow_mut().sources.clear();
+                    sources_all_btn.set_active(true);
+                }
                 *skip_filter.borrow_mut() = false;
                 apply_filters();
-            }
-        };
-        for (source, btn) in &source_filter_buttons {
-            btn.connect_toggled(create_source_handler(*source));
+            });
         }
 
         // All sources filter
@@ -2374,51 +2349,6 @@ impl LinGetWindow {
             filter_state_all_toggle.borrow_mut().sources.clear();
             *skip_filter_all_toggle.borrow_mut() = false;
             apply_filters_all_toggle();
-        });
-
-        // Source Select All / Unselect
-        let source_filter_buttons_all = source_filter_buttons.clone();
-        let enabled_sources_all = enabled_sources.clone();
-        let available_sources_all = available_sources.clone();
-        let filter_state_all = filter_state.clone();
-        let skip_filter_all = skip_filter.clone();
-        let apply_filters_all = apply_filters.clone();
-        let sources_all_btn_all = sources_all_btn.clone();
-        sources_select_all_btn.connect_clicked(move |_| {
-            let enabled = enabled_sources_all.borrow();
-            let available = available_sources_all.borrow();
-            *skip_filter_all.borrow_mut() = true;
-            for (source, btn) in &source_filter_buttons_all {
-                if enabled.contains(source) && available.contains(source) {
-                    btn.set_active(true);
-                } else {
-                    btn.set_active(false);
-                }
-            }
-            filter_state_all.borrow_mut().sources = enabled
-                .iter()
-                .copied()
-                .filter(|s| available.contains(s))
-                .collect();
-            sources_all_btn_all.set_active(false);
-            *skip_filter_all.borrow_mut() = false;
-            apply_filters_all();
-        });
-
-        let source_filter_buttons_none = source_filter_buttons.clone();
-        let filter_state_none = filter_state.clone();
-        let skip_filter_none = skip_filter.clone();
-        let apply_filters_none = apply_filters.clone();
-        let sources_all_btn_none = sources_all_btn.clone();
-        sources_unselect_all_btn.connect_clicked(move |_| {
-            *skip_filter_none.borrow_mut() = true;
-            for btn in source_filter_buttons_none.values() {
-                btn.set_active(false);
-            }
-            filter_state_none.borrow_mut().sources.clear();
-            sources_all_btn_none.set_active(true);
-            *skip_filter_none.borrow_mut() = false;
-            apply_filters_none();
         });
 
         // Reset (clear search + source filters)

@@ -14,6 +14,7 @@ This document tracks planned UI/UX improvements and the order to implement them.
 - [x] Show an **active filter count** (“All” or `N`) next to the Sources header.
 - [x] Add **Reset** (clear filters + search) next to Select All/Unselect.
 - [x] Make Sources header actions icon-only (less clutter).
+- [x] Make Sources filtering consistent (radio-style; no misleading select-all).
 - [ ] Make selection states consistent across views (All/Updates/Discover).
 - [ ] Persist filter state (optional) per session.
 
