@@ -32,6 +32,7 @@ fn show_action_required_dialog(parent: &impl IsA<gtk::Window>, details: &str, co
         .build();
 
     let header = adw::HeaderBar::new();
+    win.set_titlebar(Some(&header));
     let copy_btn = gtk::Button::builder().label("Copy command").build();
     copy_btn.add_css_class("suggested-action");
     header.pack_end(&copy_btn);
@@ -63,7 +64,6 @@ fn show_action_required_dialog(parent: &impl IsA<gtk::Window>, details: &str, co
     let root = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
-    root.append(&header);
     root.append(&content);
     win.set_child(Some(&root));
 
@@ -107,6 +107,7 @@ impl PackageDetailsDialog {
             .build();
 
         let header = adw::HeaderBar::new();
+        dialog.set_titlebar(Some(&header));
 
         // Content
         let content = gtk::Box::builder()
@@ -475,6 +476,7 @@ impl PackageDetailsDialog {
                         .build();
 
                     let header = adw::HeaderBar::new();
+                    win.set_titlebar(Some(&header));
                     let close_btn = gtk::Button::builder().label("Close").build();
                     header.pack_start(&close_btn);
 
@@ -574,7 +576,6 @@ impl PackageDetailsDialog {
                     let root = gtk::Box::builder()
                         .orientation(gtk::Orientation::Vertical)
                         .build();
-                    root.append(&header);
                     root.append(&content);
                     win.set_child(Some(&root));
 
@@ -936,7 +937,6 @@ impl PackageDetailsDialog {
             .orientation(gtk::Orientation::Vertical)
             .build();
 
-        main_box.append(&header);
         main_box.append(&scrolled);
 
         dialog.set_child(Some(&main_box));
