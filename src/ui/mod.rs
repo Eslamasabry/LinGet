@@ -7,7 +7,7 @@ mod preferences;
 mod window;
 
 pub use about::show_about_dialog;
-pub use command_center::{CommandCenter, CommandEventKind};
+pub use command_center::{CommandCenter, CommandEventKind, PackageOp, RetrySpec};
 pub use diagnostics::DiagnosticsDialog;
 pub use package_details::PackageDetailsDialog;
 pub use package_row::PackageRow;

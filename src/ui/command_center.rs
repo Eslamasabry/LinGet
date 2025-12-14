@@ -1,3 +1,5 @@
+use crate::models::Package;
+use chrono::Local;
 use gtk4::prelude::*;
 use gtk4::{self as gtk, glib};
 use libadwaita as adw;
@@ -5,16 +7,47 @@ use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandEventKind {
     Info,
     Success,
     Error,
 }
 
+#[derive(Clone, Debug)]
+pub enum PackageOp {
+    Install,
+    Update,
+    Remove,
+    Downgrade,
+    DowngradeTo(String),
+}
+
+type RetryHandler = Rc<dyn Fn(RetrySpec)>;
+
+#[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum RetrySpec {
+    Package {
+        package: Box<Package>,
+        op: PackageOp,
+    },
+    BulkUpdate {
+        packages: Vec<Package>,
+    },
+    BulkRemove {
+        packages: Vec<Package>,
+    },
+}
+
 #[derive(Clone)]
 pub struct CommandCenter {
     inner: Rc<Inner>,
+}
+
+#[derive(Clone)]
+pub struct CommandTask {
+    inner: Rc<TaskInner>,
 }
 
 struct Inner {
@@ -25,6 +58,19 @@ struct Inner {
     unread: RefCell<u32>,
     unread_badge: gtk::Label,
     external_badge: RefCell<Option<gtk::Label>>,
+    retry_handler: RefCell<Option<RetryHandler>>,
+}
+
+struct TaskInner {
+    center: CommandCenter,
+    icon: gtk::Image,
+    spinner: gtk::Spinner,
+    row: adw::ActionRow,
+    command_text: Rc<RefCell<String>>,
+    retry_spec: Rc<RefCell<Option<RetrySpec>>>,
+    copy_btn: gtk::Button,
+    retry_btn: gtk::Button,
+    finished: RefCell<bool>,
 }
 
 impl CommandCenter {
@@ -101,6 +147,7 @@ impl CommandCenter {
                 unread: RefCell::new(0),
                 unread_badge,
                 external_badge: RefCell::new(None),
+                retry_handler: RefCell::new(None),
             }),
         };
 
@@ -120,11 +167,146 @@ impl CommandCenter {
         *self.inner.external_badge.borrow_mut() = Some(badge);
     }
 
+    pub fn set_retry_handler(&self, handler: Rc<dyn Fn(RetrySpec)>) {
+        *self.inner.retry_handler.borrow_mut() = Some(handler);
+    }
+
     pub fn mark_read(&self) {
         *self.inner.unread.borrow_mut() = 0;
         self.inner.unread_badge.set_visible(false);
         if let Some(badge) = self.inner.external_badge.borrow().as_ref() {
             badge.set_visible(false);
+        }
+    }
+
+    fn bump_unread(&self) {
+        let mut unread = self.inner.unread.borrow_mut();
+        *unread = unread.saturating_add(1);
+        self.inner.unread_badge.set_label(&unread.to_string());
+        self.inner.unread_badge.set_visible(true);
+        if let Some(badge) = self.inner.external_badge.borrow().as_ref() {
+            badge.set_label(&unread.to_string());
+            badge.set_visible(true);
+        }
+    }
+
+    fn now_stamp() -> String {
+        Local::now().format("%H:%M:%S").to_string()
+    }
+
+    fn format_subtitle(stamp: &str, details: &str) -> String {
+        let details = details.trim();
+        if details.is_empty() {
+            stamp.to_string()
+        } else {
+            format!("{stamp} · {details}")
+        }
+    }
+
+    pub fn begin_task(
+        &self,
+        title: impl AsRef<str>,
+        details: impl AsRef<str>,
+        retry: Option<RetrySpec>,
+    ) -> CommandTask {
+        let title = title.as_ref().trim().to_string();
+        let details = details.as_ref().trim().to_string();
+
+        let row = adw::ActionRow::builder()
+            .title(&title)
+            .subtitle(Self::format_subtitle(&Self::now_stamp(), &details))
+            .build();
+        row.add_css_class("cmd-row");
+
+        let icon = gtk::Image::from_icon_name("content-loading-symbolic");
+        icon.add_css_class("dim-label");
+        row.add_prefix(&icon);
+
+        let suffix = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
+
+        let spinner = gtk::Spinner::builder()
+            .spinning(true)
+            .visible(true)
+            .valign(gtk::Align::Center)
+            .build();
+        spinner.add_css_class("row-spinner");
+
+        let copy_btn = gtk::Button::builder()
+            .icon_name("edit-copy-symbolic")
+            .tooltip_text("Copy command")
+            .visible(false)
+            .build();
+        copy_btn.add_css_class("flat");
+        copy_btn.add_css_class("circular");
+
+        let retry_btn = gtk::Button::builder()
+            .icon_name("view-refresh-symbolic")
+            .tooltip_text("Retry")
+            .visible(retry.is_some())
+            .build();
+        retry_btn.add_css_class("flat");
+        retry_btn.add_css_class("circular");
+
+        let command_text = Rc::new(RefCell::new(String::new()));
+        let retry_spec = Rc::new(RefCell::new(retry));
+
+        let cmd_for_click = command_text.clone();
+        copy_btn.connect_clicked(move |_| {
+            let cmd = cmd_for_click.borrow().clone();
+            if cmd.trim().is_empty() {
+                return;
+            }
+            if let Some(display) = gtk::gdk::Display::default() {
+                display.clipboard().set_text(&cmd);
+                display.primary_clipboard().set_text(&cmd);
+            }
+        });
+
+        let center_for_retry = self.clone();
+        let retry_for_click = retry_spec.clone();
+        retry_btn.connect_clicked(move |_| {
+            let Some(handler) = center_for_retry.inner.retry_handler.borrow().clone() else {
+                return;
+            };
+            let Some(spec) = retry_for_click.borrow().clone() else {
+                return;
+            };
+            handler(spec);
+        });
+
+        suffix.append(&spinner);
+        suffix.append(&retry_btn);
+        suffix.append(&copy_btn);
+        row.add_suffix(&suffix);
+
+        let wrapper = gtk::ListBoxRow::new();
+        wrapper.set_child(Some(&row));
+        self.inner.list.prepend(&wrapper);
+
+        self.inner.stack.set_visible_child_name("list");
+        self.inner.empty.set_visible(false);
+
+        glib::idle_add_local_once({
+            let list = self.inner.list.clone();
+            move || list.queue_allocate()
+        });
+
+        CommandTask {
+            inner: Rc::new(TaskInner {
+                center: self.clone(),
+                icon,
+                spinner,
+                row,
+                command_text,
+                retry_spec,
+                copy_btn,
+                retry_btn,
+                finished: RefCell::new(false),
+            }),
         }
     }
 
@@ -137,62 +319,8 @@ impl CommandCenter {
     ) {
         let title = title.as_ref().trim().to_string();
         let details = details.as_ref().trim().to_string();
-
-        let row = adw::ActionRow::builder()
-            .title(&title)
-            .subtitle(&details)
-            .build();
-        row.add_css_class("cmd-row");
-
-        let icon_name = match kind {
-            CommandEventKind::Info => "dialog-information-symbolic",
-            CommandEventKind::Success => "emblem-ok-symbolic",
-            CommandEventKind::Error => "dialog-error-symbolic",
-        };
-        let icon = gtk::Image::from_icon_name(icon_name);
-        icon.add_css_class("dim-label");
-        row.add_prefix(&icon);
-
-        if let Some(command) = command {
-            let copy_btn = gtk::Button::builder()
-                .icon_name("edit-copy-symbolic")
-                .tooltip_text("Copy command")
-                .build();
-            copy_btn.add_css_class("flat");
-            copy_btn.add_css_class("circular");
-
-            let cmd = command.clone();
-            copy_btn.connect_clicked(move |_| {
-                if let Some(display) = gtk::gdk::Display::default() {
-                    display.clipboard().set_text(&cmd);
-                    display.primary_clipboard().set_text(&cmd);
-                }
-            });
-
-            row.add_suffix(&copy_btn);
-        }
-
-        let wrapper = gtk::ListBoxRow::new();
-        wrapper.set_child(Some(&row));
-        self.inner.list.prepend(&wrapper);
-
-        self.inner.stack.set_visible_child_name("list");
-        self.inner.empty.set_visible(false);
-
-        let mut unread = self.inner.unread.borrow_mut();
-        *unread = unread.saturating_add(1);
-        self.inner.unread_badge.set_label(&unread.to_string());
-        self.inner.unread_badge.set_visible(true);
-        if let Some(badge) = self.inner.external_badge.borrow().as_ref() {
-            badge.set_label(&unread.to_string());
-            badge.set_visible(true);
-        }
-
-        // Ensure GTK processes the new row layout quickly.
-        glib::idle_add_local_once({
-            let list = self.inner.list.clone();
-            move || list.queue_allocate()
-        });
+        let task = self.begin_task(&title, &details, None);
+        task.finish(kind, &title, &details, command, true);
     }
 
     pub fn clear(&self) {
@@ -202,5 +330,55 @@ impl CommandCenter {
         self.inner.stack.set_visible_child_name("empty");
         self.inner.empty.set_visible(true);
         self.mark_read();
+    }
+}
+
+impl CommandTask {
+    pub fn finish(
+        &self,
+        kind: CommandEventKind,
+        title: impl AsRef<str>,
+        details: impl AsRef<str>,
+        command: Option<String>,
+        bump_unread: bool,
+    ) {
+        if *self.inner.finished.borrow() {
+            return;
+        }
+        *self.inner.finished.borrow_mut() = true;
+
+        let title = title.as_ref().trim();
+        let details = details.as_ref().trim();
+        let subtitle = CommandCenter::format_subtitle(&CommandCenter::now_stamp(), details);
+
+        self.inner.row.set_title(title);
+        self.inner.row.set_subtitle(&subtitle);
+
+        let icon_name = match kind {
+            CommandEventKind::Info => "dialog-information-symbolic",
+            CommandEventKind::Success => "emblem-ok-symbolic",
+            CommandEventKind::Error => "dialog-error-symbolic",
+        };
+        self.inner.icon.set_icon_name(Some(icon_name));
+
+        self.inner.spinner.set_spinning(false);
+        self.inner.spinner.set_visible(false);
+
+        if let Some(cmd) = command {
+            *self.inner.command_text.borrow_mut() = cmd;
+            self.inner.copy_btn.set_visible(true);
+        } else {
+            self.inner.copy_btn.set_visible(false);
+        }
+
+        // Retry is only meaningful for failures (or explicit info tasks).
+        let can_retry = self.inner.retry_spec.borrow().is_some()
+            && matches!(kind, CommandEventKind::Error | CommandEventKind::Info)
+            && self.inner.center.inner.retry_handler.borrow().is_some();
+        self.inner.retry_btn.set_visible(can_retry);
+
+        if bump_unread {
+            self.inner.center.bump_unread();
+        }
     }
 }

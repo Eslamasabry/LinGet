@@ -1,6 +1,6 @@
 use crate::backend::PackageManager;
 use crate::models::{Config, Package, PackageSource, PackageStatus};
-use crate::ui::{CommandCenter, CommandEventKind};
+use crate::ui::{CommandCenter, CommandEventKind, PackageOp, RetrySpec};
 use gtk4::prelude::*;
 use gtk4::{self as gtk, glib};
 use libadwaita as adw;
@@ -293,6 +293,22 @@ impl PackageDetailsDialog {
                     "Downgrading..."
                 });
 
+                let task = command_center.as_ref().map(|c| {
+                    let title = if matches!(pkg.source, PackageSource::Snap) {
+                        format!("Reverting {}", pkg.name)
+                    } else {
+                        format!("Downgrading {}", pkg.name)
+                    };
+                    c.begin_task(
+                        title,
+                        format!("Source: {}", pkg.source),
+                        Some(RetrySpec::Package {
+                            package: Box::new(pkg.clone()),
+                            op: PackageOp::Downgrade,
+                        }),
+                    )
+                });
+
                 glib::spawn_future_local(async move {
                     let manager = pm.lock().await;
                     let result = manager.downgrade(&pkg).await;
@@ -310,12 +326,13 @@ impl PackageDetailsDialog {
                             let t = adw::Toast::new(&format!("{} {}", verb, pkg.name));
                             t.set_timeout(3);
                             toast.add_toast(t);
-                            if let Some(center) = command_center.as_ref() {
-                                center.add_event(
+                            if let Some(task) = task.as_ref() {
+                                task.finish(
                                     CommandEventKind::Success,
                                     format!("{} {}", verb, pkg.name),
                                     format!("Source: {}", pkg.source),
                                     None,
+                                    true,
                                 );
                             }
                         }
@@ -327,12 +344,13 @@ impl PackageDetailsDialog {
                             };
                             let msg = format!("{} failed: {}", prefix, e);
                             if let Some((details, command)) = parse_suggestion(&msg) {
-                                if let Some(center) = command_center.as_ref() {
-                                    center.add_event(
+                                if let Some(task) = task.as_ref() {
+                                    task.finish(
                                         CommandEventKind::Error,
                                         "Action required",
                                         &details,
                                         Some(command.clone()),
+                                        true,
                                     );
                                     if let Some(reveal) = reveal_command_center.as_ref() {
                                         reveal(true);
@@ -347,12 +365,13 @@ impl PackageDetailsDialog {
                                 let t = adw::Toast::new(&msg);
                                 t.set_timeout(5);
                                 toast.add_toast(t);
-                                if let Some(center) = command_center.as_ref() {
-                                    center.add_event(
+                                if let Some(task) = task.as_ref() {
+                                    task.finish(
                                         CommandEventKind::Error,
                                         "Operation failed",
                                         &msg,
                                         None,
+                                        true,
                                     );
                                     if let Some(reveal) = reveal_command_center.as_ref() {
                                         reveal(true);
@@ -422,6 +441,8 @@ impl PackageDetailsDialog {
             let subtitle = subtitle.to_string();
             let apply_label = apply_label.to_string();
             let apply_past = apply_past.to_string();
+            let command_center_clone = command_center.clone();
+            let reveal_command_center_clone = reveal_command_center.clone();
 
             version_btn.connect_clicked(move |_| {
                 let pkg = pkg_clone.clone();
@@ -433,6 +454,8 @@ impl PackageDetailsDialog {
                 let subtitle = subtitle.clone();
                 let apply_label = apply_label.clone();
                 let apply_past = apply_past.clone();
+                let command_center = command_center_clone.clone();
+                let reveal_command_center = reveal_command_center_clone.clone();
 
                 glib::spawn_future_local(async move {
                     let versions = {
@@ -570,6 +593,8 @@ impl PackageDetailsDialog {
                         let version_entry = version_entry.clone();
                         let apply_label = apply_label.clone();
                         let apply_past = apply_past.clone();
+                        let command_center = command_center.clone();
+                        let reveal_command_center = reveal_command_center.clone();
                         move |_| {
                             let version = version_entry.text().trim().to_string();
                             if version.is_empty() {
@@ -581,6 +606,17 @@ impl PackageDetailsDialog {
 
                             version_entry.set_sensitive(false);
 
+                            let task = command_center.as_ref().map(|c| {
+                                c.begin_task(
+                                    format!("{} {} {}", apply_label, pkg.name, version),
+                                    format!("Source: {}", pkg.source),
+                                    Some(RetrySpec::Package {
+                                        package: Box::new(pkg.clone()),
+                                        op: PackageOp::DowngradeTo(version.clone()),
+                                    }),
+                                )
+                            });
+
                             glib::spawn_future_local({
                                 let pm = pm.clone();
                                 let pkg = pkg.clone();
@@ -591,6 +627,8 @@ impl PackageDetailsDialog {
                                 let parent_for_async = parent_for_click.clone();
                                 let apply_label = apply_label.clone();
                                 let apply_past = apply_past.clone();
+                                let task = task.clone();
+                                let reveal_command_center = reveal_command_center.clone();
                                 async move {
                                     let result = {
                                         let manager = pm.lock().await;
@@ -607,16 +645,43 @@ impl PackageDetailsDialog {
                                             ));
                                             t.set_timeout(5);
                                             toast.add_toast(t);
+                                            if let Some(task) = task.as_ref() {
+                                                task.finish(
+                                                    CommandEventKind::Success,
+                                                    format!(
+                                                        "{} {} to {}",
+                                                        apply_past, pkg.name, version
+                                                    ),
+                                                    format!("Source: {}", pkg.source),
+                                                    None,
+                                                    true,
+                                                );
+                                            }
                                         }
                                         Err(e) => {
                                             let msg = format!("{} failed: {}", apply_label, e);
                                             if let Some((details, command)) = parse_suggestion(&msg)
                                             {
-                                                show_action_required_dialog(
-                                                    &parent_for_async,
-                                                    &details,
-                                                    &command,
-                                                );
+                                                if let Some(task) = task.as_ref() {
+                                                    task.finish(
+                                                        CommandEventKind::Error,
+                                                        "Action required",
+                                                        &details,
+                                                        Some(command.clone()),
+                                                        true,
+                                                    );
+                                                    if let Some(reveal) =
+                                                        reveal_command_center.as_ref()
+                                                    {
+                                                        reveal(true);
+                                                    }
+                                                } else {
+                                                    show_action_required_dialog(
+                                                        &parent_for_async,
+                                                        &details,
+                                                        &command,
+                                                    );
+                                                }
                                                 let t = adw::Toast::new("Action required");
                                                 t.set_timeout(5);
                                                 toast.add_toast(t);
@@ -624,6 +689,20 @@ impl PackageDetailsDialog {
                                                 let t = adw::Toast::new(&msg);
                                                 t.set_timeout(5);
                                                 toast.add_toast(t);
+                                                if let Some(task) = task.as_ref() {
+                                                    task.finish(
+                                                        CommandEventKind::Error,
+                                                        "Operation failed",
+                                                        &msg,
+                                                        None,
+                                                        true,
+                                                    );
+                                                    if let Some(reveal) =
+                                                        reveal_command_center.as_ref()
+                                                    {
+                                                        reveal(true);
+                                                    }
+                                                }
                                             }
                                         }
                                     }

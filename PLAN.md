@@ -44,6 +44,7 @@ This document tracks planned UI/UX improvements and the order to implement them.
 ### 6) Command Center & Error UX
 - [x] Replace many toasts with an expandable **Command Center** panel.
 - [x] “Copy command” actions for privilege-required failures.
+- [x] Add timestamps + retry actions for recent operations.
 - [x] Structured diagnostics export (already present; expand content).
 
 ### 7) Preferences & Onboarding

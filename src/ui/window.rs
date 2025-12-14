@@ -2,7 +2,7 @@ use crate::backend::PackageManager;
 use crate::models::{Config, Package, PackageCache, PackageSource, PackageStatus};
 use crate::ui::{
     show_about_dialog, CommandCenter, CommandEventKind, DiagnosticsDialog, PackageDetailsDialog,
-    PackageRow, PreferencesDialog,
+    PackageOp, PackageRow, PreferencesDialog, RetrySpec,
 };
 use gtk4::prelude::*;
 use gtk4::{self as gtk, gio, glib};
@@ -1569,6 +1569,212 @@ impl LinGetWindow {
             }
         });
 
+        let reload_holder: LocalFnHolder = Rc::new(RefCell::new(None));
+
+        // Command Center retry handler
+        command_center.set_retry_handler(Rc::new({
+            let pm = pm.clone();
+            let toast_overlay = toast_overlay.clone();
+            let progress_overlay = progress_overlay.clone();
+            let progress_bar = progress_bar.clone();
+            let progress_label = progress_label.clone();
+            let reload_holder = reload_holder.clone();
+            let command_center = command_center.clone();
+            let reveal_command_center = reveal_command_center.clone();
+
+            move |spec: RetrySpec| {
+                let pm = pm.clone();
+                let toast = toast_overlay.clone();
+                let progress_overlay = progress_overlay.clone();
+                let progress_bar = progress_bar.clone();
+                let progress_label = progress_label.clone();
+                let reload_holder = reload_holder.clone();
+                let command_center = command_center.clone();
+                let reveal_command_center = reveal_command_center.clone();
+
+                glib::spawn_future_local(async move {
+                    match spec.clone() {
+                        RetrySpec::Package { package, op } => {
+                            let package = *package;
+                            let title = match &op {
+                                PackageOp::Install => format!("Retrying install: {}", package.name),
+                                PackageOp::Update => format!("Retrying update: {}", package.name),
+                                PackageOp::Remove => format!("Retrying remove: {}", package.name),
+                                PackageOp::Downgrade => {
+                                    format!("Retrying downgrade: {}", package.name)
+                                }
+                                PackageOp::DowngradeTo(v) => {
+                                    format!("Retrying downgrade: {} → {}", package.name, v)
+                                }
+                            };
+                            let task = command_center.begin_task(
+                                &title,
+                                format!("Source: {}", package.source),
+                                Some(spec.clone()),
+                            );
+
+                            let result = {
+                                let manager = pm.lock().await;
+                                match &op {
+                                    PackageOp::Install => manager.install(&package).await,
+                                    PackageOp::Update => manager.update(&package).await,
+                                    PackageOp::Remove => manager.remove(&package).await,
+                                    PackageOp::Downgrade => manager.downgrade(&package).await,
+                                    PackageOp::DowngradeTo(v) => manager.downgrade_to(&package, v).await,
+                                }
+                            };
+
+                            match result {
+                                Ok(_) => {
+                                    let done_title = match &op {
+                                        PackageOp::Install => format!("Installed {}", package.name),
+                                        PackageOp::Update => format!("Updated {}", package.name),
+                                        PackageOp::Remove => format!("Removed {}", package.name),
+                                        PackageOp::Downgrade => format!("Downgraded {}", package.name),
+                                        PackageOp::DowngradeTo(v) => format!("Downgraded {} to {}", package.name, v),
+                                    };
+                                    task.finish(
+                                        CommandEventKind::Success,
+                                        done_title,
+                                        format!("Source: {}", package.source),
+                                        None,
+                                        true,
+                                    );
+                                    if let Some(reload) = reload_holder.borrow().as_ref() {
+                                        reload();
+                                    }
+                                }
+                                Err(e) => {
+                                    let raw = format!("Error: {}", e);
+                                    let (title, details, command) =
+                                        if let Some((details, command)) = parse_suggestion(&raw) {
+                                            ("Action required".to_string(), details, Some(command))
+                                        } else {
+                                            ("Retry failed".to_string(), raw, None)
+                                        };
+                                    task.finish(CommandEventKind::Error, title, details, command, true);
+                                    reveal_command_center(true);
+                                    let t = adw::Toast::new("Retry failed (see Command Center)");
+                                    t.set_timeout(5);
+                                    toast.add_toast(t);
+                                }
+                            }
+                        }
+                        RetrySpec::BulkUpdate { packages } => {
+                            if packages.is_empty() {
+                                return;
+                            }
+                            let total = packages.len();
+                            let task = command_center.begin_task(
+                                "Retrying bulk update",
+                                format!("{} packages", total),
+                                Some(spec.clone()),
+                            );
+
+                            progress_overlay.set_visible(true);
+                            progress_bar.set_fraction(0.0);
+                            progress_label.set_label(&format!("Updating {} packages...", total));
+
+                            let mut success = 0usize;
+                            let mut blocked_snaps: Vec<String> = Vec::new();
+                            let manager = pm.lock().await;
+                            for (i, pkg) in packages.iter().enumerate() {
+                                progress_bar.set_fraction((i as f64) / (total as f64));
+                                progress_bar.set_text(Some(&format!("{}/{} - {}", i + 1, total, pkg.name)));
+                                match manager.update(pkg).await {
+                                    Ok(_) => success += 1,
+                                    Err(e) => {
+                                        let msg = e.to_string();
+                                        if pkg.source == PackageSource::Snap
+                                            && msg.contains("because it is running")
+                                        {
+                                            blocked_snaps.push(pkg.name.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            drop(manager);
+
+                            progress_overlay.set_visible(false);
+
+                            let base = format!("Updated {}/{} packages", success, total);
+                            let msg = if blocked_snaps.is_empty() {
+                                base
+                            } else {
+                                blocked_snaps.sort();
+                                blocked_snaps.dedup();
+                                let shown = blocked_snaps
+                                    .iter()
+                                    .take(3)
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let suffix = if blocked_snaps.len() > 3 { ", …" } else { "" };
+                                format!(
+                                    "{base}. Blocked snaps: {shown}{suffix} (close running apps and retry)."
+                                )
+                            };
+
+                            let kind = if success == total && blocked_snaps.is_empty() {
+                                CommandEventKind::Success
+                            } else {
+                                CommandEventKind::Info
+                            };
+                            task.finish(kind, "Bulk update finished", msg, None, true);
+                            if kind != CommandEventKind::Success {
+                                reveal_command_center(true);
+                            }
+                            if let Some(reload) = reload_holder.borrow().as_ref() {
+                                reload();
+                            }
+                        }
+                        RetrySpec::BulkRemove { packages } => {
+                            if packages.is_empty() {
+                                return;
+                            }
+                            let total = packages.len();
+                            let task = command_center.begin_task(
+                                "Retrying bulk remove",
+                                format!("{} packages", total),
+                                Some(spec.clone()),
+                            );
+
+                            progress_overlay.set_visible(true);
+                            progress_bar.set_fraction(0.0);
+                            progress_label.set_label(&format!("Removing {} packages...", total));
+
+                            let mut success = 0usize;
+                            let manager = pm.lock().await;
+                            for (i, pkg) in packages.iter().enumerate() {
+                                progress_bar.set_fraction((i as f64) / (total as f64));
+                                progress_bar.set_text(Some(&format!("{}/{} - {}", i + 1, total, pkg.name)));
+                                if manager.remove(pkg).await.is_ok() {
+                                    success += 1;
+                                }
+                            }
+                            drop(manager);
+
+                            progress_overlay.set_visible(false);
+
+                            let msg = format!("Removed {}/{} packages", success, total);
+                            let kind = if success == total {
+                                CommandEventKind::Success
+                            } else {
+                                CommandEventKind::Info
+                            };
+                            task.finish(kind, "Bulk remove finished", msg, None, true);
+                            if kind != CommandEventKind::Success {
+                                reveal_command_center(true);
+                            }
+                            if let Some(reload) = reload_holder.borrow().as_ref() {
+                                reload();
+                            }
+                        }
+                    }
+                });
+            }
+        }));
+
         // Helpers
         let enabled_sources_for_counts = enabled_sources.clone();
         let update_source_counts = move |packages: &[Package]| {
@@ -1600,7 +1806,6 @@ impl LinGetWindow {
 
         let skip_filter = Rc::new(RefCell::new(false));
         let apply_filters_holder: LocalFnHolder = Rc::new(RefCell::new(None));
-        let reload_holder: LocalFnHolder = Rc::new(RefCell::new(None));
 
         let apply_filters: Rc<dyn Fn()> = Rc::new({
             let packages = packages.clone();
@@ -2376,6 +2581,14 @@ impl LinGetWindow {
                 return;
             }
 
+            let task = command_center.begin_task(
+                "Updating all",
+                format!("{} packages", updates.len()),
+                Some(RetrySpec::BulkUpdate {
+                    packages: updates.clone(),
+                }),
+            );
+
             progress_overlay.set_visible(true);
             progress_label.set_label(&format!("Updating {} packages...", updates.len()));
 
@@ -2419,17 +2632,13 @@ impl LinGetWindow {
                         "{base}. Blocked snaps: {shown}{suffix} (close running apps and retry)."
                     )
                 };
-                command_center.add_event(
-                    if success == total && blocked_snaps.is_empty() {
-                        CommandEventKind::Success
-                    } else {
-                        CommandEventKind::Info
-                    },
-                    "Bulk update finished",
-                    &msg,
-                    None,
-                );
-                if success != total || !blocked_snaps.is_empty() {
+                let kind = if success == total && blocked_snaps.is_empty() {
+                    CommandEventKind::Success
+                } else {
+                    CommandEventKind::Info
+                };
+                task.finish(kind, "Bulk update finished", &msg, None, true);
+                if kind != CommandEventKind::Success {
                     reveal_command_center(true);
                     let t = adw::Toast::new("Bulk update finished (see Command Center)");
                     t.set_timeout(5);
@@ -2474,6 +2683,14 @@ impl LinGetWindow {
             let command_center = command_center_upd.clone();
             let reveal_command_center = reveal_command_center_upd.clone();
 
+            let task = command_center.begin_task(
+                "Updating selected",
+                format!("{} packages", selected.len()),
+                Some(RetrySpec::BulkUpdate {
+                    packages: selected.clone(),
+                }),
+            );
+
             progress_overlay.set_visible(true);
             progress_label.set_label(&format!("Updating {} packages...", selected.len()));
 
@@ -2517,17 +2734,13 @@ impl LinGetWindow {
                         "{base}. Blocked snaps: {shown}{suffix} (close running apps and retry)."
                     )
                 };
-                command_center.add_event(
-                    if success == total && blocked_snaps.is_empty() {
-                        CommandEventKind::Success
-                    } else {
-                        CommandEventKind::Info
-                    },
-                    "Selected updates finished",
-                    &msg,
-                    None,
-                );
-                if success != total || !blocked_snaps.is_empty() {
+                let kind = if success == total && blocked_snaps.is_empty() {
+                    CommandEventKind::Success
+                } else {
+                    CommandEventKind::Info
+                };
+                task.finish(kind, "Selected updates finished", &msg, None, true);
+                if kind != CommandEventKind::Success {
                     reveal_command_center(true);
                     let t = adw::Toast::new("Selected updates finished (see Command Center)");
                     t.set_timeout(5);
@@ -2574,6 +2787,14 @@ impl LinGetWindow {
             let command_center = command_center_rem.clone();
             let reveal_command_center = reveal_command_center_rem.clone();
 
+            let task = command_center.begin_task(
+                "Removing selected",
+                format!("{} packages", selected.len()),
+                Some(RetrySpec::BulkRemove {
+                    packages: selected.clone(),
+                }),
+            );
+
             progress_overlay.set_visible(true);
             progress_label.set_label(&format!("Removing {} packages...", selected.len()));
 
@@ -2592,17 +2813,13 @@ impl LinGetWindow {
                 progress_overlay.set_visible(false);
                 btn.set_sensitive(true);
                 let msg = format!("Removed {}/{} packages", success, total);
-                command_center.add_event(
-                    if success == total {
-                        CommandEventKind::Success
-                    } else {
-                        CommandEventKind::Info
-                    },
-                    "Bulk remove finished",
-                    &msg,
-                    None,
-                );
-                if success != total {
+                let kind = if success == total {
+                    CommandEventKind::Success
+                } else {
+                    CommandEventKind::Info
+                };
+                task.finish(kind, "Bulk remove finished", &msg, None, true);
+                if kind != CommandEventKind::Success {
                     reveal_command_center(true);
                     let t = adw::Toast::new("Bulk remove finished (see Command Center)");
                     t.set_timeout(5);
@@ -2794,6 +3011,29 @@ impl LinGetWindow {
                     spinner.start();
 
                     glib::spawn_future_local(async move {
+                        let op = match pkg.status {
+                            PackageStatus::UpdateAvailable => PackageOp::Update,
+                            PackageStatus::Installed => PackageOp::Remove,
+                            PackageStatus::NotInstalled => PackageOp::Install,
+                            _ => PackageOp::Update,
+                        };
+                        let retry = RetrySpec::Package {
+                            package: Box::new(pkg.clone()),
+                            op: op.clone(),
+                        };
+                        let running_title = match op {
+                            PackageOp::Update => format!("Updating {}", pkg.name),
+                            PackageOp::Remove => format!("Removing {}", pkg.name),
+                            PackageOp::Install => format!("Installing {}", pkg.name),
+                            PackageOp::Downgrade => format!("Downgrading {}", pkg.name),
+                            PackageOp::DowngradeTo(_) => format!("Downgrading {}", pkg.name),
+                        };
+                        let task = command_center.begin_task(
+                            &running_title,
+                            format!("Source: {}", pkg.source),
+                            Some(retry),
+                        );
+
                         progress_overlay.set_visible(true);
                         progress_bar.set_fraction(0.0);
                         progress_bar.set_text(None);
@@ -2831,11 +3071,12 @@ impl LinGetWindow {
                                 spinner.stop();
                                 spinner.set_visible(false);
                                 btn.set_visible(true);
-                                command_center.add_event(
+                                task.finish(
                                     CommandEventKind::Error,
                                     "Operation failed",
                                     format!("Task join error: {}", e),
                                     None,
+                                    true,
                                 );
                                 reveal_command_center(true);
                                 let t = adw::Toast::new("Operation failed (see Command Center)");
@@ -2852,7 +3093,7 @@ impl LinGetWindow {
                         btn.set_visible(true);
 
                         let ok = result.is_ok();
-                        let (title, details, command) = match result {
+                        let (kind, title, details, command) = match result {
                             Ok(_) => {
                                 let title = match pkg.status {
                                     PackageStatus::UpdateAvailable => {
@@ -2864,28 +3105,33 @@ impl LinGetWindow {
                                     }
                                     _ => format!("Completed {}", pkg.name),
                                 };
-                                (title, format!("Source: {}", pkg.source), None)
+                                (
+                                    CommandEventKind::Success,
+                                    title,
+                                    format!("Source: {}", pkg.source),
+                                    None,
+                                )
                             }
                             Err(e) => {
                                 let raw = format!("Error: {}", e);
                                 if let Some((details, command)) = parse_suggestion(&raw) {
-                                    ("Action required".to_string(), details, Some(command))
+                                    (
+                                        CommandEventKind::Error,
+                                        "Action required".to_string(),
+                                        details,
+                                        Some(command),
+                                    )
                                 } else {
-                                    ("Operation failed".to_string(), raw, None)
+                                    (
+                                        CommandEventKind::Error,
+                                        "Operation failed".to_string(),
+                                        raw,
+                                        None,
+                                    )
                                 }
                             }
                         };
-
-                        command_center.add_event(
-                            if ok {
-                                CommandEventKind::Success
-                            } else {
-                                CommandEventKind::Error
-                            },
-                            &title,
-                            details,
-                            command,
-                        );
+                        task.finish(kind, title, details, command, true);
 
                         if !ok {
                             reveal_command_center(true);
