@@ -258,6 +258,26 @@
     margin-bottom: 6px;
 }
 
+/* Providers (sidebar enable/disable list) */
+.provider-row {
+    margin: 2px 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    transition: background-color 200ms ease;
+}
+
+.provider-row:hover {
+    background-color: alpha(@view_fg_color, 0.04);
+}
+
+.provider-row.provider-unavailable {
+    opacity: 0.35;
+}
+
+.provider-title {
+    font-weight: 700;
+}
+
 /* Keep the Sources header actions visually small and aligned */
 .sidebar button.circular {
     min-width: 28px;

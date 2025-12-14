@@ -10,11 +10,10 @@ This document tracks planned UI/UX improvements and the order to implement them.
 ## Workstreams
 
 ### 1) Sources & Filtering
-- [x] Add an **All** filter chip/button (clear source filters).
-- [x] Show an **active filter count** (“All” or `N`) next to the Sources header.
-- [x] Add **Reset** (clear filters + search) next to Select All/Unselect.
-- [x] Make Sources header actions icon-only (less clutter).
-- [x] Make Sources filtering consistent (radio-style; no misleading select-all).
+- [x] Redesign sidebar into a **Providers** enable/disable list (availability + enabled state).
+- [x] Sort providers by **available → enabled → name**; dim + disable unavailable providers.
+- [x] Move “filter by source” into the **top toolbar popover** (Source: All / Source: X).
+- [ ] Add provider install hints (e.g., “Install `pipx`”).
 - [ ] Make selection states consistent across views (All/Updates/Discover).
 - [ ] Persist filter state (optional) per session.
 

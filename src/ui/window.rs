@@ -38,27 +38,126 @@ enum ViewMode {
     Updates,
 }
 
+const ALL_SOURCES: [PackageSource; 17] = [
+    PackageSource::Apt,
+    PackageSource::Dnf,
+    PackageSource::Pacman,
+    PackageSource::Zypper,
+    PackageSource::Flatpak,
+    PackageSource::Snap,
+    PackageSource::Npm,
+    PackageSource::Pip,
+    PackageSource::Pipx,
+    PackageSource::Cargo,
+    PackageSource::Brew,
+    PackageSource::Aur,
+    PackageSource::Conda,
+    PackageSource::Mamba,
+    PackageSource::Dart,
+    PackageSource::Deb,
+    PackageSource::AppImage,
+];
+
+fn source_label(source: PackageSource) -> &'static str {
+    match source {
+        PackageSource::Apt => "APT",
+        PackageSource::Dnf => "DNF",
+        PackageSource::Pacman => "Pacman",
+        PackageSource::Zypper => "Zypper",
+        PackageSource::Flatpak => "Flatpak",
+        PackageSource::Snap => "Snap",
+        PackageSource::Npm => "npm",
+        PackageSource::Pip => "pip",
+        PackageSource::Pipx => "pipx",
+        PackageSource::Cargo => "cargo",
+        PackageSource::Brew => "brew",
+        PackageSource::Aur => "AUR",
+        PackageSource::Conda => "conda",
+        PackageSource::Mamba => "mamba",
+        PackageSource::Dart => "dart",
+        PackageSource::Deb => "Deb",
+        PackageSource::AppImage => "AppImage",
+    }
+}
+
+fn source_css(source: PackageSource) -> &'static str {
+    match source {
+        PackageSource::Apt => "source-apt",
+        PackageSource::Dnf => "source-dnf",
+        PackageSource::Pacman => "source-pacman",
+        PackageSource::Zypper => "source-zypper",
+        PackageSource::Flatpak => "source-flatpak",
+        PackageSource::Snap => "source-snap",
+        PackageSource::Npm => "source-npm",
+        PackageSource::Pip => "source-pip",
+        PackageSource::Pipx => "source-pipx",
+        PackageSource::Cargo => "source-cargo",
+        PackageSource::Brew => "source-brew",
+        PackageSource::Aur => "source-aur",
+        PackageSource::Conda => "source-conda",
+        PackageSource::Mamba => "source-mamba",
+        PackageSource::Dart => "source-dart",
+        PackageSource::Deb => "source-deb",
+        PackageSource::AppImage => "source-appimage",
+    }
+}
+
+fn set_enabled_in_config(config: &mut Config, source: PackageSource, enabled: bool) {
+    match source {
+        PackageSource::Apt => config.enabled_sources.apt = enabled,
+        PackageSource::Dnf => config.enabled_sources.dnf = enabled,
+        PackageSource::Pacman => config.enabled_sources.pacman = enabled,
+        PackageSource::Zypper => config.enabled_sources.zypper = enabled,
+        PackageSource::Flatpak => config.enabled_sources.flatpak = enabled,
+        PackageSource::Snap => config.enabled_sources.snap = enabled,
+        PackageSource::Npm => config.enabled_sources.npm = enabled,
+        PackageSource::Pip => config.enabled_sources.pip = enabled,
+        PackageSource::Pipx => config.enabled_sources.pipx = enabled,
+        PackageSource::Cargo => config.enabled_sources.cargo = enabled,
+        PackageSource::Brew => config.enabled_sources.brew = enabled,
+        PackageSource::Aur => config.enabled_sources.aur = enabled,
+        PackageSource::Conda => config.enabled_sources.conda = enabled,
+        PackageSource::Mamba => config.enabled_sources.mamba = enabled,
+        PackageSource::Dart => config.enabled_sources.dart = enabled,
+        PackageSource::Deb => config.enabled_sources.deb = enabled,
+        PackageSource::AppImage => config.enabled_sources.appimage = enabled,
+    }
+}
+
 /// Filter state for the package list
 #[derive(Clone, Default)]
 struct FilterState {
-    sources: Vec<PackageSource>,
+    source: Option<PackageSource>,
     search_query: String,
 }
 
 type LocalFn = Rc<dyn Fn()>;
 type LocalFnHolder = Rc<RefCell<Option<LocalFn>>>;
 
+#[derive(Clone)]
+struct SourceFilterWidgets {
+    menu_btn: gtk::MenuButton,
+    all_btn: gtk::CheckButton,
+    source_btns: HashMap<PackageSource, gtk::CheckButton>,
+    source_box: gtk::Box,
+}
+
+#[derive(Clone)]
+struct ProviderRowWidgets {
+    row: gtk::Box,
+    enabled_switch: gtk::Switch,
+    count_label: gtk::Label,
+    status_label: gtk::Label,
+}
+
 struct SidebarWidgets {
     sidebar: gtk::Box,
     nav_list: gtk::ListBox,
     all_count_label: gtk::Label,
     update_count_label: gtk::Label,
-    sources_box: gtk::Box,
-    sources_filter_badge: gtk::Label,
-    sources_reset_btn: gtk::Button,
-    sources_all_btn: gtk::ToggleButton,
-    source_buttons: HashMap<PackageSource, gtk::ToggleButton>,
-    source_counts: HashMap<PackageSource, gtk::Label>,
+    providers_box: gtk::Box,
+    provider_rows: HashMap<PackageSource, ProviderRowWidgets>,
+    provider_counts: HashMap<PackageSource, gtk::Label>,
 }
 
 struct ContentWidgets {
@@ -72,7 +171,7 @@ struct ContentWidgets {
     content_stack: gtk::Stack,
     sort_dropdown: gtk::DropDown,
     update_all_btn: gtk::Button,
-    toolbar_sources_chips: Vec<gtk::Button>,
+    toolbar_source_filters: Vec<SourceFilterWidgets>,
     toolbar_search_chips: Vec<gtk::Button>,
 }
 
@@ -106,13 +205,10 @@ pub struct LinGetWindow {
     update_count_label: gtk::Label,
     // Source count labels
     source_count_labels: HashMap<PackageSource, gtk::Label>,
-    source_filter_buttons: HashMap<PackageSource, gtk::ToggleButton>,
-    sources_box: gtk::Box,
-    sources_filter_badge: gtk::Label,
-    sources_all_btn: gtk::ToggleButton,
-    sources_reset_btn: gtk::Button,
-    // Top toolbar chips (All/Updates/Discover)
-    toolbar_sources_chips: Vec<gtk::Button>,
+    provider_rows: HashMap<PackageSource, ProviderRowWidgets>,
+    providers_box: gtk::Box,
+    // Top toolbar source filter popovers (All/Updates/Discover)
+    toolbar_source_filters: Vec<SourceFilterWidgets>,
     toolbar_search_chips: Vec<gtk::Button>,
     // Command center
     command_center: CommandCenter,
@@ -291,13 +387,10 @@ impl LinGetWindow {
             current_view,
             all_count_label: sidebar_widgets.all_count_label.clone(),
             update_count_label: sidebar_widgets.update_count_label.clone(),
-            source_count_labels: sidebar_widgets.source_counts.clone(),
-            source_filter_buttons: sidebar_widgets.source_buttons.clone(),
-            sources_box: sidebar_widgets.sources_box.clone(),
-            sources_filter_badge: sidebar_widgets.sources_filter_badge.clone(),
-            sources_all_btn: sidebar_widgets.sources_all_btn.clone(),
-            sources_reset_btn: sidebar_widgets.sources_reset_btn.clone(),
-            toolbar_sources_chips: content_widgets.toolbar_sources_chips.clone(),
+            source_count_labels: sidebar_widgets.provider_counts.clone(),
+            provider_rows: sidebar_widgets.provider_rows.clone(),
+            providers_box: sidebar_widgets.providers_box.clone(),
+            toolbar_source_filters: content_widgets.toolbar_source_filters.clone(),
             toolbar_search_chips: content_widgets.toolbar_search_chips.clone(),
             command_center,
             command_center_flap: command_center_flap.clone(),
@@ -547,8 +640,8 @@ impl LinGetWindow {
         nav_list.select_row(Some(&all_row));
         sidebar_box.append(&nav_list);
 
-        // Sources header + actions
-        let sources_header = gtk::Box::builder()
+        // Providers header
+        let providers_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .margin_top(24)
@@ -557,158 +650,35 @@ impl LinGetWindow {
             .margin_bottom(8)
             .build();
 
-        let sources_label = gtk::Label::builder()
-            .label("Sources")
+        let providers_label = gtk::Label::builder()
+            .label("Providers")
             .xalign(0.0)
             .hexpand(true)
             .build();
-        sources_label.add_css_class("caption");
-        sources_label.add_css_class("dim-label");
+        providers_label.add_css_class("caption");
+        providers_label.add_css_class("dim-label");
 
-        let sources_filter_badge = gtk::Label::builder().label("All").build();
-        sources_filter_badge.add_css_class("chip");
-        sources_filter_badge.add_css_class("chip-muted");
+        providers_header.append(&providers_label);
+        sidebar_box.append(&providers_header);
 
-        let sources_reset_btn = gtk::Button::builder()
-            .icon_name("edit-clear-symbolic")
-            .tooltip_text("Reset (clear search and source filters)")
-            .build();
-        sources_reset_btn.add_css_class("flat");
-        sources_reset_btn.add_css_class("circular");
-
-        sources_header.append(&sources_label);
-        sources_header.append(&sources_filter_badge);
-        sources_header.append(&sources_reset_btn);
-        sidebar_box.append(&sources_header);
-
-        let sources_box = gtk::Box::builder()
+        let providers_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(2)
             .margin_start(8)
             .margin_end(8)
             .build();
 
-        let mut source_buttons = HashMap::new();
-        let mut source_counts = HashMap::new();
+        let mut provider_rows = HashMap::new();
+        let mut provider_counts = HashMap::new();
 
-        let (sources_all_btn, all_count) =
-            Self::create_source_filter_btn("All", "view-grid-symbolic", "source-all");
-        sources_all_btn.set_active(true);
-        sources_all_btn.set_sensitive(true);
-        all_count.set_visible(false);
-        sources_box.append(&sources_all_btn);
+        for source in ALL_SOURCES {
+            let row = Self::create_provider_row(source);
+            provider_counts.insert(source, row.count_label.clone());
+            providers_box.append(&row.row);
+            provider_rows.insert(source, row);
+        }
 
-        let mut add_source = |source: PackageSource, label: &str, icon: &str, css: &str| {
-            let (btn, count) = Self::create_source_filter_btn(label, icon, css);
-            sources_box.append(&btn);
-            source_buttons.insert(source, btn);
-            source_counts.insert(source, count);
-        };
-
-        add_source(
-            PackageSource::Apt,
-            "APT",
-            "package-x-generic-symbolic",
-            "source-apt",
-        );
-        add_source(
-            PackageSource::Dnf,
-            "DNF",
-            "system-software-install-symbolic",
-            "source-dnf",
-        );
-        add_source(
-            PackageSource::Pacman,
-            "Pacman",
-            "package-x-generic-symbolic",
-            "source-pacman",
-        );
-        add_source(
-            PackageSource::Zypper,
-            "Zypper",
-            "system-software-install-symbolic",
-            "source-zypper",
-        );
-        add_source(
-            PackageSource::Flatpak,
-            "Flatpak",
-            "system-software-install-symbolic",
-            "source-flatpak",
-        );
-        add_source(
-            PackageSource::Snap,
-            "Snap",
-            "package-x-generic-symbolic",
-            "source-snap",
-        );
-        add_source(
-            PackageSource::Npm,
-            "npm",
-            "text-x-script-symbolic",
-            "source-npm",
-        );
-        add_source(
-            PackageSource::Pip,
-            "pip",
-            "text-x-python-symbolic",
-            "source-pip",
-        );
-        add_source(
-            PackageSource::Pipx,
-            "pipx",
-            "text-x-python-symbolic",
-            "source-pipx",
-        );
-        add_source(
-            PackageSource::Cargo,
-            "cargo",
-            "applications-development-symbolic",
-            "source-cargo",
-        );
-        add_source(
-            PackageSource::Brew,
-            "brew",
-            "application-x-executable-symbolic",
-            "source-brew",
-        );
-        add_source(
-            PackageSource::Aur,
-            "AUR",
-            "package-x-generic-symbolic",
-            "source-aur",
-        );
-        add_source(
-            PackageSource::Conda,
-            "conda",
-            "text-x-python-symbolic",
-            "source-conda",
-        );
-        add_source(
-            PackageSource::Mamba,
-            "mamba",
-            "text-x-python-symbolic",
-            "source-mamba",
-        );
-        add_source(
-            PackageSource::Dart,
-            "dart",
-            "applications-development-symbolic",
-            "source-dart",
-        );
-        add_source(
-            PackageSource::Deb,
-            "Deb",
-            "package-x-generic-symbolic",
-            "source-deb",
-        );
-        add_source(
-            PackageSource::AppImage,
-            "AppImage",
-            "application-x-executable-symbolic",
-            "source-appimage",
-        );
-
-        sidebar_box.append(&sources_box);
+        sidebar_box.append(&providers_box);
 
         // Spacer and Footer
         sidebar_box.append(&gtk::Box::builder().vexpand(true).build());
@@ -734,22 +704,66 @@ impl LinGetWindow {
             nav_list,
             all_count_label,
             update_count_label,
-            sources_box,
-            sources_filter_badge,
-            sources_reset_btn,
-            sources_all_btn,
-            source_buttons,
-            source_counts,
+            providers_box,
+            provider_rows,
+            provider_counts,
         }
     }
 
     fn build_content_area() -> ContentWidgets {
-        fn create_chip_button() -> gtk::Button {
+        fn create_search_chip_button() -> gtk::Button {
             let b = gtk::Button::builder().label("").build();
             b.add_css_class("flat");
             b.add_css_class("chip-btn");
             b.set_visible(false);
             b
+        }
+
+        fn create_source_filter() -> SourceFilterWidgets {
+            let menu_btn = gtk::MenuButton::builder().label("Source: All").build();
+            menu_btn.add_css_class("flat");
+            menu_btn.add_css_class("chip-btn");
+
+            let popover = gtk::Popover::new();
+            let popover_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(8)
+                .margin_top(8)
+                .margin_bottom(8)
+                .margin_start(10)
+                .margin_end(10)
+                .build();
+
+            let all_btn = gtk::CheckButton::builder()
+                .label("All sources")
+                .active(true)
+                .build();
+            popover_box.append(&all_btn);
+            popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+            let source_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .build();
+
+            let mut source_btns = HashMap::new();
+            for source in ALL_SOURCES {
+                let btn = gtk::CheckButton::with_label(source_label(source));
+                btn.set_group(Some(&all_btn));
+                source_box.append(&btn);
+                source_btns.insert(source, btn);
+            }
+
+            popover_box.append(&source_box);
+            popover.set_child(Some(&popover_box));
+            menu_btn.set_popover(Some(&popover));
+
+            SourceFilterWidgets {
+                menu_btn,
+                all_btn,
+                source_btns,
+                source_box,
+            }
         }
 
         let content_box = gtk::Box::builder()
@@ -764,12 +778,12 @@ impl LinGetWindow {
             .build();
 
         // Toolbar chips (wired in setup_signals)
-        let discover_sources_chip = create_chip_button();
-        let discover_search_chip = create_chip_button();
-        let all_sources_chip = create_chip_button();
-        let all_search_chip = create_chip_button();
-        let updates_sources_chip = create_chip_button();
-        let updates_search_chip = create_chip_button();
+        let discover_source_filter = create_source_filter();
+        let discover_search_chip = create_search_chip_button();
+        let all_source_filter = create_source_filter();
+        let all_search_chip = create_search_chip_button();
+        let updates_source_filter = create_source_filter();
+        let updates_search_chip = create_search_chip_button();
 
         // Discover View
         let discover_list_box = gtk::ListBox::builder()
@@ -798,7 +812,7 @@ impl LinGetWindow {
             .spacing(6)
             .hexpand(true)
             .build();
-        discover_chips.append(&discover_sources_chip);
+        discover_chips.append(&discover_source_filter.menu_btn);
         discover_chips.append(&discover_search_chip);
         discover_toolbar.append(&discover_title);
         discover_toolbar.append(&discover_chips);
@@ -850,7 +864,7 @@ impl LinGetWindow {
             .spacing(6)
             .hexpand(true)
             .build();
-        all_chips.append(&all_sources_chip);
+        all_chips.append(&all_source_filter.menu_btn);
         all_chips.append(&all_search_chip);
 
         let sort_options =
@@ -926,7 +940,7 @@ impl LinGetWindow {
             .spacing(6)
             .hexpand(true)
             .build();
-        updates_chips.append(&updates_sources_chip);
+        updates_chips.append(&updates_source_filter.menu_btn);
         updates_chips.append(&updates_search_chip);
         let update_all_btn = gtk::Button::builder()
             .label("Update All")
@@ -981,10 +995,10 @@ impl LinGetWindow {
             content_stack,
             sort_dropdown,
             update_all_btn,
-            toolbar_sources_chips: vec![
-                discover_sources_chip,
-                all_sources_chip,
-                updates_sources_chip,
+            toolbar_source_filters: vec![
+                discover_source_filter,
+                all_source_filter,
+                updates_source_filter,
             ],
             toolbar_search_chips: vec![discover_search_chip, all_search_chip, updates_search_chip],
         }
@@ -1067,47 +1081,58 @@ impl LinGetWindow {
         )
     }
 
-    fn create_source_filter_btn(
-        label: &str,
-        icon: &str,
-        css_class: &str,
-    ) -> (gtk::ToggleButton, gtk::Label) {
-        let btn_box = gtk::Box::builder()
+    fn create_provider_row(source: PackageSource) -> ProviderRowWidgets {
+        let row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
+            .spacing(10)
             .build();
+        row.add_css_class("provider-row");
+
+        let dot = gtk::Box::builder()
+            .width_request(10)
+            .height_request(10)
+            .valign(gtk::Align::Center)
+            .build();
+        dot.add_css_class("source-dot");
+        dot.add_css_class(source_css(source));
+
+        let labels = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .hexpand(true)
+            .build();
+        let title = gtk::Label::builder()
+            .label(source_label(source))
+            .xalign(0.0)
+            .build();
+        title.add_css_class("provider-title");
+        let status = gtk::Label::builder()
+            .label("Not detected")
+            .xalign(0.0)
+            .build();
+        status.add_css_class("caption");
+        status.add_css_class("dim-label");
+        status.set_visible(false);
+        labels.append(&title);
+        labels.append(&status);
+
         let count_label = gtk::Label::new(Some("0"));
         count_label.add_css_class("dim-label");
         count_label.add_css_class("caption");
 
-        if css_class != "source-all" {
-            let dot = gtk::Box::builder()
-                .width_request(10)
-                .height_request(10)
-                .valign(gtk::Align::Center)
-                .build();
-            dot.add_css_class("source-dot");
-            dot.add_css_class(css_class);
-            btn_box.append(&dot);
+        let enabled_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
+
+        row.append(&dot);
+        row.append(&labels);
+        row.append(&count_label);
+        row.append(&enabled_switch);
+
+        ProviderRowWidgets {
+            row,
+            enabled_switch,
+            count_label,
+            status_label: status,
         }
-        btn_box.append(&gtk::Image::from_icon_name(icon));
-        btn_box.append(
-            &gtk::Label::builder()
-                .label(label)
-                .hexpand(true)
-                .xalign(0.0)
-                .build(),
-        );
-        btn_box.append(&count_label);
-
-        let btn = gtk::ToggleButton::builder()
-            .child(&btn_box)
-            .active(false)
-            .build();
-        btn.add_css_class("flat");
-        btn.add_css_class("source-filter-btn");
-
-        (btn, count_label)
     }
 
     fn setup_actions(&self, app: &adw::Application, reload_packages: Rc<dyn Fn()>) {
@@ -1450,12 +1475,9 @@ impl LinGetWindow {
         let all_count_label = self.all_count_label.clone();
         let update_count_label = self.update_count_label.clone();
         let source_count_labels = self.source_count_labels.clone();
-        let source_filter_buttons = self.source_filter_buttons.clone();
-        let sources_box = self.sources_box.clone();
-        let sources_filter_badge = self.sources_filter_badge.clone();
-        let sources_all_btn = self.sources_all_btn.clone();
-        let sources_reset_btn = self.sources_reset_btn.clone();
-        let toolbar_sources_chips = self.toolbar_sources_chips.clone();
+        let provider_rows = self.provider_rows.clone();
+        let providers_box = self.providers_box.clone();
+        let toolbar_source_filters = self.toolbar_source_filters.clone();
         let toolbar_search_chips = self.toolbar_search_chips.clone();
         let command_center = self.command_center.clone();
         let command_center_flap = self.command_center_flap.clone();
@@ -1494,17 +1516,16 @@ impl LinGetWindow {
         let update_top_chips: Rc<dyn Fn()> = Rc::new({
             let filter_state = filter_state.clone();
             let search_entry = search_entry.clone();
-            let toolbar_sources_chips = toolbar_sources_chips.clone();
+            let toolbar_source_filters = toolbar_source_filters.clone();
             let toolbar_search_chips = toolbar_search_chips.clone();
 
             move || {
-                let sources = filter_state.borrow().sources.clone();
+                let source = filter_state.borrow().source;
                 let query = search_entry.text().trim().to_string();
 
-                let sources_label = if sources.is_empty() {
-                    None
-                } else {
-                    Some(format!("Source: {}", sources[0]))
+                let sources_label = match source {
+                    None => "Source: All".to_string(),
+                    Some(s) => format!("Source: {}", s),
                 };
 
                 let mut query_label = query.clone();
@@ -1517,14 +1538,9 @@ impl LinGetWindow {
                     Some(format!("Search: {}", query_label))
                 };
 
-                for b in &toolbar_sources_chips {
-                    if let Some(ref label) = sources_label {
-                        b.set_label(label);
-                        b.set_tooltip_text(Some(label));
-                        b.set_visible(true);
-                    } else {
-                        b.set_visible(false);
-                    }
+                for f in &toolbar_source_filters {
+                    f.menu_btn.set_label(&sources_label);
+                    f.menu_btn.set_tooltip_text(Some(&sources_label));
                 }
 
                 for b in &toolbar_search_chips {
@@ -1793,12 +1809,10 @@ impl LinGetWindow {
             let selection_mode = selection_mode.clone();
             let skip_filter = skip_filter.clone();
             let apply_filters_holder = apply_filters_holder.clone();
-            let source_filter_buttons = source_filter_buttons.clone();
             let enabled_sources = enabled_sources.clone();
             let reload_holder = reload_holder.clone();
-            let sources_filter_badge = sources_filter_badge.clone();
-            let sources_all_btn = sources_all_btn.clone();
             let update_top_chips = update_top_chips.clone();
+            let toolbar_source_filters = toolbar_source_filters.clone();
             let command_center = command_center.clone();
             let reveal_command_center = reveal_command_center.clone();
 
@@ -1813,11 +1827,24 @@ impl LinGetWindow {
                 let filter = filter_state.borrow();
                 let sel_mode = *selection_mode.borrow();
 
+                // Sync source-filter popovers with current state.
+                {
+                    let active_source = filter.source;
+                    *skip_filter.borrow_mut() = true;
+                    for f in &toolbar_source_filters {
+                        f.all_btn.set_active(active_source.is_none());
+                        for (s, btn) in &f.source_btns {
+                            btn.set_active(Some(*s) == active_source);
+                        }
+                    }
+                    *skip_filter.borrow_mut() = false;
+                }
+
                 let filtered_all: Vec<Package> = all_packages
                     .iter()
                     .filter(|p| {
                         enabled.contains(&p.source)
-                            && (filter.sources.is_empty() || filter.sources.contains(&p.source))
+                            && filter.source.is_none_or(|s| p.source == s)
                             && (filter.search_query.is_empty()
                                 || p.name.to_lowercase().contains(&filter.search_query)
                                 || p.description.to_lowercase().contains(&filter.search_query))
@@ -1831,28 +1858,12 @@ impl LinGetWindow {
                     .cloned()
                     .collect();
 
-                // Source filter badge
-                {
-                    let count = filter.sources.len();
-                    let badge = if count == 0 {
-                        "All".to_string()
-                    } else {
-                        count.to_string()
-                    };
-                    sources_filter_badge.set_label(&badge);
-
-                    *skip_filter.borrow_mut() = true;
-                    sources_all_btn.set_active(count == 0);
-                    *skip_filter.borrow_mut() = false;
-                }
-
                 let on_source_click = {
                     let filter_state = filter_state.clone();
                     let skip_filter = skip_filter.clone();
                     let apply_filters_holder = apply_filters_holder.clone();
-                    let source_filter_buttons = source_filter_buttons.clone();
                     let enabled_sources = enabled_sources.clone();
-                    let sources_all_btn = sources_all_btn.clone();
+                    let toolbar_source_filters = toolbar_source_filters.clone();
 
                     move |source: PackageSource| {
                         if !enabled_sources.borrow().contains(&source) {
@@ -1860,11 +1871,13 @@ impl LinGetWindow {
                         }
 
                         *skip_filter.borrow_mut() = true;
-                        filter_state.borrow_mut().sources = vec![source];
-                        for (s, btn) in &source_filter_buttons {
-                            btn.set_active(*s == source);
+                        filter_state.borrow_mut().source = Some(source);
+                        for f in &toolbar_source_filters {
+                            f.all_btn.set_active(false);
+                            for (s, btn) in &f.source_btns {
+                                btn.set_active(*s == source);
+                            }
                         }
-                        sources_all_btn.set_active(false);
                         *skip_filter.borrow_mut() = false;
                         if let Some(apply) = apply_filters_holder.borrow().as_ref() {
                             apply();
@@ -1917,26 +1930,47 @@ impl LinGetWindow {
 
         *apply_filters_holder.borrow_mut() = Some(apply_filters.clone());
 
-        // Toolbar chips: click to clear filters/search.
-        for chip in toolbar_sources_chips.iter() {
-            let chip = chip.clone();
+        // Source filter popovers (top toolbar).
+        for filter_ui in toolbar_source_filters.iter() {
+            let all_btn = filter_ui.all_btn.clone();
+            let source_btns = filter_ui.source_btns.clone();
             let filter_state = filter_state.clone();
             let skip_filter = skip_filter.clone();
-            let sources_all_btn = sources_all_btn.clone();
-            let source_filter_buttons = source_filter_buttons.clone();
-            let apply_filters_holder = apply_filters_holder.clone();
-            chip.connect_clicked(move |_| {
-                *skip_filter.borrow_mut() = true;
-                filter_state.borrow_mut().sources.clear();
-                sources_all_btn.set_active(true);
-                for btn in source_filter_buttons.values() {
-                    btn.set_active(false);
+            let apply_filters = apply_filters.clone();
+
+            let filter_state_all = filter_state.clone();
+            let skip_filter_all = skip_filter.clone();
+            let apply_filters_all = apply_filters.clone();
+            all_btn.connect_toggled(move |btn| {
+                if *skip_filter_all.borrow() || !btn.is_active() {
+                    return;
                 }
-                *skip_filter.borrow_mut() = false;
-                if let Some(apply) = apply_filters_holder.borrow().as_ref() {
-                    apply();
-                }
+                *skip_filter_all.borrow_mut() = true;
+                filter_state_all.borrow_mut().source = None;
+                *skip_filter_all.borrow_mut() = false;
+                apply_filters_all();
             });
+
+            for (source, btn) in source_btns {
+                let btn = btn.clone();
+                let filter_state = filter_state.clone();
+                let skip_filter = skip_filter.clone();
+                let apply_filters = apply_filters.clone();
+                let enabled_sources = enabled_sources.clone();
+
+                btn.connect_toggled(move |b| {
+                    if *skip_filter.borrow() || !b.is_active() {
+                        return;
+                    }
+                    if !enabled_sources.borrow().contains(&source) {
+                        return;
+                    }
+                    *skip_filter.borrow_mut() = true;
+                    filter_state.borrow_mut().source = Some(source);
+                    *skip_filter.borrow_mut() = false;
+                    apply_filters();
+                });
+            }
         }
 
         for chip in toolbar_search_chips.iter() {
@@ -1949,68 +1983,153 @@ impl LinGetWindow {
 
         update_top_chips();
 
+        let skip_provider_ui = Rc::new(RefCell::new(false));
+
         let apply_enabled_sources_ui: Rc<dyn Fn()> = Rc::new({
             let enabled_sources = enabled_sources.clone();
             let available_sources = available_sources.clone();
             let filter_state = filter_state.clone();
-            let source_filter_buttons = source_filter_buttons.clone();
-            let sources_box = sources_box.clone();
+            let provider_rows = provider_rows.clone();
+            let providers_box = providers_box.clone();
+            let toolbar_source_filters = toolbar_source_filters.clone();
             let skip_filter = skip_filter.clone();
+            let skip_provider_ui = skip_provider_ui.clone();
             let apply_filters = apply_filters.clone();
 
             move || {
                 let enabled = enabled_sources.borrow().clone();
                 let available = available_sources.borrow().clone();
 
-                *skip_filter.borrow_mut() = true;
-                let mut sources: Vec<PackageSource> =
-                    source_filter_buttons.keys().copied().collect();
+                // Sort providers: available first, then enabled, then name.
+                let mut sources = ALL_SOURCES.to_vec();
                 sources.sort_by(|a, b| {
                     let a_key = (!available.contains(a), !enabled.contains(a), a.to_string());
                     let b_key = (!available.contains(b), !enabled.contains(b), b.to_string());
                     a_key.cmp(&b_key)
                 });
 
-                while let Some(child) = sources_box.first_child() {
-                    sources_box.remove(&child);
-                }
-
-                for source in sources {
-                    if let Some(btn) = source_filter_buttons.get(&source) {
-                        btn.set_visible(true);
-
-                        let is_available = available.contains(&source);
-                        let is_enabled = enabled.contains(&source);
-                        btn.set_sensitive(is_available && is_enabled);
-
-                        if is_available {
-                            btn.remove_css_class("source-unavailable");
-                        } else {
-                            btn.add_css_class("source-unavailable");
-                        }
-
-                        if is_enabled {
-                            btn.remove_css_class("source-disabled");
-                        } else {
-                            btn.add_css_class("source-disabled");
-                        }
-
-                        if !is_available || !is_enabled {
-                            btn.set_active(false);
-                        }
-
-                        sources_box.append(btn);
+                // Reorder sidebar provider rows.
+                let mut prev: Option<gtk::Widget> = None;
+                for source in &sources {
+                    if let Some(row) = provider_rows.get(source) {
+                        let w = row.row.clone().upcast::<gtk::Widget>();
+                        providers_box.reorder_child_after(&w, prev.as_ref());
+                        prev = Some(w);
                     }
                 }
 
-                let mut state = filter_state.borrow_mut();
-                state.sources.retain(|s| enabled.contains(s));
-                drop(state);
+                // Update row UI (availability + enabled).
+                *skip_provider_ui.borrow_mut() = true;
+                for source in ALL_SOURCES {
+                    if let Some(row) = provider_rows.get(&source) {
+                        let is_available = available.contains(&source);
+                        let is_enabled = enabled.contains(&source) && is_available;
+
+                        row.enabled_switch.set_sensitive(is_available);
+                        row.enabled_switch.set_active(is_enabled);
+
+                        if is_available {
+                            row.row.remove_css_class("provider-unavailable");
+                            row.status_label.set_visible(false);
+                        } else {
+                            row.row.add_css_class("provider-unavailable");
+                            row.status_label.set_visible(true);
+                        }
+                    }
+                }
+                *skip_provider_ui.borrow_mut() = false;
+
+                // Update popover filter list (disable items that can't be filtered).
+                *skip_filter.borrow_mut() = true;
+                for filter_ui in &toolbar_source_filters {
+                    let mut prev: Option<gtk::Widget> = None;
+                    for source in &sources {
+                        if let Some(btn) = filter_ui.source_btns.get(source) {
+                            let w = btn.clone().upcast::<gtk::Widget>();
+                            filter_ui.source_box.reorder_child_after(&w, prev.as_ref());
+                            prev = Some(w);
+
+                            let can_filter = available.contains(source) && enabled.contains(source);
+                            btn.set_sensitive(can_filter);
+                            if !can_filter && btn.is_active() {
+                                btn.set_active(false);
+                            }
+                        }
+                    }
+                }
+
+                // If the currently selected filter becomes unavailable/disabled, fall back to All.
+                {
+                    let mut state = filter_state.borrow_mut();
+                    if let Some(s) = state.source {
+                        if !enabled.contains(&s) || !available.contains(&s) {
+                            state.source = None;
+                        }
+                    }
+                }
                 *skip_filter.borrow_mut() = false;
 
                 apply_filters();
             }
         });
+
+        // Provider enable/disable toggles (sidebar).
+        for source in ALL_SOURCES {
+            if let Some(row) = provider_rows.get(&source) {
+                let enabled_switch = row.enabled_switch.clone();
+                let enabled_sources = enabled_sources.clone();
+                let available_sources = available_sources.clone();
+                let config = config.clone();
+                let pm = pm.clone();
+                let filter_state = filter_state.clone();
+                let apply_enabled_sources_ui = apply_enabled_sources_ui.clone();
+                let reload_holder = reload_holder.clone();
+                let skip_provider_ui = skip_provider_ui.clone();
+
+                enabled_switch.connect_state_set(move |_, state| {
+                    if *skip_provider_ui.borrow() {
+                        return glib::Propagation::Proceed;
+                    }
+
+                    let available = available_sources.borrow().contains(&source);
+                    if !available {
+                        return glib::Propagation::Stop;
+                    }
+
+                    if state {
+                        enabled_sources.borrow_mut().insert(source);
+                    } else {
+                        enabled_sources.borrow_mut().remove(&source);
+                        if filter_state.borrow().source == Some(source) {
+                            filter_state.borrow_mut().source = None;
+                        }
+                    }
+
+                    {
+                        let mut cfg = config.borrow_mut();
+                        set_enabled_in_config(&mut cfg, source, state);
+                        let _ = cfg.save();
+                    }
+
+                    let sources = enabled_sources.borrow().clone();
+                    let pm = pm.clone();
+                    glib::spawn_future_local(async move {
+                        pm.lock().await.set_enabled_sources(sources);
+                    });
+
+                    apply_enabled_sources_ui();
+                    if state {
+                        if let Some(reload) = reload_holder.borrow().as_ref() {
+                            reload();
+                        }
+                    }
+
+                    glib::Propagation::Proceed
+                });
+            }
+        }
+
+        apply_enabled_sources_ui();
 
         let refresh_in_progress = Rc::new(RefCell::new(false));
         let load_packages = {
@@ -2294,81 +2413,7 @@ impl LinGetWindow {
             *discover_debounce_holder.borrow_mut() = Some(id);
         });
 
-        // Source Filter Buttons (radio-style: one source at a time, or All)
-        for (source, btn) in &source_filter_buttons {
-            let source = *source;
-            let btn = btn.clone();
-            let filter_state = filter_state.clone();
-            let apply_filters = apply_filters.clone();
-            let skip_filter = skip_filter.clone();
-            let sources_all_btn = sources_all_btn.clone();
-            let source_filter_buttons = source_filter_buttons.clone();
-
-            btn.connect_toggled(move |b| {
-                if *skip_filter.borrow() {
-                    return;
-                }
-
-                *skip_filter.borrow_mut() = true;
-                if b.is_active() {
-                    // Ensure only one source button is active at a time.
-                    for (s, other) in &source_filter_buttons {
-                        if *s != source {
-                            other.set_active(false);
-                        }
-                    }
-                    filter_state.borrow_mut().sources = vec![source];
-                    sources_all_btn.set_active(false);
-                } else {
-                    // If the active source is toggled off, return to All.
-                    filter_state.borrow_mut().sources.clear();
-                    sources_all_btn.set_active(true);
-                }
-                *skip_filter.borrow_mut() = false;
-                apply_filters();
-            });
-        }
-
-        // All sources filter
-        let source_filter_buttons_clear = source_filter_buttons.clone();
-        let filter_state_all_toggle = filter_state.clone();
-        let skip_filter_all_toggle = skip_filter.clone();
-        let apply_filters_all_toggle = apply_filters.clone();
-        sources_all_btn.connect_toggled(move |btn| {
-            if *skip_filter_all_toggle.borrow() {
-                return;
-            }
-            if !btn.is_active() {
-                return;
-            }
-
-            *skip_filter_all_toggle.borrow_mut() = true;
-            for b in source_filter_buttons_clear.values() {
-                b.set_active(false);
-            }
-            filter_state_all_toggle.borrow_mut().sources.clear();
-            *skip_filter_all_toggle.borrow_mut() = false;
-            apply_filters_all_toggle();
-        });
-
-        // Reset (clear search + source filters)
-        let search_entry_reset = search_entry.clone();
-        let source_filter_buttons_reset = source_filter_buttons.clone();
-        let filter_state_reset = filter_state.clone();
-        let skip_filter_reset = skip_filter.clone();
-        let apply_filters_reset = apply_filters.clone();
-        let sources_all_btn_reset = sources_all_btn.clone();
-        sources_reset_btn.connect_clicked(move |_| {
-            *skip_filter_reset.borrow_mut() = true;
-            search_entry_reset.set_text("");
-            for btn in source_filter_buttons_reset.values() {
-                btn.set_active(false);
-            }
-            sources_all_btn_reset.set_active(true);
-            filter_state_reset.borrow_mut().sources.clear();
-            *skip_filter_reset.borrow_mut() = false;
-            apply_filters_reset();
-        });
+        // Source filter lives in the top toolbar popover (not the sidebar).
 
         // Sort
         let packages_sort = packages.clone();

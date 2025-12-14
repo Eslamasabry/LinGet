@@ -25,7 +25,7 @@ Also: parts of this project were **vibe-coded** (rapidly prototyped with AI assi
 
 - **Unified Library** - View and manage packages from multiple sources in a single list.
 - **Modern UI** - Built with GTK4 and Libadwaita for a native GNOME experience.
-- **Smart Filtering** - Toggle sources on/off instantly to find what you need.
+- **Providers + Filtering** - Enable/disable providers from the sidebar, and filter the list by source from the top toolbar.
 - **Bulk Operations** - Select multiple packages to update or remove them all at once.
 - **Backup & Restore** - Export your package list to a file and restore it on another machine.
 - **Update Center** - See all available updates across your system in one view.
@@ -103,7 +103,8 @@ curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/main/install.sh 
 ## Usage
 
 - **Navigation**: Use the sidebar to switch between "All Packages" and "Updates".
-- **Filtering**: Click the source badges in the sidebar (e.g., "APT", "Flatpak") to filter the list.
+- **Providers**: Use the sidebar "Providers" switches to enable/disable package sources (unavailable providers are dimmed).
+- **Filtering**: Use the top toolbar `Source: …` popover to filter the current view by a single source.
 - **Selection**: Toggle "Selection Mode" (Ctrl+S) to select multiple packages for bulk actions.
 - **Details**: Click on any package row to view more details and options.
 
