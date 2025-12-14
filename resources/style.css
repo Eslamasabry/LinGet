@@ -302,6 +302,22 @@
     min-height: 36px;
 }
 
+.pkg-row .row-progress {
+    min-width: 86px;
+    margin-left: 4px;
+    margin-right: 6px;
+    opacity: 0.85;
+}
+
+.pkg-row .row-progress trough {
+    min-height: 6px;
+    border-radius: 999px;
+}
+
+.pkg-row .row-progress progress {
+    border-radius: 999px;
+}
+
 .pkg-row:hover .row-action,
 .pkg-row:focus-within .row-action {
     opacity: 1.0;

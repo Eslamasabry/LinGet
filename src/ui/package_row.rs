@@ -13,6 +13,7 @@ pub struct PackageRow {
     pub checkbox: gtk::CheckButton,
     pub action_button: gtk::Button,
     pub spinner: gtk::Spinner,
+    pub progress_bar: gtk::ProgressBar,
     pub source_button: gtk::Button,
     pub update_icon: gtk::Image,
 }
@@ -131,6 +132,17 @@ impl PackageRow {
         spinner.add_css_class("row-spinner");
         row.add_suffix(&spinner);
 
+        // Per-row progress (hidden by default; used for inline operations)
+        let progress_bar = gtk::ProgressBar::builder()
+            .show_text(false)
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        progress_bar.add_css_class("row-progress");
+        progress_bar.set_width_request(86);
+        progress_bar.set_height_request(6);
+        row.add_suffix(&progress_bar);
+
         // Navigate icon
         let nav_icon = gtk::Image::builder().icon_name("go-next-symbolic").build();
         nav_icon.add_css_class("dim-label");
@@ -146,6 +158,7 @@ impl PackageRow {
             checkbox,
             action_button,
             spinner,
+            progress_bar,
             source_button,
             update_icon,
         }

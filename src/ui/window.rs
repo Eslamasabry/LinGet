@@ -1826,9 +1826,6 @@ impl LinGetWindow {
             let source_filter_buttons = source_filter_buttons.clone();
             let enabled_sources = enabled_sources.clone();
             let reload_holder = reload_holder.clone();
-            let progress_overlay = progress_overlay.clone();
-            let progress_bar = progress_bar.clone();
-            let progress_label = progress_label.clone();
             let sources_filter_badge = sources_filter_badge.clone();
             let sources_all_btn = sources_all_btn.clone();
             let update_top_chips = update_top_chips.clone();
@@ -1917,9 +1914,6 @@ impl LinGetWindow {
                     sel_mode,
                     on_source_click.clone(),
                     reload_packages.clone(),
-                    &progress_overlay,
-                    &progress_bar,
-                    &progress_label,
                     &command_center,
                     reveal_command_center.clone(),
                 );
@@ -1934,9 +1928,6 @@ impl LinGetWindow {
                     sel_mode,
                     on_source_click,
                     reload_packages,
-                    &progress_overlay,
-                    &progress_bar,
-                    &progress_label,
                     &command_center,
                     reveal_command_center.clone(),
                 );
@@ -2244,9 +2235,6 @@ impl LinGetWindow {
         let discover_debounce: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let discover_debounce_holder = discover_debounce.clone();
         let reload_holder_search = reload_holder.clone();
-        let progress_overlay_search = progress_overlay.clone();
-        let progress_bar_search = progress_bar.clone();
-        let progress_label_search = progress_label.clone();
         let update_top_chips_search = update_top_chips.clone();
         let command_center_search = command_center.clone();
         let reveal_command_center_search = reveal_command_center.clone();
@@ -2284,9 +2272,6 @@ impl LinGetWindow {
             }
 
             let reload_holder_for_timeout = reload_holder_search.clone();
-            let progress_overlay_for_timeout = progress_overlay_search.clone();
-            let progress_bar_for_timeout = progress_bar_search.clone();
-            let progress_label_for_timeout = progress_label_search.clone();
             let command_center_for_timeout = command_center_search.clone();
             let reveal_command_center_for_timeout = reveal_command_center_search.clone();
 
@@ -2325,9 +2310,6 @@ impl LinGetWindow {
                         false,
                         on_source_click,
                         reload_packages,
-                        &progress_overlay_for_timeout,
-                        &progress_bar_for_timeout,
-                        &progress_label_for_timeout,
                         &command_center_for_timeout,
                         reveal_command_center_for_timeout.clone(),
                     );
@@ -2902,9 +2884,6 @@ impl LinGetWindow {
         selection_mode: bool,
         on_source_click: F,
         reload_packages: Option<LocalFn>,
-        progress_overlay: &gtk::Box,
-        progress_bar: &gtk::ProgressBar,
-        progress_label: &gtk::Label,
         command_center: &CommandCenter,
         reveal_command_center: Rc<dyn Fn(bool)>,
     ) where
@@ -2931,9 +2910,6 @@ impl LinGetWindow {
         let config = config.clone();
         let rows = rows.clone();
         let reload_packages = reload_packages.clone();
-        let progress_overlay = progress_overlay.clone();
-        let progress_bar = progress_bar.clone();
-        let progress_label = progress_label.clone();
         let command_center = command_center.clone();
         let reveal_command_center = reveal_command_center.clone();
         let packages: Vec<Package> = packages.to_vec();
@@ -2982,11 +2958,10 @@ impl LinGetWindow {
                 let toast_action = toast_overlay.clone();
                 let spinner = row.spinner.clone();
                 let action_btn = row.action_button.clone();
+                let row_widget = row.widget.clone();
+                let row_progress = row.progress_bar.clone();
                 let row_pkg = row.package.clone();
                 let row_update_icon = row.update_icon.clone();
-                let progress_overlay = progress_overlay.clone();
-                let progress_bar = progress_bar.clone();
-                let progress_label = progress_label.clone();
                 let reload_action = reload_packages.clone();
                 let command_center_action = command_center.clone();
                 let reveal_command_center_action = reveal_command_center.clone();
@@ -2997,11 +2972,10 @@ impl LinGetWindow {
                     let toast = toast_action.clone();
                     let spinner = spinner.clone();
                     let btn = action_btn.clone();
+                    let row_widget = row_widget.clone();
+                    let row_progress = row_progress.clone();
                     let row_pkg = row_pkg.clone();
                     let row_update_icon = row_update_icon.clone();
-                    let progress_overlay = progress_overlay.clone();
-                    let progress_bar = progress_bar.clone();
-                    let progress_label = progress_label.clone();
                     let reload_action = reload_action.clone();
                     let command_center = command_center_action.clone();
                     let reveal_command_center = reveal_command_center_action.clone();
@@ -3034,18 +3008,17 @@ impl LinGetWindow {
                             Some(retry),
                         );
 
-                        progress_overlay.set_visible(true);
-                        progress_bar.set_fraction(0.0);
-                        progress_bar.set_text(None);
                         let op_label = match pkg.status {
                             PackageStatus::UpdateAvailable => format!("Updating {}...", pkg.name),
                             PackageStatus::Installed => format!("Removing {}...", pkg.name),
                             PackageStatus::NotInstalled => format!("Installing {}...", pkg.name),
                             _ => "Working...".to_string(),
                         };
-                        progress_label.set_label(&op_label);
+                        row_widget.set_subtitle(&op_label);
+                        row_progress.set_fraction(0.0);
+                        row_progress.set_visible(true);
 
-                        let progress_bar_pulse = progress_bar.clone();
+                        let progress_bar_pulse = row_progress.clone();
                         let pulser_id =
                             glib::timeout_add_local(Duration::from_millis(120), move || {
                                 progress_bar_pulse.pulse();
@@ -3067,10 +3040,11 @@ impl LinGetWindow {
                             Ok(v) => v,
                             Err(e) => {
                                 try_remove_source(pulser_id);
-                                progress_overlay.set_visible(false);
+                                row_progress.set_visible(false);
                                 spinner.stop();
                                 spinner.set_visible(false);
                                 btn.set_visible(true);
+                                row_widget.set_subtitle("");
                                 task.finish(
                                     CommandEventKind::Error,
                                     "Operation failed",
@@ -3087,10 +3061,16 @@ impl LinGetWindow {
                         };
 
                         try_remove_source(pulser_id);
-                        progress_overlay.set_visible(false);
+                        row_progress.set_visible(false);
                         spinner.stop();
                         spinner.set_visible(false);
                         btn.set_visible(true);
+                        let restore = if pkg.description.is_empty() {
+                            pkg.source.to_string()
+                        } else {
+                            pkg.description.clone()
+                        };
+                        row_widget.set_subtitle(&restore);
 
                         let ok = result.is_ok();
                         let (kind, title, details, command) = match result {

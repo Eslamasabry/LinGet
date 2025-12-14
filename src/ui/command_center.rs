@@ -52,7 +52,9 @@ pub struct CommandTask {
 
 struct Inner {
     root: gtk::Box,
-    list: gtk::ListBox,
+    active_section: gtk::Box,
+    active_list: gtk::ListBox,
+    history_list: gtk::ListBox,
     empty: adw::StatusPage,
     stack: gtk::Stack,
     unread: RefCell<u32>,
@@ -63,6 +65,7 @@ struct Inner {
 
 struct TaskInner {
     center: CommandCenter,
+    wrapper: gtk::ListBoxRow,
     icon: gtk::Image,
     spinner: gtk::Spinner,
     row: adw::ActionRow,
@@ -105,10 +108,63 @@ impl CommandCenter {
         header.append(&unread_badge);
         header.append(&clear_btn);
 
-        let list = gtk::ListBox::builder()
+        let active_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        let active_label = gtk::Label::builder()
+            .label("Active")
+            .hexpand(true)
+            .xalign(0.0)
+            .build();
+        active_label.add_css_class("caption");
+        active_label.add_css_class("dim-label");
+        active_header.append(&active_label);
+
+        let active_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(vec!["boxed-list"])
             .build();
+
+        let history_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_top(18)
+            .margin_bottom(6)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        let history_label = gtk::Label::builder()
+            .label("History")
+            .hexpand(true)
+            .xalign(0.0)
+            .build();
+        history_label.add_css_class("caption");
+        history_label.add_css_class("dim-label");
+        history_header.append(&history_label);
+
+        let history_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["boxed-list"])
+            .build();
+
+        let active_section = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        active_section.append(&active_header);
+        active_section.append(&active_list);
+        active_section.set_visible(false);
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        content.append(&active_section);
+        content.append(&history_header);
+        content.append(&history_list);
 
         let empty = adw::StatusPage::builder()
             .icon_name("format-justify-fill-symbolic")
@@ -121,7 +177,7 @@ impl CommandCenter {
             .transition_duration(150)
             .build();
         stack.add_named(&empty, Some("empty"));
-        stack.add_named(&list, Some("list"));
+        stack.add_named(&content, Some("list"));
         stack.set_visible_child_name("empty");
 
         let scrolled = gtk::ScrolledWindow::builder()
@@ -141,7 +197,9 @@ impl CommandCenter {
         let this = Self {
             inner: Rc::new(Inner {
                 root,
-                list,
+                active_section,
+                active_list,
+                history_list,
                 empty,
                 stack,
                 unread: RefCell::new(0),
@@ -285,19 +343,21 @@ impl CommandCenter {
 
         let wrapper = gtk::ListBoxRow::new();
         wrapper.set_child(Some(&row));
-        self.inner.list.prepend(&wrapper);
+        self.inner.active_list.prepend(&wrapper);
+        self.inner.active_section.set_visible(true);
 
         self.inner.stack.set_visible_child_name("list");
         self.inner.empty.set_visible(false);
 
         glib::idle_add_local_once({
-            let list = self.inner.list.clone();
-            move || list.queue_allocate()
+            let active_list = self.inner.active_list.clone();
+            move || active_list.queue_allocate()
         });
 
         CommandTask {
             inner: Rc::new(TaskInner {
                 center: self.clone(),
+                wrapper,
                 icon,
                 spinner,
                 row,
@@ -324,9 +384,13 @@ impl CommandCenter {
     }
 
     pub fn clear(&self) {
-        while let Some(child) = self.inner.list.first_child() {
-            self.inner.list.remove(&child);
+        while let Some(child) = self.inner.active_list.first_child() {
+            self.inner.active_list.remove(&child);
         }
+        while let Some(child) = self.inner.history_list.first_child() {
+            self.inner.history_list.remove(&child);
+        }
+        self.inner.active_section.set_visible(false);
         self.inner.stack.set_visible_child_name("empty");
         self.inner.empty.set_visible(true);
         self.mark_read();
@@ -363,6 +427,31 @@ impl CommandTask {
 
         self.inner.spinner.set_spinning(false);
         self.inner.spinner.set_visible(false);
+
+        // Move from active to history on first finish.
+        if let Some(list) = self
+            .inner
+            .wrapper
+            .parent()
+            .and_then(|p| p.downcast::<gtk::ListBox>().ok())
+        {
+            if list == self.inner.center.inner.active_list {
+                self.inner
+                    .center
+                    .inner
+                    .active_list
+                    .remove(&self.inner.wrapper);
+                self.inner
+                    .center
+                    .inner
+                    .history_list
+                    .prepend(&self.inner.wrapper);
+
+                if self.inner.center.inner.active_list.first_child().is_none() {
+                    self.inner.center.inner.active_section.set_visible(false);
+                }
+            }
+        }
 
         if let Some(cmd) = command {
             *self.inner.command_text.borrow_mut() = cmd;

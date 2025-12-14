@@ -22,7 +22,7 @@ This document tracks planned UI/UX improvements and the order to implement them.
 - [x] Hover affordances (show actions on hover, reduce persistent chevrons).
 - [x] Clamp long version chips (ellipsis + tooltip).
 - [x] Align suffix actions (consistent icon sizing).
-- [ ] Inline per-row operation progress for the active package.
+- [x] Inline per-row operation progress for the active package.
 - [x] Live row state refresh (Update → Updated, Install → Installed).
 
 ### 3) Discover Experience
@@ -45,6 +45,7 @@ This document tracks planned UI/UX improvements and the order to implement them.
 - [x] Replace many toasts with an expandable **Command Center** panel.
 - [x] “Copy command” actions for privilege-required failures.
 - [x] Add timestamps + retry actions for recent operations.
+- [x] Show active operations section.
 - [x] Structured diagnostics export (already present; expand content).
 
 ### 7) Preferences & Onboarding
