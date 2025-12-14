@@ -521,12 +521,4 @@ spinner {
 .app-icon {
     /* -gtk-icon-effect: highlight; not supported in GTK4 */
 }
-/* LinGet design tokens (kept minimal; GTK CSS vars are limited but this helps consistency) */
-:root {
-    --space-1: 4px;
-    --space-2: 8px;
-    --space-3: 12px;
-    --space-4: 16px;
-    --radius-1: 6px;
-    --radius-2: 10px;
-}
+/* (No :root custom properties; GTK CSS doesn't support them reliably) */
