@@ -9,7 +9,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 use super::ui;
 
@@ -41,6 +41,7 @@ pub struct App {
     pub loading: bool,
     pub should_quit: bool,
     pub show_updates_only: bool,
+    pub load_rx: Option<mpsc::Receiver<Result<Vec<Package>, String>>>,
 }
 
 impl App {
@@ -60,6 +61,7 @@ impl App {
             loading: false,
             should_quit: false,
             show_updates_only: false,
+            load_rx: None,
         }
     }
 
@@ -69,6 +71,70 @@ impl App {
         self.available_sources.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
     }
 
+    /// Start loading packages in the background (non-blocking)
+    pub fn start_loading(&mut self) {
+        self.loading = true;
+        self.status_message = if self.show_updates_only {
+            String::from("Checking for updates...")
+        } else {
+            String::from("Loading packages...")
+        };
+
+        let (tx, rx) = mpsc::channel(1);
+        self.load_rx = Some(rx);
+
+        let pm = self.pm.clone();
+        let show_updates = self.show_updates_only;
+
+        tokio::spawn(async move {
+            let result = {
+                let manager = pm.lock().await;
+                if show_updates {
+                    manager.check_all_updates().await
+                } else {
+                    manager.list_all_installed().await
+                }
+            };
+
+            let _ = tx
+                .send(result.map_err(|e| e.to_string()))
+                .await;
+        });
+    }
+
+    /// Check if background loading is complete and process results
+    pub fn poll_loading(&mut self) {
+        if let Some(ref mut rx) = self.load_rx {
+            match rx.try_recv() {
+                Ok(Ok(packages)) => {
+                    self.packages = packages;
+                    self.filter_packages();
+                    self.status_message = if self.show_updates_only {
+                        format!("{} updates available", self.filtered_packages.len())
+                    } else {
+                        format!("Loaded {} packages", self.filtered_packages.len())
+                    };
+                    self.loading = false;
+                    self.load_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.status_message = format!("Error: {}", e);
+                    self.loading = false;
+                    self.load_rx = None;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // Still loading, do nothing
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.status_message = String::from("Loading failed");
+                    self.loading = false;
+                    self.load_rx = None;
+                }
+            }
+        }
+    }
+
+    /// Blocking load for initial startup
     pub async fn load_packages(&mut self) {
         self.loading = true;
         self.status_message = String::from("Loading packages...");
@@ -80,7 +146,7 @@ impl App {
             } else {
                 manager.list_all_installed().await
             }
-        }; // Lock dropped here
+        };
 
         match result {
             Ok(packages) => {
@@ -221,14 +287,17 @@ async fn run_app(
     app: &mut App,
 ) -> Result<()> {
     loop {
+        // Check for completed background loading
+        app.poll_loading();
+
         terminal.draw(|f| ui::draw(f, app))?;
 
         // Poll for events with a small timeout to allow async operations
-        if event::poll(std::time::Duration::from_millis(100))? {
+        if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match app.mode {
-                        AppMode::Normal => handle_normal_mode(app, key.code).await,
+                        AppMode::Normal => handle_normal_mode(app, key.code),
                         AppMode::Search => handle_search_mode(app, key.code),
                         AppMode::Confirm => handle_confirm_mode(app, key.code).await,
                     }
@@ -244,14 +313,19 @@ async fn run_app(
     Ok(())
 }
 
-async fn handle_normal_mode(app: &mut App, key: KeyCode) {
+fn handle_normal_mode(app: &mut App, key: KeyCode) {
+    // Don't process keys while loading (except quit)
+    if app.loading && key != KeyCode::Char('q') && key != KeyCode::Esc {
+        return;
+    }
+
     match key {
         KeyCode::Char('q') | KeyCode::Esc => {
             app.should_quit = true;
         }
         KeyCode::Char('h') => {
             app.status_message = String::from(
-                "j/k:nav | Tab:switch panel | Enter:select | /: search | u:updates | r:refresh | i:install | d:remove | q:quit"
+                "j/k:nav | Tab:switch panel | Enter:select | /: search | u:updates | r:refresh | i:install | x:remove | q:quit"
             );
         }
         KeyCode::Tab => {
@@ -289,16 +363,10 @@ async fn handle_normal_mode(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('u') => {
             app.show_updates_only = !app.show_updates_only;
-            app.status_message = if app.show_updates_only {
-                String::from("Showing updates only...")
-            } else {
-                String::from("Showing all packages...")
-            };
-            app.load_packages().await;
+            app.start_loading();
         }
         KeyCode::Char('r') => {
-            app.status_message = String::from("Refreshing...");
-            app.load_packages().await;
+            app.start_loading();
         }
         KeyCode::Char('i') => {
             if let Some(pkg) = app.selected_package() {
