@@ -77,6 +77,7 @@ impl PackageBackend for PipBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }
@@ -112,6 +113,7 @@ impl PackageBackend for PipBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }
@@ -231,54 +233,117 @@ impl PackageBackend for PipBackend {
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
-        // pip search is disabled on PyPI, so we use pip index versions as a workaround
-        // This only works if you know the exact package name
-        // For now, return empty results - user should use PyPI website for searching
-        tracing::info!("pip search is not available - PyPI disabled this feature");
-
-        // Try to get info about the exact package name
-        let pip = Self::get_pip_command();
-        let output = Command::new(pip)
-            .args(["show", query])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await;
-
+        // pip search is disabled on PyPI, so we use the PyPI JSON API
+        // This only works well for exact package names
         let mut packages = Vec::new();
 
-        if let Ok(output) = output {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let mut name = String::new();
-                let mut version = String::new();
-                let mut description = String::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .context("Failed to create HTTP client")?;
 
-                for line in stdout.lines() {
-                    if let Some(value) = line.strip_prefix("Name: ") {
-                        name = value.to_string();
-                    } else if let Some(value) = line.strip_prefix("Version: ") {
-                        version = value.to_string();
-                    } else if let Some(value) = line.strip_prefix("Summary: ") {
-                        description = value.to_string();
+        // Try exact package name lookup via PyPI JSON API
+        let url = format!("https://pypi.org/pypi/{}/json", query);
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(info) = json.get("info") {
+                        let name = info
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(query)
+                            .to_string();
+                        let version = info
+                            .get("version")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let description = info
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let homepage = info
+                            .get("home_page")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| info.get("project_url").and_then(|v| v.as_str()))
+                            .map(|s| s.to_string());
+                        let license = info
+                            .get("license")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string());
+                        let maintainer = info
+                            .get("author")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string());
+
+                        packages.push(Package {
+                            name,
+                            version,
+                            available_version: None,
+                            description,
+                            source: PackageSource::Pip,
+                            status: PackageStatus::NotInstalled,
+                            size: None,
+                            homepage,
+                            license,
+                            maintainer,
+                            dependencies: Vec::new(),
+                            install_date: None,
+                            enrichment: None,
+                        });
                     }
                 }
+            }
+        }
 
-                if !name.is_empty() {
-                    packages.push(Package {
-                        name,
-                        version,
-                        available_version: None,
-                        description,
-                        source: PackageSource::Pip,
-                        status: PackageStatus::NotInstalled,
-                        size: None,
-                        homepage: None,
-                        license: None,
-                        maintainer: None,
-                        dependencies: Vec::new(),
-                        install_date: None,
-                    });
+        // If exact match not found, try a few common variations
+        if packages.is_empty() {
+            // Try with lowercase
+            let query_lower = query.to_lowercase();
+            if query_lower != query {
+                let url = format!("https://pypi.org/pypi/{}/json", query_lower);
+                if let Ok(resp) = client.get(&url).send().await {
+                    if resp.status().is_success() {
+                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                            if let Some(info) = json.get("info") {
+                                let name = info
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&query_lower)
+                                    .to_string();
+                                let version = info
+                                    .get("version")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let description = info
+                                    .get("summary")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+
+                                packages.push(Package {
+                                    name,
+                                    version,
+                                    available_version: None,
+                                    description,
+                                    source: PackageSource::Pip,
+                                    status: PackageStatus::NotInstalled,
+                                    size: None,
+                                    homepage: None,
+                                    license: None,
+                                    maintainer: None,
+                                    dependencies: Vec::new(),
+                                    install_date: None,
+                                    enrichment: None,
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }

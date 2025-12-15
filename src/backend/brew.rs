@@ -58,6 +58,7 @@ impl PackageBackend for BrewBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                enrichment: None,
             });
         }
 
@@ -116,6 +117,7 @@ impl PackageBackend for BrewBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
             return Ok(packages);
@@ -189,6 +191,7 @@ impl PackageBackend for BrewBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                enrichment: None,
             });
             if packages.len() >= 50 {
                 break;

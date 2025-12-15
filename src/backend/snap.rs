@@ -158,6 +158,7 @@ impl PackageBackend for SnapBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }
@@ -203,6 +204,7 @@ impl PackageBackend for SnapBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }
@@ -341,6 +343,7 @@ impl PackageBackend for SnapBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }

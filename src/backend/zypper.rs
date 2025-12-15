@@ -63,6 +63,7 @@ impl PackageBackend for ZypperBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                enrichment: None,
             });
         }
 
@@ -110,6 +111,7 @@ impl PackageBackend for ZypperBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                enrichment: None,
             });
         }
 
@@ -193,6 +195,7 @@ impl PackageBackend for ZypperBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                enrichment: None,
             });
 
             if packages.len() >= 50 {

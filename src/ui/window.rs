@@ -1,8 +1,10 @@
+use crate::app::with_tray;
 use crate::backend::PackageManager;
 use crate::models::{Config, Package, PackageCache, PackageSource, PackageStatus};
 use crate::ui::{
-    show_about_dialog, CommandCenter, CommandEventKind, DiagnosticsDialog, PackageDetailsDialog,
-    PackageOp, PackageRow, PreferencesDialog, RetrySpec,
+    notify_updates_available, show_about_dialog, CommandCenter, CommandEventKind,
+    DiagnosticsDialog, PackageDetailsDialog, PackageOp, PackageRow, PreferencesDialog, RetrySpec,
+    TrayAction,
 };
 use gtk4::prelude::*;
 use gtk4::{self as gtk, gio, glib};
@@ -36,6 +38,7 @@ enum ViewMode {
     Discover,
     AllPackages,
     Updates,
+    Favorites,
 }
 
 const ALL_SOURCES: [PackageSource; 17] = [
@@ -178,6 +181,7 @@ struct SidebarWidgets {
     nav_list: gtk::ListBox,
     all_count_label: gtk::Label,
     update_count_label: gtk::Label,
+    favorites_count_label: gtk::Label,
     providers_box: gtk::Box,
     provider_rows: HashMap<PackageSource, ProviderRowWidgets>,
     provider_counts: HashMap<PackageSource, gtk::Label>,
@@ -189,11 +193,14 @@ struct ContentWidgets {
     discover_stack: gtk::Stack,
     all_stack: gtk::Stack,
     updates_stack: gtk::Stack,
+    favorites_stack: gtk::Stack,
     discover_list_box: gtk::ListBox,
     all_list_view: gtk::ListView,
     all_store: gio::ListStore,
     updates_list_view: gtk::ListView,
     updates_store: gio::ListStore,
+    favorites_list_view: gtk::ListView,
+    favorites_store: gio::ListStore,
     content_stack: gtk::Stack,
     sort_dropdown: gtk::DropDown,
     update_all_btn: gtk::Button,
@@ -222,6 +229,12 @@ pub struct LinGetWindow {
     updates_list_view: gtk::ListView,
     updates_store: gio::ListStore,
     last_filtered_updates: Rc<RefCell<Vec<Package>>>,
+    // Favorites view
+    favorites_list_view: gtk::ListView,
+    favorites_store: gio::ListStore,
+    #[allow(dead_code)] // Used via clone in setup_signals
+    favorites_stack: gtk::Stack,
+    favorites_count_label: gtk::Label,
     // Bulk selection
     selected_ids: Rc<RefCell<HashSet<String>>>,
     // UI elements
@@ -323,7 +336,16 @@ impl LinGetWindow {
         let packages: Rc<RefCell<Vec<Package>>> = Rc::new(RefCell::new(Vec::new()));
         let discover_rows: Rc<RefCell<Vec<PackageRow>>> = Rc::new(RefCell::new(Vec::new()));
         let current_view = Rc::new(RefCell::new(ViewMode::AllPackages));
-        let filter_state = Rc::new(RefCell::new(FilterState::default()));
+        // Load saved source filter from config
+        let initial_source_filter = config
+            .borrow()
+            .last_source_filter
+            .as_ref()
+            .and_then(|s| PackageSource::from_str(s));
+        let filter_state = Rc::new(RefCell::new(FilterState {
+            source: initial_source_filter,
+            search_query: String::new(),
+        }));
         let selection_mode = Rc::new(RefCell::new(false));
         let selected_ids: Rc<RefCell<HashSet<String>>> = Rc::new(RefCell::new(HashSet::new()));
         let last_filtered_all: Rc<RefCell<Vec<Package>>> = Rc::new(RefCell::new(Vec::new()));
@@ -463,10 +485,10 @@ impl LinGetWindow {
         main_paned.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         main_paned.append(&command_center_flap);
 
+        // Main content box
         let main_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
-
         main_box.append(&header);
         main_box.append(&main_paned);
 
@@ -478,6 +500,9 @@ impl LinGetWindow {
             .default_height(config.borrow().window_height.max(700))
             .content(&main_box)
             .build();
+
+        // Enable window controls (minimize, maximize, close) - requires decorated window
+        window.set_decorated(true);
 
         if config.borrow().window_maximized {
             window.maximize();
@@ -500,6 +525,10 @@ impl LinGetWindow {
             updates_list_view: content_widgets.updates_list_view.clone(),
             updates_store: content_widgets.updates_store.clone(),
             last_filtered_updates,
+            favorites_list_view: content_widgets.favorites_list_view.clone(),
+            favorites_store: content_widgets.favorites_store.clone(),
+            favorites_stack: content_widgets.favorites_stack.clone(),
+            favorites_count_label: sidebar_widgets.favorites_count_label.clone(),
             selected_ids,
             search_entry,
             content_stack: content_widgets.content_stack.clone(),
@@ -534,13 +563,56 @@ impl LinGetWindow {
             content_widgets.discover_stack.clone(),
             content_widgets.all_stack.clone(),
             content_widgets.updates_stack.clone(),
+            content_widgets.favorites_stack.clone(),
             select_all_btn,
             deselect_all_btn,
             update_selected_btn,
             remove_selected_btn,
             content_widgets.sort_dropdown.clone(),
         );
-        win.setup_actions(app, reload_packages);
+        win.setup_actions(app, reload_packages.clone());
+
+        // Track window visibility for tray state
+        win.window
+            .connect_notify_local(Some("visible"), |window, _| {
+                let visible = window.is_visible();
+                with_tray(|tray| {
+                    tray.state.set_window_visible(visible);
+                });
+            });
+
+        // Set up tray action polling
+        let window_for_tray = win.window.clone();
+        let app_for_tray = app.clone();
+        let reload_for_tray = reload_packages;
+        glib::timeout_add_local(Duration::from_millis(250), move || {
+            with_tray(|tray| {
+                while let Ok(action) = tray.action_receiver.try_recv() {
+                    match action {
+                        TrayAction::ShowWindow => {
+                            if window_for_tray.is_visible() {
+                                window_for_tray.set_visible(false);
+                                tray.state.set_window_visible(false);
+                            } else {
+                                window_for_tray.set_visible(true);
+                                window_for_tray.present();
+                                tray.state.set_window_visible(true);
+                            }
+                        }
+                        TrayAction::CheckUpdates => {
+                            window_for_tray.set_visible(true);
+                            window_for_tray.present();
+                            tray.state.set_window_visible(true);
+                            reload_for_tray();
+                        }
+                        TrayAction::Quit => {
+                            app_for_tray.quit();
+                        }
+                    }
+                }
+            });
+            glib::ControlFlow::Continue
+        });
 
         win
     }
@@ -553,7 +625,10 @@ impl LinGetWindow {
         gtk::ToggleButton,
         gtk::Label,
     ) {
-        let header = adw::HeaderBar::new();
+        let header = adw::HeaderBar::builder()
+            .show_end_title_buttons(true)
+            .show_start_title_buttons(true)
+            .build();
 
         // Menu
         let menu = gio::Menu::new();
@@ -761,6 +836,34 @@ impl LinGetWindow {
         updates_row.set_child(Some(&updates_box));
         nav_list.append(&updates_row);
 
+        // Favorites
+        let favorites_row = gtk::ListBoxRow::new();
+        favorites_row.add_css_class("nav-row");
+        let favorites_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .margin_top(10)
+            .margin_bottom(10)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        let favorites_count_label = gtk::Label::builder()
+            .label("0")
+            .css_classes(vec!["dim-label", "caption"])
+            .visible(false)
+            .build();
+        favorites_box.append(&gtk::Image::from_icon_name("starred-symbolic"));
+        favorites_box.append(
+            &gtk::Label::builder()
+                .label("Favorites")
+                .hexpand(true)
+                .xalign(0.0)
+                .build(),
+        );
+        favorites_box.append(&favorites_count_label);
+        favorites_row.set_child(Some(&favorites_box));
+        nav_list.append(&favorites_row);
+
         nav_list.select_row(Some(&all_row));
         sidebar_box.append(&nav_list);
 
@@ -856,6 +959,7 @@ impl LinGetWindow {
             nav_list,
             all_count_label,
             update_count_label,
+            favorites_count_label,
             providers_box,
             provider_rows,
             provider_counts,
@@ -1121,9 +1225,56 @@ impl LinGetWindow {
         updates_view.append(&updates_header);
         updates_view.append(&updates_stack);
 
+        // Favorites View
+        let favorites_store = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let favorites_model = gtk::NoSelection::new(Some(favorites_store.clone()));
+        let favorites_list_view =
+            gtk::ListView::new(Some(favorites_model), None::<gtk::ListItemFactory>);
+        favorites_list_view.add_css_class("boxed-list");
+        let favorites_scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&favorites_list_view)
+            .build();
+        let favorites_header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .build();
+        favorites_header.add_css_class("view-toolbar");
+        favorites_header
+            .set_title_widget(Some(&adw::WindowTitle::builder().title("Favorites").build()));
+
+        let favorites_list_area = adw::Clamp::builder()
+            .maximum_size(1000)
+            .child(&favorites_scrolled)
+            .margin_top(8)
+            .margin_bottom(24)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+
+        let favorites_empty = adw::StatusPage::builder()
+            .icon_name("starred-symbolic")
+            .title("No Favorites Yet")
+            .description("Star packages to quickly access them here")
+            .build();
+        let favorites_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .transition_duration(150)
+            .build();
+        favorites_stack.add_named(&favorites_list_area, Some("list"));
+        favorites_stack.add_named(&favorites_empty, Some("empty"));
+
+        let favorites_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        favorites_view.append(&favorites_header);
+        favorites_view.append(&favorites_stack);
+
         content_stack.add_named(&discover_view, Some("discover"));
         content_stack.add_named(&all_view, Some("all"));
         content_stack.add_named(&updates_view, Some("updates"));
+        content_stack.add_named(&favorites_view, Some("favorites"));
         content_stack.set_visible_child_name("all");
         content_box.append(&content_stack);
 
@@ -1132,11 +1283,14 @@ impl LinGetWindow {
             discover_stack,
             all_stack,
             updates_stack,
+            favorites_stack,
             discover_list_box,
             all_list_view,
             all_store,
             updates_list_view,
             updates_store,
+            favorites_list_view,
+            favorites_store,
             content_stack,
             sort_dropdown,
             update_all_btn,
@@ -1408,6 +1562,7 @@ impl LinGetWindow {
                                                     maintainer: None,
                                                     dependencies: Vec::new(),
                                                     install_date: None,
+                                                    enrichment: None,
                                                 };
 
                                                 if manager.install(&pkg).await.is_ok() {
@@ -1561,14 +1716,20 @@ impl LinGetWindow {
             .build();
         let section = gtk::ShortcutsSection::builder()
             .section_name("shortcuts")
+            .visible(true)
             .build();
         let group = gtk::ShortcutsGroup::builder().title("General").build();
 
         for (title, accel) in [
             ("Search", "<Ctrl>f"),
+            ("Quick Search", "slash"),
             ("Refresh", "<Ctrl>r"),
             ("Selection Mode", "<Ctrl>s"),
+            ("Open Details", "Return"),
+            ("Update Selected", "u"),
+            ("Remove Selected", "Delete"),
             ("Preferences", "<Ctrl>comma"),
+            ("Cancel / Clear", "Escape"),
             ("Quit", "<Ctrl>q"),
         ] {
             group.append(
@@ -1579,6 +1740,7 @@ impl LinGetWindow {
             );
         }
         section.append(&group);
+        dialog.set_child(Some(&section));
         dialog.present();
     }
 
@@ -1592,6 +1754,7 @@ impl LinGetWindow {
         discover_stack: gtk::Stack,
         all_stack: gtk::Stack,
         updates_stack: gtk::Stack,
+        favorites_stack: gtk::Stack,
         select_all_btn: gtk::Button,
         deselect_all_btn: gtk::Button,
         update_selected_btn: gtk::Button,
@@ -1609,6 +1772,9 @@ impl LinGetWindow {
         let all_store = self.all_store.clone();
         let updates_list_view = self.updates_list_view.clone();
         let updates_store = self.updates_store.clone();
+        let favorites_list_view = self.favorites_list_view.clone();
+        let favorites_store = self.favorites_store.clone();
+        let favorites_count_label = self.favorites_count_label.clone();
         let last_filtered_all = self.last_filtered_all.clone();
         let last_filtered_updates = self.last_filtered_updates.clone();
         let selected_ids = self.selected_ids.clone();
@@ -1932,6 +2098,11 @@ impl LinGetWindow {
                 update_count_label.set_visible(false);
             }
 
+            // Update system tray with update count
+            with_tray(|tray| {
+                tray.state.set_updates_count(updates as u32);
+            });
+
             for (source, label) in &source_count_labels {
                 let count = enabled_packages
                     .iter()
@@ -1962,6 +2133,7 @@ impl LinGetWindow {
                     let command_center = command_center.clone();
                     let reveal_command_center = reveal_command_center.clone();
                     let on_source_click_holder = on_source_click_holder.clone();
+                    let apply_filters_holder = apply_filters_holder.clone();
                     move |_, item| {
                         let placeholder = Package {
                             name: "".to_string(),
@@ -1976,6 +2148,7 @@ impl LinGetWindow {
                             maintainer: None,
                             dependencies: Vec::new(),
                             install_date: None,
+                            enrichment: None,
                         };
 
                         let row = PackageRow::new(placeholder, None, true);
@@ -1988,8 +2161,9 @@ impl LinGetWindow {
 
                         let skip_check = Rc::new(RefCell::new(false));
 
-                        // Open details
-                        row.widget.connect_activated({
+                        // Open details - use GestureClick for reliable click detection in ListView
+                        let click_gesture = gtk::GestureClick::new();
+                        click_gesture.connect_released({
                             let row_pkg = row.package.clone();
                             let window = window.clone();
                             let pm = pm.clone();
@@ -1998,7 +2172,33 @@ impl LinGetWindow {
                             let reload_holder = reload_holder.clone();
                             let command_center = command_center.clone();
                             let reveal_command_center = reveal_command_center.clone();
-                            move |_| {
+                            let row_widget = row.widget.clone();
+                            move |gesture, _, x, y| {
+                                // Only handle primary button clicks
+                                if gesture.current_button() != gtk::gdk::BUTTON_PRIMARY {
+                                    return;
+                                }
+                                // Check if click is within bounds
+                                let widget = gesture.widget();
+                                let width = widget.width() as f64;
+                                let height = widget.height() as f64;
+                                if x < 0.0 || y < 0.0 || x > width || y > height {
+                                    return;
+                                }
+                                // Check if clicked on a button (skip if so - buttons handle their own clicks)
+                                if let Some(target) = row_widget.pick(x, y, gtk::PickFlags::DEFAULT) {
+                                    // Check if target or any ancestor is a button
+                                    let mut current: Option<gtk::Widget> = Some(target);
+                                    while let Some(w) = current {
+                                        if w.downcast_ref::<gtk::Button>().is_some()
+                                            || w.downcast_ref::<gtk::ToggleButton>().is_some()
+                                            || w.downcast_ref::<gtk::CheckButton>().is_some()
+                                        {
+                                            return;
+                                        }
+                                        current = w.parent();
+                                    }
+                                }
                                 let pkg = row_pkg.borrow().clone();
                                 PackageDetailsDialog::show(
                                     &pkg,
@@ -2012,6 +2212,7 @@ impl LinGetWindow {
                                 );
                             }
                         });
+                        row.widget.add_controller(click_gesture);
 
                         // Filter by source
                         row.source_button.connect_clicked({
@@ -2047,6 +2248,58 @@ impl LinGetWindow {
                                 ));
                             }
                         });
+
+                        // Favorite toggle
+                        let skip_fav = Rc::new(RefCell::new(false));
+                        row.favorite_button.connect_toggled({
+                            let row_pkg = row.package.clone();
+                            let row_fav_btn = row.favorite_button.clone();
+                            let config = config.clone();
+                            let skip_fav = skip_fav.clone();
+                            let apply_filters_holder = apply_filters_holder.clone();
+                            move |btn| {
+                                if *skip_fav.borrow() {
+                                    return;
+                                }
+                                let pkg_id = row_pkg.borrow().id();
+                                let is_favorite = btn.is_active();
+
+                                // Update button appearance
+                                if is_favorite {
+                                    row_fav_btn.set_icon_name("starred-symbolic");
+                                    row_fav_btn.set_tooltip_text(Some("Remove from favorites"));
+                                    row_fav_btn.add_css_class("favorited");
+                                } else {
+                                    row_fav_btn.set_icon_name("non-starred-symbolic");
+                                    row_fav_btn.set_tooltip_text(Some("Add to favorites"));
+                                    row_fav_btn.remove_css_class("favorited");
+                                }
+
+                                // Update config
+                                {
+                                    let mut cfg = config.borrow_mut();
+                                    if is_favorite {
+                                        if !cfg.favorite_packages.contains(&pkg_id) {
+                                            cfg.favorite_packages.push(pkg_id);
+                                        }
+                                    } else {
+                                        cfg.favorite_packages.retain(|id| id != &row_pkg.borrow().id());
+                                    }
+                                    if let Err(e) = cfg.save() {
+                                        tracing::warn!("Failed to save favorites: {}", e);
+                                    }
+                                }
+
+                                // Refresh favorites view
+                                if let Some(apply) = apply_filters_holder.borrow().as_ref() {
+                                    apply();
+                                }
+                            }
+                        });
+
+                        unsafe {
+                            item.set_data("pkg_skip_fav", skip_fav);
+                        }
 
                         // Action button
                         row.action_button.connect_clicked({
@@ -2253,6 +2506,11 @@ impl LinGetWindow {
                                 .expect("pkg_skip_check missing")
                                 .as_ref()
                         };
+                        let skip_fav = unsafe {
+                            item.data::<Rc<RefCell<bool>>>("pkg_skip_fav")
+                                .expect("pkg_skip_fav missing")
+                                .as_ref()
+                        };
 
                         let cfg = config.borrow();
                         row.update_from_package(&pkg, cfg.ui_show_icons);
@@ -2268,6 +2526,12 @@ impl LinGetWindow {
                         row.checkbox
                             .set_active(selected_ids.borrow().contains(&pkg.id()));
                         *skip_check.borrow_mut() = false;
+
+                        // Update favorite state from config
+                        let is_favorite = cfg.favorite_packages.contains(&pkg.id());
+                        *skip_fav.borrow_mut() = true;
+                        row.set_favorite(is_favorite);
+                        *skip_fav.borrow_mut() = false;
                     }
                 });
 
@@ -2276,15 +2540,21 @@ impl LinGetWindow {
 
             make_factory(&all_list_view);
             make_factory(&updates_list_view);
+            make_factory(&favorites_list_view);
         }
 
         let apply_filters: Rc<dyn Fn()> = Rc::new({
             let packages = packages.clone();
             let filter_state = filter_state.clone();
+            let config = config.clone();
             let all_list_view = all_list_view.clone();
             let all_store = all_store.clone();
             let updates_list_view = updates_list_view.clone();
             let updates_store = updates_store.clone();
+            let favorites_list_view = favorites_list_view.clone();
+            let favorites_store = favorites_store.clone();
+            let favorites_stack = favorites_stack.clone();
+            let favorites_count_label = favorites_count_label.clone();
             let all_stack = all_stack.clone();
             let updates_stack = updates_stack.clone();
             let selection_mode = selection_mode.clone();
@@ -2341,6 +2611,16 @@ impl LinGetWindow {
                     .cloned()
                     .collect();
 
+                // Filter favorites from all packages (ignoring search/source filters)
+                let favorite_ids = config.borrow().favorite_packages.clone();
+                let filtered_favorites: Vec<Package> = all_packages
+                    .iter()
+                    .filter(|p| {
+                        enabled.contains(&p.source) && favorite_ids.contains(&p.id())
+                    })
+                    .cloned()
+                    .collect();
+
                 let on_source_click = {
                     let filter_state = filter_state.clone();
                     let skip_filter = skip_filter.clone();
@@ -2381,6 +2661,10 @@ impl LinGetWindow {
 
                 Self::populate_list_store(&all_list_view, &all_store, &filtered_all);
                 Self::populate_list_store(&updates_list_view, &updates_store, &filtered_updates);
+                Self::populate_list_store(&favorites_list_view, &favorites_store, &filtered_favorites);
+
+                // Update favorites count in sidebar
+                favorites_count_label.set_label(&filtered_favorites.len().to_string());
 
                 if filtered_all.is_empty() {
                     all_stack.set_visible_child_name("empty");
@@ -2391,6 +2675,11 @@ impl LinGetWindow {
                     updates_stack.set_visible_child_name("empty");
                 } else {
                     updates_stack.set_visible_child_name("list");
+                }
+                if filtered_favorites.is_empty() {
+                    favorites_stack.set_visible_child_name("empty");
+                } else {
+                    favorites_stack.set_visible_child_name("list");
                 }
             }
         });
@@ -2722,6 +3011,11 @@ impl LinGetWindow {
                         let t = adw::Toast::new(&msg);
                         t.set_timeout(3);
                         toast_overlay.add_toast(t);
+
+                        // Send desktop notification if enabled
+                        if update_count > 0 && config.borrow().show_notifications {
+                            notify_updates_available(update_count);
+                        }
                     }
 
                     // Save cache after UI is updated (best-effort)
@@ -3024,6 +3318,10 @@ impl LinGetWindow {
                         content_stack_nav.set_visible_child_name("updates");
                         *current_view_nav.borrow_mut() = ViewMode::Updates;
                     }
+                    3 => {
+                        content_stack_nav.set_visible_child_name("favorites");
+                        *current_view_nav.borrow_mut() = ViewMode::Favorites;
+                    }
                     _ => {}
                 }
             }
@@ -3318,6 +3616,7 @@ impl LinGetWindow {
 
         // Window Close
         let config_state = self.config.clone();
+        let filter_state_save = filter_state.clone();
         self.window.connect_close_request(move |window| {
             let mut cfg = config_state.borrow_mut();
             cfg.window_maximized = window.is_maximized();
@@ -3325,6 +3624,11 @@ impl LinGetWindow {
                 cfg.window_width = window.width();
                 cfg.window_height = window.height();
             }
+            // Save source filter state
+            cfg.last_source_filter = filter_state_save
+                .borrow()
+                .source
+                .map(|s| s.as_config_str().to_string());
             let _ = cfg.save();
             glib::Propagation::Proceed
         });
@@ -3334,6 +3638,8 @@ impl LinGetWindow {
         let controller = gtk::EventControllerKey::new();
         let refresh_fn = load_packages.clone();
         let select_btn = select_button.clone();
+        let update_sel_btn = update_selected_btn.clone();
+        let remove_sel_btn = remove_selected_btn.clone();
         controller.connect_key_pressed(move |_, key, _, modifier| {
             if modifier.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
                 match key {
@@ -3365,6 +3671,20 @@ impl LinGetWindow {
                     }
                     if !search_entry_focus.text().is_empty() {
                         search_entry_focus.set_text("");
+                        return glib::Propagation::Stop;
+                    }
+                }
+                gtk::gdk::Key::u | gtk::gdk::Key::U => {
+                    // U: Update selected packages (in selection mode)
+                    if select_btn.is_active() && update_sel_btn.is_sensitive() {
+                        update_sel_btn.emit_clicked();
+                        return glib::Propagation::Stop;
+                    }
+                }
+                gtk::gdk::Key::Delete => {
+                    // Delete: Remove selected packages (in selection mode)
+                    if select_btn.is_active() && remove_sel_btn.is_sensitive() {
+                        remove_sel_btn.emit_clicked();
                         return glib::Propagation::Stop;
                     }
                 }

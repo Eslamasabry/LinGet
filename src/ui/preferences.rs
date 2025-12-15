@@ -70,13 +70,78 @@ impl PreferencesDialog {
             .build();
         start_minimized_row.add_suffix(&start_minimized_switch);
 
+        startup_group.add(&start_minimized_row);
+
+        let start_maximized_switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .active(config.borrow().window_maximized)
+            .build();
+
+        let start_maximized_row = adw::ActionRow::builder()
+            .title("Start maximized")
+            .subtitle("Start LinGet with the window maximized")
+            .activatable_widget(&start_maximized_switch)
+            .build();
+        start_maximized_row.add_suffix(&start_maximized_switch);
+
+        // Make minimized and maximized mutually exclusive
         let config_clone = config.clone();
+        let maximized_switch_for_minimized = start_maximized_switch.clone();
         start_minimized_switch.connect_active_notify(move |switch| {
             config_clone.borrow_mut().start_minimized = switch.is_active();
+            if switch.is_active() {
+                maximized_switch_for_minimized.set_active(false);
+            }
             let _ = config_clone.borrow().save();
         });
 
-        startup_group.add(&start_minimized_row);
+        let config_clone = config.clone();
+        let minimized_switch_for_maximized = start_minimized_switch.clone();
+        start_maximized_switch.connect_active_notify(move |switch| {
+            config_clone.borrow_mut().window_maximized = switch.is_active();
+            if switch.is_active() {
+                minimized_switch_for_maximized.set_active(false);
+            }
+            let _ = config_clone.borrow().save();
+        });
+
+        startup_group.add(&start_maximized_row);
+
+        // Update check interval
+        let interval_values: [u32; 6] = [0, 6, 12, 24, 48, 168];
+        let interval_labels = gtk::StringList::new(&[
+            "Disabled",
+            "Every 6 hours",
+            "Every 12 hours",
+            "Every 24 hours",
+            "Every 48 hours",
+            "Weekly",
+        ]);
+
+        let interval_row = adw::ComboRow::builder()
+            .title("Background update check")
+            .subtitle("How often to check for updates automatically (requires restart)")
+            .model(&interval_labels)
+            .build();
+
+        // Set current value
+        let current_interval = config.borrow().update_check_interval;
+        let selected_idx = interval_values
+            .iter()
+            .position(|&v| v == current_interval)
+            .unwrap_or(3) as u32; // Default to 24 hours
+        interval_row.set_selected(selected_idx);
+
+        let config_clone = config.clone();
+        interval_row.connect_selected_notify(move |row| {
+            let idx = row.selected() as usize;
+            if idx < interval_values.len() {
+                config_clone.borrow_mut().update_check_interval = interval_values[idx];
+                let _ = config_clone.borrow().save();
+            }
+        });
+
+        startup_group.add(&interval_row);
 
         general_page.add(&startup_group);
 

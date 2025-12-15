@@ -113,6 +113,67 @@ impl PackageSource {
             PackageSource::AppImage => "Portable AppImage applications",
         }
     }
+
+    /// Returns true if this source supports install/remove/update operations in the GUI
+    pub fn supports_gui_operations(&self) -> bool {
+        // All sources now support GUI operations
+        true
+    }
+
+    /// Returns a user-friendly warning about potential risks for certain sources
+    pub fn gui_operation_warning(&self) -> Option<&'static str> {
+        match self {
+            PackageSource::Aur => Some("AUR packages use --noconfirm mode. For sensitive packages, consider using your terminal with yay/paru to review the PKGBUILD."),
+            _ => None,
+        }
+    }
+
+    /// Parse from string (case-insensitive)
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "apt" => Some(PackageSource::Apt),
+            "dnf" => Some(PackageSource::Dnf),
+            "pacman" => Some(PackageSource::Pacman),
+            "zypper" => Some(PackageSource::Zypper),
+            "flatpak" => Some(PackageSource::Flatpak),
+            "snap" => Some(PackageSource::Snap),
+            "npm" => Some(PackageSource::Npm),
+            "pip" => Some(PackageSource::Pip),
+            "pipx" => Some(PackageSource::Pipx),
+            "cargo" => Some(PackageSource::Cargo),
+            "brew" => Some(PackageSource::Brew),
+            "aur" => Some(PackageSource::Aur),
+            "conda" => Some(PackageSource::Conda),
+            "mamba" => Some(PackageSource::Mamba),
+            "dart" => Some(PackageSource::Dart),
+            "deb" => Some(PackageSource::Deb),
+            "appimage" => Some(PackageSource::AppImage),
+            _ => None,
+        }
+    }
+
+    /// Convert to lowercase string for config storage
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            PackageSource::Apt => "apt",
+            PackageSource::Dnf => "dnf",
+            PackageSource::Pacman => "pacman",
+            PackageSource::Zypper => "zypper",
+            PackageSource::Flatpak => "flatpak",
+            PackageSource::Snap => "snap",
+            PackageSource::Npm => "npm",
+            PackageSource::Pip => "pip",
+            PackageSource::Pipx => "pipx",
+            PackageSource::Cargo => "cargo",
+            PackageSource::Brew => "brew",
+            PackageSource::Aur => "aur",
+            PackageSource::Conda => "conda",
+            PackageSource::Mamba => "mamba",
+            PackageSource::Dart => "dart",
+            PackageSource::Deb => "deb",
+            PackageSource::AppImage => "appimage",
+        }
+    }
 }
 
 /// The status of a package
@@ -154,6 +215,34 @@ pub struct Package {
     pub maintainer: Option<String>,
     pub dependencies: Vec<String>,
     pub install_date: Option<String>,
+    // Enrichment fields (populated asynchronously)
+    #[serde(default)]
+    pub enrichment: Option<PackageEnrichment>,
+}
+
+/// Rich metadata fetched from online sources
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PackageEnrichment {
+    /// URL to the package icon (high-res)
+    pub icon_url: Option<String>,
+    /// URLs to screenshots
+    pub screenshots: Vec<String>,
+    /// App categories (e.g., "Development", "Utilities")
+    pub categories: Vec<String>,
+    /// Developer or publisher name
+    pub developer: Option<String>,
+    /// User rating (0.0 - 5.0)
+    pub rating: Option<f32>,
+    /// Download/install count
+    pub downloads: Option<u64>,
+    /// Long-form description or summary
+    pub summary: Option<String>,
+    /// Project repository URL
+    pub repository: Option<String>,
+    /// Keywords/tags
+    pub keywords: Vec<String>,
+    /// Last updated timestamp
+    pub last_updated: Option<String>,
 }
 
 impl Package {

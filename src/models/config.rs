@@ -45,6 +45,14 @@ pub struct Config {
     /// Show app icons in lists
     #[serde(default = "default_ui_show_icons")]
     pub ui_show_icons: bool,
+
+    /// Last selected source filter (persisted across sessions)
+    #[serde(default)]
+    pub last_source_filter: Option<String>,
+
+    /// Favorited package IDs (format: "Source:Name")
+    #[serde(default)]
+    pub favorite_packages: Vec<String>,
 }
 
 fn default_ui_show_icons() -> bool {
@@ -170,6 +178,8 @@ impl Default for Config {
             ignored_packages: Vec::new(),
             ui_compact: false,
             ui_show_icons: default_ui_show_icons(),
+            last_source_filter: None,
+            favorite_packages: Vec::new(),
         }
     }
 }

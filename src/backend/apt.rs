@@ -71,6 +71,7 @@ impl PackageBackend for AptBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }
@@ -117,6 +118,7 @@ impl PackageBackend for AptBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        enrichment: None,
                     });
                 }
             }
@@ -228,6 +230,7 @@ impl PackageBackend for AptBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }

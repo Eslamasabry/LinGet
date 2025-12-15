@@ -115,6 +115,7 @@ impl PackageBackend for AppImageBackend {
                             maintainer: None,
                             dependencies: Vec::new(),
                             install_date: None,
+                            enrichment: None,
                         });
                     }
                 }

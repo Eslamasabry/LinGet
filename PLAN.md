@@ -12,10 +12,10 @@ This document tracks planned UI/UX improvements and the order to implement them.
 ### 1) Sources & Filtering
 - [x] Redesign sidebar into a **Providers** enable/disable list (availability + enabled state).
 - [x] Sort providers by **available → enabled → name**; dim + disable unavailable providers.
-- [x] Move “filter by source” into the **top toolbar popover** (Source: All / Source: X).
-- [ ] Add provider install hints (e.g., “Install `pipx`”).
+- [x] Move "filter by source" into the **top toolbar popover** (Source: All / Source: X).
+- [x] Add provider install hints (e.g., "Install `pipx`").
 - [ ] Make selection states consistent across views (All/Updates/Discover).
-- [ ] Persist filter state (optional) per session.
+- [x] Persist filter state (optional) per session.
 
 ### 2) Package List Rows (Polish)
 - [x] Refine row layout (icon frame, spacing, chips for version/source).
@@ -38,8 +38,9 @@ This document tracks planned UI/UX improvements and the order to implement them.
 
 ### 5) Notifications & Background Work
 - [x] Background refresh scheduling (already present; refine UX).
-- [ ] Optional desktop notifications (respect config and distro capabilities).
-- [ ] Avoid noisy toasts; show a single consolidated “activity” surface.
+- [x] Optional desktop notifications (respect config and distro capabilities).
+- [x] System tray icon with update count badge and quick actions.
+- [ ] Avoid noisy toasts; show a single consolidated "activity" surface.
 
 ### 6) Command Center & Error UX
 - [x] Replace many toasts with an expandable **Command Center** panel.
@@ -55,7 +56,7 @@ This document tracks planned UI/UX improvements and the order to implement them.
 
 ### 8) Keyboard & Accessibility
 - [x] `/` focuses search, `Esc` exits selection mode/clears search.
-- [ ] `Enter` opens details, `U` updates selected, `I` installs selected (where safe).
+- [x] `Enter` opens details, `U` updates selected, `Delete` removes selected (in selection mode).
 - [ ] Ensure focus rings + accessible names for controls.
 
 ### 9) Downgrade / Revert
@@ -66,6 +67,13 @@ This document tracks planned UI/UX improvements and the order to implement them.
 - [ ] Flatpak: commit pinning / branch selection (advanced).
 - [x] Npm/pip/pipx/cargo/dart: install specific version (acts as downgrade).
 - [x] Conda/mamba: install specific version (base env).
+
+### 10) Favorites
+- [x] Add Favorites view in sidebar navigation.
+- [x] Add favorite toggle button to package rows (star icon).
+- [x] Persist favorites to config file.
+- [x] Filter and display favorite packages in dedicated view.
+- [x] Update favorites count in sidebar.
 
 ## Implementation Phases
 - **Phase A (Quick wins):** Sources UX + keyboard shortcuts + small visual polish.

@@ -1,12 +1,17 @@
-use crate::models::init_icon_cache;
-use crate::ui::LinGetWindow;
+use crate::models::{init_icon_cache, load_cache as load_enrichment_cache};
+use crate::ui::{LinGetWindow, TrayHandle};
 use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita as adw;
+use std::cell::RefCell;
 
 pub const APP_ID: &str = "io.github.linget";
 pub const APP_NAME: &str = "LinGet";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+thread_local! {
+    static TRAY_HANDLE: RefCell<Option<TrayHandle>> = const { RefCell::new(None) };
+}
 
 pub fn build_app() -> adw::Application {
     let app = adw::Application::builder()
@@ -19,6 +24,15 @@ pub fn build_app() -> adw::Application {
         load_icons();
         // Initialize icon cache in background
         init_icon_cache();
+        // Load enrichment cache for package metadata
+        load_enrichment_cache();
+
+        // Start system tray
+        if let Some(tray) = TrayHandle::start() {
+            TRAY_HANDLE.with(|cell| {
+                *cell.borrow_mut() = Some(tray);
+            });
+        }
     });
 
     app.connect_activate(build_ui);
@@ -26,9 +40,21 @@ pub fn build_app() -> adw::Application {
     app
 }
 
+/// Get a reference to the tray state for updating
+pub fn with_tray<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&TrayHandle) -> R,
+{
+    TRAY_HANDLE.with(|cell| cell.borrow().as_ref().map(f))
+}
+
 fn load_icons() {
     // Add custom icon path
-    let icon_theme = gtk4::IconTheme::for_display(&gtk4::gdk::Display::default().unwrap());
+    let Some(display) = gtk4::gdk::Display::default() else {
+        tracing::warn!("No display available for loading icons");
+        return;
+    };
+    let icon_theme = gtk4::IconTheme::for_display(&display);
 
     // Add application icons from data directory
     if let Ok(exe_path) = std::env::current_exe() {

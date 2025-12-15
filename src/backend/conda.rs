@@ -74,13 +74,83 @@ impl PackageBackend for CondaBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                enrichment: None,
             });
         }
         Ok(packages)
     }
 
     async fn check_updates(&self) -> Result<Vec<Package>> {
-        Ok(Vec::new())
+        // Get currently installed packages with their versions
+        let installed = self.list_installed().await.unwrap_or_default();
+        let installed_map: std::collections::HashMap<String, String> = installed
+            .iter()
+            .map(|p| (p.name.clone(), p.version.clone()))
+            .collect();
+
+        // Run dry-run update to see what would be updated
+        let output = Command::new("conda")
+            .args(["update", "-n", "base", "--all", "--dry-run", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+
+        let Ok(output) = output else {
+            tracing::warn!("Failed to check conda updates");
+            return Ok(Vec::new());
+        };
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = match serde_json::from_str(&stdout) {
+            Ok(v) => v,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let mut packages = Vec::new();
+
+        // Parse "actions" -> "LINK" array for packages to be updated
+        if let Some(actions) = json.get("actions") {
+            if let Some(link) = actions.get("LINK").and_then(|v| v.as_array()) {
+                for item in link {
+                    let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let new_version = item
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    // Only include if we have the package installed with a different version
+                    if let Some(current_version) = installed_map.get(name) {
+                        if current_version != &new_version && !new_version.is_empty() {
+                            packages.push(Package {
+                                name: name.to_string(),
+                                version: current_version.clone(),
+                                available_version: Some(new_version),
+                                description: String::new(),
+                                source: PackageSource::Conda,
+                                status: PackageStatus::UpdateAvailable,
+                                size: None,
+                                homepage: None,
+                                license: None,
+                                maintainer: None,
+                                dependencies: Vec::new(),
+                                install_date: None,
+                                enrichment: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(packages)
     }
 
     async fn install(&self, name: &str) -> Result<()> {

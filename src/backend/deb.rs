@@ -102,6 +102,7 @@ impl PackageBackend for DebBackend {
                                     maintainer: None,
                                     dependencies: Vec::new(),
                                     install_date: None,
+                                    enrichment: None,
                                 });
                             }
                         }

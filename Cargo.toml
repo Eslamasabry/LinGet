@@ -12,6 +12,7 @@ categories = ["gui", "system"]
 [dependencies]
 # Use versions compatible with Ubuntu 22.04 (GTK 4.6, libadwaita 1.1)
 gtk4 = "0.7"
+gdk-pixbuf = "0.18"
 libadwaita = "0.5"
 tokio = { version = "1", features = ["full", "rt-multi-thread", "process", "sync"] }
 serde = { version = "1", features = ["derive"] }
@@ -32,6 +33,8 @@ open = "5"
 notify-rust = "4"
 toml = "0.8"
 humansize = "2"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+ksni = "0.2"
 
 [profile.dev]
 opt-level = 0

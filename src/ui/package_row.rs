@@ -18,6 +18,7 @@ pub struct PackageRow {
     pub version_label: gtk::Label,
     pub source_button: gtk::Button,
     pub update_icon: gtk::Image,
+    pub favorite_button: gtk::ToggleButton,
 }
 
 impl PackageRow {
@@ -124,6 +125,17 @@ impl PackageRow {
         update_icon.add_css_class("accent");
         suffix_box.append(&update_icon);
 
+        // Favorite toggle button
+        let favorite_button = gtk::ToggleButton::builder()
+            .icon_name("non-starred-symbolic")
+            .valign(gtk::Align::Center)
+            .tooltip_text("Add to favorites")
+            .build();
+        favorite_button.add_css_class("flat");
+        favorite_button.add_css_class("circular");
+        favorite_button.add_css_class("favorite-btn");
+        suffix_box.append(&favorite_button);
+
         row.add_suffix(&suffix_box);
 
         // Action button
@@ -173,6 +185,7 @@ impl PackageRow {
             version_label,
             source_button,
             update_icon,
+            favorite_button,
         }
     }
 
@@ -308,5 +321,19 @@ impl PackageRow {
 
     pub fn set_selection_mode(&self, enabled: bool) {
         self.checkbox.set_visible(enabled);
+    }
+
+    /// Set the favorite state of this package row
+    pub fn set_favorite(&self, is_favorite: bool) {
+        self.favorite_button.set_active(is_favorite);
+        if is_favorite {
+            self.favorite_button.set_icon_name("starred-symbolic");
+            self.favorite_button.set_tooltip_text(Some("Remove from favorites"));
+            self.favorite_button.add_css_class("favorited");
+        } else {
+            self.favorite_button.set_icon_name("non-starred-symbolic");
+            self.favorite_button.set_tooltip_text(Some("Add to favorites"));
+            self.favorite_button.remove_css_class("favorited");
+        }
     }
 }

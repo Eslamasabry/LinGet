@@ -60,6 +60,7 @@ impl PackageBackend for AurBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }
@@ -95,28 +96,62 @@ impl PackageBackend for AurBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }
         Ok(packages)
     }
 
-    async fn install(&self, _name: &str) -> Result<()> {
-        anyhow::bail!(
-            "AUR installs are not supported in the GUI yet (requires interactive terminal/sudo)."
-        )
+    async fn install(&self, name: &str) -> Result<()> {
+        // Use --noconfirm to skip prompts. This skips PKGBUILD review which is a security risk.
+        // The user should have already reviewed the package on the AUR website.
+        let status = Command::new(&self.helper)
+            .args(["-S", "--noconfirm", "--needed", name])
+            .status()
+            .await
+            .with_context(|| {
+                format!("Failed to install AUR package {} via {}", name, self.helper)
+            })?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("Failed to install AUR package {} via {}", name, self.helper)
+        }
     }
 
-    async fn remove(&self, _name: &str) -> Result<()> {
-        anyhow::bail!(
-            "AUR removals are not supported in the GUI yet (requires interactive terminal/sudo)."
-        )
+    async fn remove(&self, name: &str) -> Result<()> {
+        // Use pacman directly for removal (doesn't need AUR helper)
+        // Requires pkexec for root access
+        let status = Command::new("pkexec")
+            .args(["pacman", "-R", "--noconfirm", name])
+            .status()
+            .await
+            .context("Failed to remove AUR package")?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("Failed to remove AUR package {}", name)
+        }
     }
 
-    async fn update(&self, _name: &str) -> Result<()> {
-        anyhow::bail!(
-            "AUR updates are not supported in the GUI yet (requires interactive terminal/sudo)."
-        )
+    async fn update(&self, name: &str) -> Result<()> {
+        // Reinstall to get the latest version
+        let status = Command::new(&self.helper)
+            .args(["-S", "--noconfirm", name])
+            .status()
+            .await
+            .with_context(|| {
+                format!("Failed to update AUR package {} via {}", name, self.helper)
+            })?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("Failed to update AUR package {} via {}", name, self.helper)
+        }
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
@@ -157,6 +192,7 @@ impl PackageBackend for AurBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        enrichment: None,
                     });
                     if packages.len() >= 50 {
                         break;

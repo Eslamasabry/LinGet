@@ -58,6 +58,7 @@ impl PackageBackend for PacmanBackend {
             maintainer: None,
             dependencies: Vec::new(),
             install_date: None,
+            enrichment: None,
         };
 
         let mut has_data = false;
@@ -80,6 +81,7 @@ impl PackageBackend for PacmanBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        enrichment: None,
                     };
                 }
                 continue;
@@ -161,6 +163,7 @@ impl PackageBackend for PacmanBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }
@@ -251,6 +254,7 @@ impl PackageBackend for PacmanBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        enrichment: None,
                     });
                     i += 2;
                     continue;

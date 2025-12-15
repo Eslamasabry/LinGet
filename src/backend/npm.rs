@@ -80,6 +80,7 @@ impl PackageBackend for NpmBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        enrichment: None,
                     });
                 }
             }
@@ -117,6 +118,7 @@ impl PackageBackend for NpmBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }
@@ -257,6 +259,7 @@ impl PackageBackend for NpmBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    enrichment: None,
                 });
             }
         }

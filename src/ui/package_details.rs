@@ -1,6 +1,8 @@
 use crate::backend::PackageManager;
-use crate::models::{Config, Package, PackageSource, PackageStatus};
+use crate::models::{fetch_enrichment, Config, Package, PackageEnrichment, PackageSource, PackageStatus};
 use crate::ui::{CommandCenter, CommandEventKind, PackageOp, RetrySpec};
+use gdk_pixbuf::prelude::*;
+use gdk_pixbuf::PixbufLoader;
 use gtk4::prelude::*;
 use gtk4::{self as gtk, glib};
 use libadwaita as adw;
@@ -11,6 +13,205 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub struct PackageDetailsDialog;
+
+/// Build enrichment section UI
+fn build_enrichment_section(enrichment: &PackageEnrichment) -> gtk::Box {
+    let section = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .build();
+    section.add_css_class("enrichment-section");
+
+    // Summary (enhanced description)
+    if let Some(ref summary) = enrichment.summary {
+        if !summary.is_empty() {
+            let summary_label = gtk::Label::builder()
+                .label(summary)
+                .wrap(true)
+                .xalign(0.0)
+                .build();
+            summary_label.add_css_class("body");
+            section.append(&summary_label);
+        }
+    }
+
+    // Stats row (developer, downloads, rating)
+    let stats_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(16)
+        .halign(gtk::Align::Start)
+        .build();
+
+    if let Some(ref developer) = enrichment.developer {
+        let dev_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        let dev_icon = gtk::Image::builder()
+            .icon_name("avatar-default-symbolic")
+            .build();
+        dev_icon.add_css_class("dim-label");
+        let dev_label = gtk::Label::new(Some(developer));
+        dev_label.add_css_class("caption");
+        dev_box.append(&dev_icon);
+        dev_box.append(&dev_label);
+        stats_box.append(&dev_box);
+    }
+
+    if let Some(downloads) = enrichment.downloads {
+        let dl_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        let dl_icon = gtk::Image::builder()
+            .icon_name("folder-download-symbolic")
+            .build();
+        dl_icon.add_css_class("dim-label");
+        let dl_text = if downloads >= 1_000_000 {
+            format!("{:.1}M", downloads as f64 / 1_000_000.0)
+        } else if downloads >= 1_000 {
+            format!("{:.1}K", downloads as f64 / 1_000.0)
+        } else {
+            downloads.to_string()
+        };
+        let dl_label = gtk::Label::new(Some(&dl_text));
+        dl_label.add_css_class("caption");
+        dl_box.append(&dl_icon);
+        dl_box.append(&dl_label);
+        stats_box.append(&dl_box);
+    }
+
+    if let Some(rating) = enrichment.rating {
+        let rating_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        let star_icon = gtk::Image::builder()
+            .icon_name("starred-symbolic")
+            .build();
+        star_icon.add_css_class("warning"); // yellow color
+        let rating_label = gtk::Label::new(Some(&format!("{:.1}", rating)));
+        rating_label.add_css_class("caption");
+        rating_box.append(&star_icon);
+        rating_box.append(&rating_label);
+        stats_box.append(&rating_box);
+    }
+
+    if stats_box.first_child().is_some() {
+        section.append(&stats_box);
+    }
+
+    // Categories and keywords as chips
+    let tags: Vec<&str> = enrichment
+        .categories
+        .iter()
+        .chain(enrichment.keywords.iter())
+        .map(|s| s.as_str())
+        .take(8)
+        .collect();
+
+    if !tags.is_empty() {
+        let tags_flow = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .max_children_per_line(6)
+            .row_spacing(6)
+            .column_spacing(6)
+            .homogeneous(false)
+            .build();
+        tags_flow.add_css_class("enrichment-tags");
+
+        for tag in tags {
+            let chip = gtk::Label::builder().label(tag).build();
+            chip.add_css_class("chip");
+            chip.add_css_class("caption");
+            tags_flow.insert(&chip, -1);
+        }
+        section.append(&tags_flow);
+    }
+
+    // Repository link
+    if let Some(ref repo) = enrichment.repository {
+        if !repo.is_empty() {
+            let link_btn = gtk::LinkButton::builder()
+                .label("View Repository")
+                .uri(repo)
+                .halign(gtk::Align::Start)
+                .build();
+            link_btn.add_css_class("flat");
+            section.append(&link_btn);
+        }
+    }
+
+    // Screenshots carousel
+    if !enrichment.screenshots.is_empty() {
+        let screenshots_label = gtk::Label::builder()
+            .label("Screenshots")
+            .xalign(0.0)
+            .margin_top(8)
+            .build();
+        screenshots_label.add_css_class("heading");
+        section.append(&screenshots_label);
+
+        let carousel = adw::Carousel::builder()
+            .hexpand(true)
+            .height_request(200)
+            .build();
+        carousel.add_css_class("card");
+
+        // Add placeholder images with async loading
+        for url in enrichment.screenshots.iter().take(5) {
+            let image = gtk::Picture::builder()
+                .height_request(200)
+                .build();
+            image.add_css_class("screenshot");
+
+            // Load image asynchronously using pixbuf
+            let url = url.clone();
+            let image_clone = image.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(bytes) = load_image_bytes(&url).await {
+                    // Load pixbuf from bytes
+                    let loader = PixbufLoader::new();
+                    if loader.write(&bytes).is_ok() && loader.close().is_ok() {
+                        if let Some(pixbuf) = loader.pixbuf() {
+                            let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
+                            image_clone.set_paintable(Some(&texture));
+                        }
+                    }
+                }
+            });
+
+            carousel.append(&image);
+        }
+
+        let carousel_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        carousel_box.append(&carousel);
+
+        // Carousel indicators
+        if enrichment.screenshots.len() > 1 {
+            let indicators = adw::CarouselIndicatorDots::builder()
+                .carousel(&carousel)
+                .build();
+            carousel_box.append(&indicators);
+        }
+
+        section.append(&carousel_box);
+    }
+
+    section
+}
+
+/// Load image bytes from URL
+async fn load_image_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+    let bytes = client.get(url).send().await?.bytes().await?;
+    Ok(bytes.to_vec())
+}
 
 fn parse_suggestion(message: &str) -> Option<(String, String)> {
     let marker = crate::backend::SUGGEST_PREFIX;
@@ -98,6 +299,7 @@ impl PackageDetailsDialog {
         command_center: Option<CommandCenter>,
         reveal_command_center: Option<Rc<dyn Fn(bool)>>,
     ) {
+        tracing::debug!("Opening package details for: {}", package.name);
         let dialog = gtk::Window::builder()
             .title(&package.name)
             .default_width(500)
@@ -157,16 +359,70 @@ impl PackageDetailsDialog {
 
         content.append(&header_box);
 
-        // Description
-        if !package.description.is_empty() {
-            let desc_label = gtk::Label::builder()
-                .label(&package.description)
-                .wrap(true)
-                .xalign(0.0)
-                .build();
-            desc_label.add_css_class("dim-label");
-            content.append(&desc_label);
-        }
+        // Description (fallback if no enrichment summary)
+        let desc_label = gtk::Label::builder()
+            .label(&package.description)
+            .wrap(true)
+            .xalign(0.0)
+            .visible(!package.description.is_empty())
+            .build();
+        desc_label.add_css_class("dim-label");
+        content.append(&desc_label);
+
+        // Enrichment section placeholder (with loading spinner)
+        let enrichment_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .build();
+
+        // Loading spinner
+        let loading_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::Center)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        let spinner = gtk::Spinner::builder().spinning(true).build();
+        let loading_label = gtk::Label::new(Some("Loading details…"));
+        loading_label.add_css_class("dim-label");
+        loading_label.add_css_class("caption");
+        loading_box.append(&spinner);
+        loading_box.append(&loading_label);
+        enrichment_box.append(&loading_box);
+
+        content.append(&enrichment_box);
+
+        // Fetch enrichment asynchronously
+        let pkg_for_enrich = package.clone();
+        let desc_label_clone = desc_label.clone();
+        let enrichment_box_clone = enrichment_box.clone();
+        glib::spawn_future_local(async move {
+            tracing::debug!("Starting enrichment fetch for {}", pkg_for_enrich.name);
+
+            if let Some(enrichment) = fetch_enrichment(&pkg_for_enrich).await {
+                tracing::debug!("Got enrichment for {}", pkg_for_enrich.name);
+                // Remove loading spinner
+                while let Some(child) = enrichment_box_clone.first_child() {
+                    enrichment_box_clone.remove(&child);
+                }
+
+                // Hide original description if we have a summary
+                if enrichment.summary.is_some() {
+                    desc_label_clone.set_visible(false);
+                }
+
+                // Build and show enrichment section
+                let section = build_enrichment_section(&enrichment);
+                enrichment_box_clone.append(&section);
+            } else {
+                tracing::debug!("No enrichment available for {}", pkg_for_enrich.name);
+                // No enrichment available, just hide the loading spinner
+                while let Some(child) = enrichment_box_clone.first_child() {
+                    enrichment_box_clone.remove(&child);
+                }
+            }
+        });
 
         // Details group
         let details_group = adw::PreferencesGroup::builder().title("Details").build();
@@ -222,6 +478,7 @@ impl PackageDetailsDialog {
         let config_clone = config.clone();
         let pkg_id_clone = pkg_id.clone();
         let toast_clone = toast_overlay.clone();
+        let reload_packages_ignore = reload_packages.clone();
 
         ignore_switch.connect_state_set(move |_, state| {
             let mut cfg = config_clone.borrow_mut();
@@ -238,6 +495,11 @@ impl PackageDetailsDialog {
                 let t = adw::Toast::new("Package updates enabled");
                 toast_clone.add_toast(t);
             }
+            drop(cfg);
+            // Refresh the package list to reflect ignore status change
+            if let Some(reload) = reload_packages_ignore.as_ref() {
+                reload();
+            }
             glib::Propagation::Proceed
         });
 
@@ -245,6 +507,38 @@ impl PackageDetailsDialog {
         details_group.add(&ignore_row);
 
         content.append(&details_group);
+
+        // Show warning banner for sources with special considerations (e.g., AUR)
+        if let Some(warning) = package.source.gui_operation_warning() {
+            let info_bar = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .margin_top(8)
+                .build();
+            info_bar.add_css_class("card");
+            info_bar.add_css_class("warning");
+
+            let icon = gtk::Image::builder()
+                .icon_name("dialog-warning-symbolic")
+                .margin_start(12)
+                .margin_top(8)
+                .margin_bottom(8)
+                .build();
+
+            let label = gtk::Label::builder()
+                .label(warning)
+                .wrap(true)
+                .xalign(0.0)
+                .margin_end(12)
+                .margin_top(8)
+                .margin_bottom(8)
+                .build();
+            label.add_css_class("dim-label");
+
+            info_bar.append(&icon);
+            info_bar.append(&label);
+            content.append(&info_bar);
+        }
 
         // Action buttons
         let actions_box = gtk::Box::builder()
@@ -723,7 +1017,7 @@ impl PackageDetailsDialog {
             actions_box.append(&version_btn);
         }
 
-        if package.has_update() {
+        if package.has_update() && package.source.supports_gui_operations() {
             let update_btn = gtk::Button::builder().label("Update").build();
             update_btn.add_css_class("suggested-action");
             update_btn.add_css_class("pill");
@@ -825,7 +1119,7 @@ impl PackageDetailsDialog {
             })
             .build();
 
-        if package.status == PackageStatus::Installed {
+        if package.status == PackageStatus::Installed && package.source.supports_gui_operations() {
             remove_btn.add_css_class("destructive-action");
             remove_btn.add_css_class("pill");
 
@@ -940,6 +1234,7 @@ impl PackageDetailsDialog {
         main_box.append(&scrolled);
 
         dialog.set_child(Some(&main_box));
+        tracing::debug!("Presenting package details dialog");
         dialog.present();
     }
 }
