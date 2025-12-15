@@ -1,6 +1,6 @@
 [package]
 name = "linget"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "A modern GUI package manager for Linux - like winget for Windows"
 authors = ["LinGet Contributors"]
