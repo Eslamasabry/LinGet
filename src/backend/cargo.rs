@@ -207,6 +207,62 @@ impl PackageBackend for CargoBackend {
         }
     }
 
+    async fn get_changelog(&self, name: &str) -> Result<Option<String>> {
+        // Fetch version history from crates.io API
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .user_agent("linget (https://github.com/linget/linget)")
+            .build()
+            .context("Failed to create HTTP client")?;
+
+        let url = format!("https://crates.io/api/v1/crates/{}/versions", name);
+        let resp = client.get(&url).send().await;
+
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                if let Ok(json) = r.json::<serde_json::Value>().await {
+                    if let Some(versions) = json.get("versions").and_then(|v| v.as_array()) {
+                        let mut changelog = String::new();
+                        changelog.push_str(&format!("# {} Version History\n\n", name));
+
+                        for (i, ver) in versions.iter().take(20).enumerate() {
+                            let version = ver.get("num").and_then(|v| v.as_str()).unwrap_or("?");
+                            let created =
+                                ver.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+                            let yanked = ver
+                                .get("yanked")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+
+                            // Format date nicely
+                            let date = created.split('T').next().unwrap_or(created);
+
+                            if i == 0 {
+                                changelog.push_str(&format!("## v{} (Latest)\n", version));
+                            } else if yanked {
+                                changelog.push_str(&format!("## ~~v{}~~ (Yanked)\n", version));
+                            } else {
+                                changelog.push_str(&format!("## v{}\n", version));
+                            }
+                            changelog.push_str(&format!("*Released: {}*\n\n", date));
+                        }
+
+                        if versions.len() > 20 {
+                            changelog.push_str(&format!(
+                                "\n*...and {} more versions*\n",
+                                versions.len() - 20
+                            ));
+                        }
+
+                        return Ok(Some(changelog));
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
         let output = Command::new("cargo")
             .args(["search", query, "--limit", "50"])

@@ -1,0 +1,9 @@
+pub mod check;
+pub mod completions;
+pub mod info;
+pub mod install;
+pub mod list;
+pub mod remove;
+pub mod search;
+pub mod sources;
+pub mod update;

@@ -1,4 +1,4 @@
-use crate::models::Package;
+use crate::models::{Package, Repository};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -38,6 +38,27 @@ pub trait PackageBackend: Send + Sync {
     /// List available downgrade target versions (optional per backend)
     async fn available_downgrade_versions(&self, _name: &str) -> Result<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    /// Get changelog/release notes for a package (optional per backend)
+    /// Returns markdown-formatted changelog if available
+    async fn get_changelog(&self, _name: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// List configured repositories (optional per backend)
+    async fn list_repositories(&self) -> Result<Vec<Repository>> {
+        Ok(Vec::new())
+    }
+
+    /// Add a new repository (optional per backend)
+    async fn add_repository(&self, _url: &str, _name: Option<&str>) -> Result<()> {
+        anyhow::bail!("Adding repositories is not supported for this source")
+    }
+
+    /// Remove a repository (optional per backend)
+    async fn remove_repository(&self, _name: &str) -> Result<()> {
+        anyhow::bail!("Removing repositories is not supported for this source")
     }
 
     /// Search for new packages

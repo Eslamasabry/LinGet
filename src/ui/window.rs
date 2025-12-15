@@ -1,6 +1,9 @@
 use crate::app::with_tray;
 use crate::backend::PackageManager;
-use crate::models::{Config, Package, PackageCache, PackageSource, PackageStatus};
+use crate::models::{
+    Config, OperationHistory, OperationRecord, OperationType, Package, PackageCache, PackageSource,
+    PackageStatus,
+};
 use crate::ui::{
     notify_updates_available, show_about_dialog, CommandCenter, CommandEventKind,
     DiagnosticsDialog, PackageDetailsDialog, PackageOp, PackageRow, PreferencesDialog, RetrySpec,
@@ -8,6 +11,7 @@ use crate::ui::{
 };
 use gtk4::prelude::*;
 use gtk4::{self as gtk, gio, glib};
+use humansize::{format_size, BINARY};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
@@ -173,6 +177,7 @@ struct ProviderRowWidgets {
     row: gtk::Box,
     enabled_switch: gtk::Switch,
     count_label: gtk::Label,
+    size_label: gtk::Label,
     status_label: gtk::Label,
 }
 
@@ -182,6 +187,7 @@ struct SidebarWidgets {
     all_count_label: gtk::Label,
     update_count_label: gtk::Label,
     favorites_count_label: gtk::Label,
+    total_size_label: gtk::Label,
     providers_box: gtk::Box,
     provider_rows: HashMap<PackageSource, ProviderRowWidgets>,
     provider_counts: HashMap<PackageSource, gtk::Label>,
@@ -247,6 +253,7 @@ pub struct LinGetWindow {
     // Sidebar labels
     all_count_label: gtk::Label,
     update_count_label: gtk::Label,
+    total_size_label: gtk::Label,
     // Source count labels
     source_count_labels: HashMap<PackageSource, gtk::Label>,
     provider_rows: HashMap<PackageSource, ProviderRowWidgets>,
@@ -267,6 +274,10 @@ pub struct LinGetWindow {
     // Selection action bar
     selection_bar: gtk::ActionBar,
     selected_count_label: gtk::Label,
+    // Operation history for undo
+    operation_history: Rc<RefCell<OperationHistory>>,
+    #[allow(dead_code)] // Used via clone in setup_signals
+    undo_button: gtk::Button,
 }
 
 impl LinGetWindow {
@@ -352,7 +363,7 @@ impl LinGetWindow {
         let last_filtered_updates: Rc<RefCell<Vec<Package>>> = Rc::new(RefCell::new(Vec::new()));
 
         // Create UI components
-        let (header, search_entry, refresh_button, select_button, command_center_btn, cmd_badge) =
+        let (header, search_entry, refresh_button, undo_button, select_button, command_center_btn, cmd_badge) =
             Self::build_header();
 
         let sidebar_widgets = Self::build_sidebar();
@@ -538,6 +549,7 @@ impl LinGetWindow {
             current_view,
             all_count_label: sidebar_widgets.all_count_label.clone(),
             update_count_label: sidebar_widgets.update_count_label.clone(),
+            total_size_label: sidebar_widgets.total_size_label.clone(),
             source_count_labels: sidebar_widgets.provider_counts.clone(),
             provider_rows: sidebar_widgets.provider_rows.clone(),
             providers_box: sidebar_widgets.providers_box.clone(),
@@ -553,10 +565,13 @@ impl LinGetWindow {
             progress_label,
             selection_bar,
             selected_count_label,
+            operation_history: Rc::new(RefCell::new(OperationHistory::load())),
+            undo_button: undo_button.clone(),
         };
 
         let reload_packages = win.setup_signals(
             refresh_button,
+            undo_button,
             select_button,
             sidebar_widgets.nav_list.clone(),
             content_widgets.update_all_btn.clone(),
@@ -621,6 +636,7 @@ impl LinGetWindow {
         adw::HeaderBar,
         gtk::SearchEntry,
         gtk::Button,
+        gtk::Button,
         gtk::ToggleButton,
         gtk::ToggleButton,
         gtk::Label,
@@ -669,6 +685,16 @@ impl LinGetWindow {
         refresh_button.add_css_class("flat");
         header.pack_end(&refresh_button);
 
+        // Undo
+        let undo_button = gtk::Button::builder()
+            .icon_name("edit-undo-symbolic")
+            .tooltip_text("Undo Last Operation (Ctrl+Z)")
+            .sensitive(false)
+            .visible(false)
+            .build();
+        undo_button.add_css_class("flat");
+        header.pack_end(&undo_button);
+
         // Selection Mode
         let select_button = gtk::ToggleButton::builder()
             .icon_name("selection-mode-symbolic")
@@ -704,6 +730,7 @@ impl LinGetWindow {
             header,
             search_entry,
             refresh_button,
+            undo_button,
             select_button,
             command_center_btn,
             cmd_badge,
@@ -945,6 +972,15 @@ impl LinGetWindow {
             .margin_bottom(16)
             .spacing(4)
             .build();
+        let total_size_label = gtk::Label::builder()
+            .label("")
+            .xalign(0.0)
+            .visible(false)
+            .build();
+        total_size_label.add_css_class("caption");
+        total_size_label.add_css_class("dim-label");
+        total_size_label.set_tooltip_text(Some("Total disk space used by installed packages"));
+        stats_box.append(&total_size_label);
         let stats_label = gtk::Label::builder()
             .label("Last updated: Just now")
             .xalign(0.0)
@@ -960,6 +996,7 @@ impl LinGetWindow {
             all_count_label,
             update_count_label,
             favorites_count_label,
+            total_size_label,
             providers_box,
             provider_rows,
             provider_counts,
@@ -1420,17 +1457,25 @@ impl LinGetWindow {
         count_label.add_css_class("dim-label");
         count_label.add_css_class("caption");
 
+        // Size label for disk space usage
+        let size_label = gtk::Label::new(Some(""));
+        size_label.add_css_class("dim-label");
+        size_label.add_css_class("caption");
+        size_label.set_tooltip_text(Some("Disk space used by this source"));
+
         let enabled_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
 
         row.append(&dot);
         row.append(&labels);
         row.append(&count_label);
+        row.append(&size_label);
         row.append(&enabled_switch);
 
         ProviderRowWidgets {
             row,
             enabled_switch,
             count_label,
+            size_label,
             status_label: status,
         }
     }
@@ -1748,6 +1793,7 @@ impl LinGetWindow {
     fn setup_signals(
         &self,
         refresh_button: gtk::Button,
+        undo_button: gtk::Button,
         select_button: gtk::ToggleButton,
         nav_list: gtk::ListBox,
         update_all_btn: gtk::Button,
@@ -1789,6 +1835,7 @@ impl LinGetWindow {
         let selection_mode = self.selection_mode.clone();
         let all_count_label = self.all_count_label.clone();
         let update_count_label = self.update_count_label.clone();
+        let total_size_label = self.total_size_label.clone();
         let source_count_labels = self.source_count_labels.clone();
         let provider_rows = self.provider_rows.clone();
         let providers_box = self.providers_box.clone();
@@ -1804,6 +1851,7 @@ impl LinGetWindow {
         let selected_count_label = self.selected_count_label.clone();
         let enable_detected_btn = self.enable_detected_btn.clone();
         let view_spinners: Rc<Vec<gtk::Spinner>> = Rc::new(self.view_spinners.clone());
+        let operation_history = self.operation_history.clone();
 
         let reveal_command_center: Rc<dyn Fn(bool)> = Rc::new({
             let command_center_flap = command_center_flap.clone();
@@ -1829,6 +1877,27 @@ impl LinGetWindow {
                 }
             }
         });
+
+        // Helper to update undo button state
+        let update_undo_button: Rc<dyn Fn()> = Rc::new({
+            let operation_history = operation_history.clone();
+            let undo_button = undo_button.clone();
+            move || {
+                let history = operation_history.borrow();
+                if let Some(record) = history.last_undoable() {
+                    let label = format!("Undo: {}", record.description());
+                    undo_button.set_tooltip_text(Some(&label));
+                    undo_button.set_sensitive(true);
+                    undo_button.set_visible(true);
+                } else {
+                    undo_button.set_sensitive(false);
+                    undo_button.set_visible(false);
+                }
+            }
+        });
+
+        // Initial undo button state
+        update_undo_button();
 
         let update_top_chips: Rc<dyn Fn()> = Rc::new({
             let filter_state = filter_state.clone();
@@ -2080,6 +2149,7 @@ impl LinGetWindow {
 
         // Helpers
         let enabled_sources_for_counts = enabled_sources.clone();
+        let provider_rows_for_counts = provider_rows.clone();
         let update_source_counts = move |packages: &[Package]| {
             let enabled = enabled_sources_for_counts.borrow();
             let enabled_packages: Vec<&Package> = packages
@@ -2109,6 +2179,30 @@ impl LinGetWindow {
                     .filter(|p| p.source == *source)
                     .count();
                 label.set_label(&count.to_string());
+            }
+
+            // Update disk space per source
+            for (source, row_widgets) in &provider_rows_for_counts {
+                let source_size: u64 = packages
+                    .iter()
+                    .filter(|p| p.source == *source)
+                    .filter_map(|p| p.size)
+                    .sum();
+                if source_size > 0 {
+                    row_widgets.size_label.set_label(&format_size(source_size, BINARY));
+                    row_widgets.size_label.set_visible(true);
+                } else {
+                    row_widgets.size_label.set_visible(false);
+                }
+            }
+
+            // Update total disk space used
+            let total_disk_size: u64 = enabled_packages.iter().filter_map(|p| p.size).sum();
+            if total_disk_size > 0 {
+                total_size_label.set_label(&format!("Disk: {}", format_size(total_disk_size, BINARY)));
+                total_size_label.set_visible(true);
+            } else {
+                total_size_label.set_visible(false);
             }
         };
 
@@ -3031,6 +3125,143 @@ impl LinGetWindow {
 
         *reload_holder.borrow_mut() = Some(Rc::new(load_packages.clone()));
 
+        // Undo button click handler
+        undo_button.connect_clicked({
+            let operation_history = operation_history.clone();
+            let pm = pm.clone();
+            let toast_overlay = toast_overlay.clone();
+            let command_center = command_center.clone();
+            let reveal_command_center = reveal_command_center.clone();
+            let reload_holder = reload_holder.clone();
+            let update_undo_button = update_undo_button.clone();
+            move |_| {
+                let record = {
+                    let mut history = operation_history.borrow_mut();
+                    history.pop_undoable()
+                };
+
+                let Some(record) = record else {
+                    return;
+                };
+
+                let reverse_op = record.reverse_operation();
+                let Some(reverse_op) = reverse_op else {
+                    let t = adw::Toast::new("Cannot undo this operation");
+                    t.set_timeout(3);
+                    toast_overlay.add_toast(t);
+                    return;
+                };
+
+                let pkg_name = record.package_name.clone();
+                let pkg_source = record.source;
+                let running_title = match reverse_op {
+                    OperationType::Install => format!("Undoing: reinstalling {}", pkg_name),
+                    OperationType::Remove => format!("Undoing: removing {}", pkg_name),
+                    OperationType::Update => format!("Undoing: reverting {}", pkg_name),
+                };
+
+                let task = command_center.begin_task(
+                    &running_title,
+                    format!("Source: {}", pkg_source),
+                    None,
+                );
+
+                let pm = pm.clone();
+                let toast_overlay = toast_overlay.clone();
+                let reveal_command_center = reveal_command_center.clone();
+                let reload_holder = reload_holder.clone();
+                let operation_history = operation_history.clone();
+                let update_undo_button_async = update_undo_button.clone();
+                let update_undo_button_sync = update_undo_button.clone();
+
+                glib::spawn_future_local(async move {
+                    let update_undo_button = update_undo_button_async;
+                    let result = {
+                        let manager = pm.lock().await;
+                        match reverse_op {
+                            OperationType::Install => manager.install(&Package {
+                                name: pkg_name.clone(),
+                                version: String::new(),
+                                available_version: None,
+                                description: String::new(),
+                                source: pkg_source,
+                                status: PackageStatus::NotInstalled,
+                                size: None,
+                                homepage: None,
+                                license: None,
+                                maintainer: None,
+                                dependencies: Vec::new(),
+                                install_date: None,
+                                enrichment: None,
+                            }).await,
+                            OperationType::Remove => manager.remove(&Package {
+                                name: pkg_name.clone(),
+                                version: String::new(),
+                                available_version: None,
+                                description: String::new(),
+                                source: pkg_source,
+                                status: PackageStatus::Installed,
+                                size: None,
+                                homepage: None,
+                                license: None,
+                                maintainer: None,
+                                dependencies: Vec::new(),
+                                install_date: None,
+                                enrichment: None,
+                            }).await,
+                            OperationType::Update => Ok(()), // Can't undo updates
+                        }
+                    };
+
+                    match result {
+                        Ok(_) => {
+                            let done_title = match reverse_op {
+                                OperationType::Install => format!("Reinstalled {}", pkg_name),
+                                OperationType::Remove => format!("Removed {}", pkg_name),
+                                OperationType::Update => format!("Reverted {}", pkg_name),
+                            };
+                            task.finish(
+                                CommandEventKind::Success,
+                                done_title,
+                                format!("Undo completed for {}", pkg_source),
+                                None,
+                                true,
+                            );
+                            let t = adw::Toast::new(&format!("Undo: {}", pkg_name));
+                            t.set_timeout(3);
+                            toast_overlay.add_toast(t);
+
+                            // Save history
+                            let _ = operation_history.borrow().save();
+
+                            // Reload packages
+                            if let Some(reload) = reload_holder.borrow().as_ref() {
+                                reload();
+                            }
+                        }
+                        Err(e) => {
+                            task.finish(
+                                CommandEventKind::Error,
+                                "Undo failed",
+                                format!("Error: {}", e),
+                                None,
+                                true,
+                            );
+                            reveal_command_center(true);
+                            let t = adw::Toast::new("Undo failed (see Command Center)");
+                            t.set_timeout(5);
+                            toast_overlay.add_toast(t);
+                        }
+                    }
+
+                    update_undo_button();
+                });
+
+                // Update button immediately
+                update_undo_button_sync();
+            }
+        });
+
         // Load with cache
         let load_with_cache = {
             let load_packages = load_packages.clone();
@@ -3136,6 +3367,8 @@ impl LinGetWindow {
         let update_top_chips_search = update_top_chips.clone();
         let command_center_search = command_center.clone();
         let reveal_command_center_search = reveal_command_center.clone();
+        let operation_history_search = operation_history.clone();
+        let update_undo_button_search = update_undo_button.clone();
 
         search_entry.connect_search_changed(move |entry| {
             let query = entry.text().to_lowercase();
@@ -3172,6 +3405,8 @@ impl LinGetWindow {
             let reload_holder_for_timeout = reload_holder_search.clone();
             let command_center_for_timeout = command_center_search.clone();
             let reveal_command_center_for_timeout = reveal_command_center_search.clone();
+            let operation_history_for_timeout = operation_history_search.clone();
+            let update_undo_button_for_timeout = update_undo_button_search.clone();
 
             let id = glib::timeout_add_local_once(Duration::from_millis(300), move || {
                 if *current_view.borrow() != ViewMode::Discover {
@@ -3210,6 +3445,8 @@ impl LinGetWindow {
                         reload_packages,
                         &command_center_for_timeout,
                         reveal_command_center_for_timeout.clone(),
+                        operation_history_for_timeout.clone(),
+                        update_undo_button_for_timeout.clone(),
                     );
 
                     if results.is_empty() {
@@ -3711,6 +3948,8 @@ impl LinGetWindow {
         reload_packages: Option<LocalFn>,
         command_center: &CommandCenter,
         reveal_command_center: Rc<dyn Fn(bool)>,
+        operation_history: Rc<RefCell<OperationHistory>>,
+        update_undo_button: Rc<dyn Fn()>,
     ) where
         F: Fn(PackageSource) + Clone + 'static,
     {
@@ -3737,6 +3976,8 @@ impl LinGetWindow {
         let reload_packages = reload_packages.clone();
         let command_center = command_center.clone();
         let reveal_command_center = reveal_command_center.clone();
+        let operation_history = operation_history.clone();
+        let update_undo_button = update_undo_button.clone();
         let (show_icons, compact) = {
             let cfg = config.borrow();
             (cfg.ui_show_icons, cfg.ui_compact)
@@ -3799,6 +4040,8 @@ impl LinGetWindow {
                 let reload_action = reload_packages.clone();
                 let command_center_action = command_center.clone();
                 let reveal_command_center_action = reveal_command_center.clone();
+                let operation_history_action = operation_history.clone();
+                let update_undo_button_action = update_undo_button.clone();
 
                 row.action_button.connect_clicked(move |_| {
                     let pkg = pkg_action.clone();
@@ -3813,6 +4056,8 @@ impl LinGetWindow {
                     let reload_action = reload_action.clone();
                     let command_center = command_center_action.clone();
                     let reveal_command_center = reveal_command_center_action.clone();
+                    let operation_history = operation_history_action.clone();
+                    let update_undo_button = update_undo_button_action.clone();
 
                     btn.set_visible(false);
                     spinner.set_visible(true);
@@ -3955,6 +4200,29 @@ impl LinGetWindow {
                         }
 
                         if ok {
+                            // Record operation in history for undo
+                            let op_type = match pkg.status {
+                                PackageStatus::UpdateAvailable => OperationType::Update,
+                                PackageStatus::Installed => OperationType::Remove,
+                                PackageStatus::NotInstalled => OperationType::Install,
+                                _ => OperationType::Update,
+                            };
+                            let record = OperationRecord::new(
+                                op_type,
+                                pkg.name.clone(),
+                                pkg.source,
+                                pkg.status,
+                                Some(pkg.version.clone()),
+                                pkg.available_version.clone(),
+                                true,
+                            );
+                            {
+                                let mut history = operation_history.borrow_mut();
+                                history.push(record);
+                                let _ = history.save();
+                            }
+                            update_undo_button();
+
                             // Optimistic UI update (then reload to sync exact versions/counts).
                             {
                                 let mut p = row_pkg.borrow_mut();

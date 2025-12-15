@@ -5,6 +5,7 @@ mod notifications;
 mod package_details;
 mod package_row;
 mod preferences;
+mod repositories;
 mod tray;
 mod window;
 
@@ -15,5 +16,6 @@ pub use notifications::notify_updates_available;
 pub use package_details::PackageDetailsDialog;
 pub use package_row::PackageRow;
 pub use preferences::PreferencesDialog;
+pub use repositories::RepositoriesDialog;
 pub use tray::{TrayAction, TrayHandle};
 pub use window::LinGetWindow;

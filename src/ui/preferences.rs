@@ -1,5 +1,6 @@
 use crate::backend::PackageManager;
 use crate::models::{Config, PackageSource};
+use crate::ui::RepositoriesDialog;
 use gtk4::prelude::*;
 use gtk4::{self as gtk, glib};
 use libadwaita as adw;
@@ -577,6 +578,32 @@ impl PreferencesDialog {
         );
 
         sources_page.add(&sources_group);
+
+        // Repository Management button
+        let repo_group = adw::PreferencesGroup::builder()
+            .title("Repositories")
+            .description("Manage package source repositories")
+            .build();
+
+        let repo_row = adw::ActionRow::builder()
+            .title("Manage Repositories")
+            .subtitle("View and manage Flatpak remotes and other repositories")
+            .activatable(true)
+            .build();
+
+        let arrow = gtk::Image::builder()
+            .icon_name("go-next-symbolic")
+            .build();
+        repo_row.add_suffix(&arrow);
+
+        let pm_for_repo = pm.clone();
+        let dialog_for_repo = dialog.clone();
+        repo_row.connect_activated(move |_| {
+            RepositoriesDialog::show(pm_for_repo.clone(), &dialog_for_repo);
+        });
+
+        repo_group.add(&repo_row);
+        sources_page.add(&repo_group);
 
         dialog.add(&sources_page);
 

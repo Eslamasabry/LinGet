@@ -6,6 +6,30 @@ use async_trait::async_trait;
 use std::process::Stdio;
 use tokio::process::Command;
 
+/// Parse human-readable size strings like "1.2 GiB", "500 MiB", "100 KiB"
+fn parse_human_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let mut num_end = 0;
+    for (i, c) in s.char_indices() {
+        if c.is_ascii_digit() || c == '.' {
+            num_end = i + c.len_utf8();
+        } else if !c.is_whitespace() {
+            break;
+        }
+    }
+    let num: f64 = s[..num_end].trim().parse().ok()?;
+    let unit = s[num_end..].trim().to_lowercase();
+    let multiplier: u64 = match unit.as_str() {
+        "b" | "bytes" => 1,
+        "kb" | "kib" => 1024,
+        "mb" | "mib" => 1024 * 1024,
+        "gb" | "gib" => 1024 * 1024 * 1024,
+        "tb" | "tib" => 1024 * 1024 * 1024 * 1024,
+        _ => return None,
+    };
+    Some((num * multiplier as f64) as u64)
+}
+
 pub struct PacmanBackend;
 
 impl PacmanBackend {
@@ -102,7 +126,8 @@ impl PackageBackend for PacmanBackend {
                     "Licenses" => current_pkg.license = Some(value),
                     "Packager" => current_pkg.maintainer = Some(value),
                     "Installed Size" => {
-                        // Value e.g. "123.45 KiB" - simple parsing difficult, skip for now or store as is if field was string
+                        // Value e.g. "123.45 KiB"
+                        current_pkg.size = parse_human_size(&value);
                     }
                     _ => {}
                 }

@@ -40,7 +40,7 @@ pub use snap::SnapBackend;
 pub use traits::*;
 pub use zypper::ZypperBackend;
 
-use crate::models::{Package, PackageSource};
+use crate::models::{Package, PackageSource, Repository};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
@@ -269,6 +269,67 @@ impl PackageManager {
             backend.available_downgrade_versions(&package.name).await
         } else {
             anyhow::bail!("No backend available for {:?}", package.source)
+        }
+    }
+
+    pub async fn get_changelog(&self, package: &Package) -> Result<Option<String>> {
+        Self::validate_package_name(&package.name)?;
+
+        if let Some(backend) = self.backends.get(&package.source) {
+            backend.get_changelog(&package.name).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn list_repositories(&self, source: PackageSource) -> Result<Vec<Repository>> {
+        if let Some(backend) = self.backends.get(&source) {
+            backend.list_repositories().await
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    #[allow(dead_code)] // Useful for future multi-backend repository listing
+    pub async fn list_all_repositories(&self) -> Result<Vec<Repository>> {
+        use futures::future::join_all;
+
+        let futures: Vec<_> = self
+            .enabled_backends()
+            .map(|(_, backend)| backend.list_repositories())
+            .collect();
+
+        let results = join_all(futures).await;
+
+        let mut all_repos = Vec::new();
+        for result in results {
+            match result {
+                Ok(repos) => all_repos.extend(repos),
+                Err(e) => tracing::warn!("Failed to list repositories: {}", e),
+            }
+        }
+
+        Ok(all_repos)
+    }
+
+    pub async fn add_repository(
+        &self,
+        source: PackageSource,
+        url: &str,
+        name: Option<&str>,
+    ) -> Result<()> {
+        if let Some(backend) = self.backends.get(&source) {
+            backend.add_repository(url, name).await
+        } else {
+            anyhow::bail!("No backend available for {:?}", source)
+        }
+    }
+
+    pub async fn remove_repository(&self, source: PackageSource, name: &str) -> Result<()> {
+        if let Some(backend) = self.backends.get(&source) {
+            backend.remove_repository(name).await
+        } else {
+            anyhow::bail!("No backend available for {:?}", source)
         }
     }
 

@@ -110,13 +110,31 @@ cargo install --path .
 
 ## Usage
 
-- **Navigation**: Use the sidebar to switch between "All Packages" and "Updates".
-- **Providers**: Use the sidebar "Providers" switches to enable/disable package sources (unavailable providers are dimmed).
-- **Filtering**: Use the top toolbar `Source: …` popover to filter the current view by a single source.
-- **Selection**: Toggle "Selection Mode" (Ctrl+S) to select multiple packages for bulk actions.
-- **Details**: Click on any package row to view more details and options.
+LinGet offers three interface modes to fit your workflow:
 
-### Keyboard Shortcuts
+| Mode | Command | Description |
+|------|---------|-------------|
+| **GUI** | `linget` or `linget gui` | Graphical interface (GTK4/Libadwaita) |
+| **TUI** | `linget tui` | Interactive terminal UI (requires `--features tui`) |
+| **CLI** | `linget <command>` | Command-line interface for scripting |
+
+### GUI Mode (Default)
+
+Launch the graphical interface:
+
+```bash
+linget        # Default - opens GUI
+linget gui    # Explicit GUI launch
+```
+
+**GUI Features:**
+- **Navigation**: Use the sidebar to switch between "All Packages" and "Updates"
+- **Providers**: Enable/disable package sources from the sidebar
+- **Filtering**: Use the top toolbar to filter by source
+- **Selection**: Toggle "Selection Mode" (Ctrl+S) for bulk actions
+- **Details**: Click any package for detailed info
+
+**Keyboard Shortcuts:**
 
 | Shortcut | Action |
 |----------|--------|
@@ -125,6 +143,111 @@ cargo install --path .
 | `Ctrl+S` | Toggle Selection Mode |
 | `Ctrl+,` | Open Preferences |
 | `Ctrl+Q` | Quit |
+
+### TUI Mode (Terminal UI)
+
+Launch the interactive terminal interface:
+
+```bash
+# Build with TUI support
+cargo build --release --features tui
+
+# Run TUI
+linget tui
+```
+
+**TUI Controls:**
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Switch between Sources/Packages panels |
+| `j`/`k` or `↓`/`↑` | Navigate up/down |
+| `g`/`G` | Jump to first/last item |
+| `PageUp`/`PageDown` | Scroll by page |
+| `/` or `s` | Search packages |
+| `u` | Toggle updates only |
+| `r` | Refresh package list |
+| `i` | Install selected package |
+| `x` | Remove selected package |
+| `Enter` | Show package details |
+| `h` | Show help |
+| `q` or `Esc` | Quit |
+
+### CLI Mode
+
+Use LinGet from the command line for scripting and automation:
+
+```bash
+# List all installed packages
+linget list
+
+# List packages from a specific source
+linget list --source flatpak
+
+# List only packages with updates
+linget list --updates
+
+# Search for packages
+linget search firefox
+linget search react --source npm
+
+# Install a package
+linget install vim --source apt
+linget install discord --source flatpak -y  # Skip confirmation
+
+# Remove a package
+linget remove vim --source apt
+
+# Update packages
+linget update vim                  # Update specific package
+linget update --all                # Update all packages
+linget update --all --source pip   # Update all pip packages
+
+# Show package information
+linget info com.spotify.Client --source flatpak
+
+# Check for available updates
+linget check
+
+# Manage package sources
+linget sources              # List all sources
+linget sources enable snap  # Enable a source
+linget sources disable snap # Disable a source
+
+# Generate shell completions
+linget completions bash > ~/.bash_completion.d/linget
+linget completions zsh > ~/.zsh/completions/_linget
+linget completions fish > ~/.config/fish/completions/linget.fish
+```
+
+**CLI Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--format human` | Human-readable output (default) |
+| `--format json` | JSON output for scripting |
+| `-v, --verbose` | Verbose output |
+| `-q, --quiet` | Minimal output |
+| `-y, --yes` | Skip confirmation prompts |
+| `-s, --source` | Filter by package source |
+
+**JSON Output Example:**
+
+```bash
+$ linget list --source flatpak --format json
+{
+  "count": 7,
+  "packages": [
+    {
+      "name": "com.spotify.Client",
+      "version": "1.2.74",
+      "source": "flatpak",
+      "status": "installed",
+      "size": 14889779
+    }
+  ]
+}
+```
 
 ## Configuration
 

@@ -508,6 +508,113 @@ impl PackageDetailsDialog {
 
         content.append(&details_group);
 
+        // Changelog expander section
+        let changelog_expander = gtk::Expander::builder()
+            .label("Release History")
+            .expanded(false)
+            .margin_top(8)
+            .build();
+        changelog_expander.add_css_class("card");
+
+        let changelog_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_bottom(12)
+            .build();
+
+        let changelog_spinner = gtk::Spinner::builder()
+            .spinning(true)
+            .halign(gtk::Align::Center)
+            .margin_top(12)
+            .margin_bottom(12)
+            .build();
+        changelog_content.append(&changelog_spinner);
+
+        changelog_expander.set_child(Some(&changelog_content));
+        content.append(&changelog_expander);
+
+        // Fetch changelog when expander is opened
+        let pkg_for_changelog = package.clone();
+        let pm_for_changelog = pm.clone();
+        let changelog_content_clone = changelog_content.clone();
+        let changelog_spinner_clone = changelog_spinner.clone();
+        let changelog_fetched = Rc::new(RefCell::new(false));
+        let changelog_fetched_clone = changelog_fetched.clone();
+
+        changelog_expander.connect_expanded_notify(move |exp| {
+            if !exp.is_expanded() {
+                return;
+            }
+            // Only fetch once
+            if *changelog_fetched_clone.borrow() {
+                return;
+            }
+            *changelog_fetched_clone.borrow_mut() = true;
+
+            let pkg = pkg_for_changelog.clone();
+            let pm = pm_for_changelog.clone();
+            let content_box = changelog_content_clone.clone();
+            let spinner = changelog_spinner_clone.clone();
+
+            glib::spawn_future_local(async move {
+                let changelog_result = {
+                    let manager = pm.lock().await;
+                    manager.get_changelog(&pkg).await
+                };
+
+                // Remove spinner
+                spinner.set_visible(false);
+
+                match changelog_result {
+                    Ok(Some(changelog)) => {
+                        // Create a scrolled text view for the changelog
+                        let scrolled = gtk::ScrolledWindow::builder()
+                            .min_content_height(200)
+                            .max_content_height(400)
+                            .hscrollbar_policy(gtk::PolicyType::Never)
+                            .build();
+
+                        let text_view = gtk::TextView::builder()
+                            .editable(false)
+                            .cursor_visible(false)
+                            .wrap_mode(gtk::WrapMode::Word)
+                            .margin_top(8)
+                            .margin_bottom(8)
+                            .margin_start(8)
+                            .margin_end(8)
+                            .build();
+                        text_view.add_css_class("monospace");
+                        text_view.buffer().set_text(&changelog);
+
+                        scrolled.set_child(Some(&text_view));
+                        content_box.append(&scrolled);
+                    }
+                    Ok(None) => {
+                        let no_changelog_label = gtk::Label::builder()
+                            .label("No release history available for this package.")
+                            .xalign(0.0)
+                            .margin_top(8)
+                            .margin_bottom(8)
+                            .build();
+                        no_changelog_label.add_css_class("dim-label");
+                        content_box.append(&no_changelog_label);
+                    }
+                    Err(e) => {
+                        let error_label = gtk::Label::builder()
+                            .label(&format!("Failed to fetch changelog: {}", e))
+                            .xalign(0.0)
+                            .margin_top(8)
+                            .margin_bottom(8)
+                            .build();
+                        error_label.add_css_class("dim-label");
+                        error_label.add_css_class("error");
+                        content_box.append(&error_label);
+                    }
+                }
+            });
+        });
+
         // Show warning banner for sources with special considerations (e.g., AUR)
         if let Some(warning) = package.source.gui_operation_warning() {
             let info_bar = gtk::Box::builder()

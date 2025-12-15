@@ -232,6 +232,65 @@ impl PackageBackend for PipBackend {
         Ok(versions)
     }
 
+    async fn get_changelog(&self, name: &str) -> Result<Option<String>> {
+        // Fetch release info from PyPI JSON API
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .context("Failed to create HTTP client")?;
+
+        let url = format!("https://pypi.org/pypi/{}/json", name);
+        let resp = client.get(&url).send().await;
+
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                if let Ok(json) = r.json::<serde_json::Value>().await {
+                    if let Some(releases) = json.get("releases").and_then(|v| v.as_object()) {
+                        let mut changelog = String::new();
+                        changelog.push_str(&format!("# {} Release History\n\n", name));
+
+                        // Get versions sorted by date (most recent first)
+                        let mut version_dates: Vec<(&str, &str)> = releases
+                            .iter()
+                            .filter_map(|(version, files)| {
+                                files.as_array().and_then(|arr| {
+                                    arr.first().and_then(|f| {
+                                        f.get("upload_time")
+                                            .and_then(|t| t.as_str())
+                                            .map(|date| (version.as_str(), date))
+                                    })
+                                })
+                            })
+                            .collect();
+
+                        version_dates.sort_by(|a, b| b.1.cmp(a.1));
+
+                        for (i, (version, date)) in version_dates.iter().take(20).enumerate() {
+                            let date_part = date.split('T').next().unwrap_or(date);
+                            if i == 0 {
+                                changelog.push_str(&format!("## v{} (Latest)\n", version));
+                            } else {
+                                changelog.push_str(&format!("## v{}\n", version));
+                            }
+                            changelog.push_str(&format!("*Released: {}*\n\n", date_part));
+                        }
+
+                        if version_dates.len() > 20 {
+                            changelog.push_str(&format!(
+                                "\n*...and {} more releases*\n",
+                                version_dates.len() - 20
+                            ));
+                        }
+
+                        return Ok(Some(changelog));
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
         // pip search is disabled on PyPI, so we use the PyPI JSON API
         // This only works well for exact package names

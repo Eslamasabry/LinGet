@@ -39,21 +39,27 @@ impl PackageBackend for AptBackend {
     }
 
     async fn list_installed(&self) -> Result<Vec<Package>> {
+        // Include Installed-Size (in KB) in the query
         let output = self
             .run_dpkg_query(&[
                 "-W",
-                "--showformat=${Package}\\t${Version}\\t${Description}\\n",
+                "--showformat=${Package}\\t${Version}\\t${Installed-Size}\\t${Description}\\n",
             ])
             .await?;
 
         let mut packages = Vec::new();
 
         for line in output.lines() {
-            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            let parts: Vec<&str> = line.splitn(4, '\t').collect();
             if parts.len() >= 2 {
                 let name = parts[0].to_string();
                 let version = parts[1].to_string();
-                let description = parts.get(2).unwrap_or(&"").to_string();
+                // Size is in KB, convert to bytes
+                let size = parts
+                    .get(2)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(|kb| kb * 1024);
+                let description = parts.get(3).unwrap_or(&"").to_string();
 
                 // Take only the first line of description
                 let description = description.lines().next().unwrap_or("").to_string();
@@ -65,7 +71,7 @@ impl PackageBackend for AptBackend {
                     description,
                     source: PackageSource::Apt,
                     status: PackageStatus::Installed,
-                    size: None,
+                    size,
                     homepage: None,
                     license: None,
                     maintainer: None,
@@ -199,6 +205,33 @@ impl PackageBackend for AptBackend {
             },
         )
         .await
+    }
+
+    async fn get_changelog(&self, name: &str) -> Result<Option<String>> {
+        // apt-get changelog fetches the Debian changelog for the package
+        let output = Command::new("apt-get")
+            .args(["changelog", "--", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get changelog")?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.is_empty() {
+                return Ok(None);
+            }
+            // Convert Debian changelog format to markdown-ish format
+            let changelog = stdout
+                .lines()
+                .take(500) // Limit to reasonable size
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(Some(format!("```\n{}\n```", changelog)))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {

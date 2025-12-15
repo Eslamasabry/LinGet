@@ -36,6 +36,21 @@ humansize = "2"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 ksni = "0.2"
 
+# CLI dependencies
+clap = { version = "4.5", features = ["derive", "env", "wrap_help", "color"] }
+clap_complete = "4.5"
+tabled = "0.16"
+console = "0.15"
+indicatif = "0.17"
+
+# Optional TUI dependencies (Phase 3)
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
+
+[features]
+default = []
+tui = ["ratatui", "crossterm"]
+
 [profile.dev]
 opt-level = 0
 
