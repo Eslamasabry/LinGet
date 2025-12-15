@@ -31,6 +31,7 @@ pub async fn run(
     };
 
     let manager = pm.lock().await;
+    writer.verbose("Querying package backends...");
 
     let packages = if updates_only {
         manager.check_all_updates().await?
@@ -41,6 +42,7 @@ pub async fn run(
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
+    writer.verbose(&format!("Found {} packages from all sources", packages.len()));
 
     // Filter by source if specified
     let packages: Vec<_> = if let Some(src) = source {

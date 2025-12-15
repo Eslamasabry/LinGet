@@ -133,14 +133,12 @@ pub async fn run(
                 success_count, fail_count
             ));
         }
-    } else {
+    } else if let Some(name) = package_name {
         // Update specific package
-        let package_name = package_name.unwrap();
-
         let installed = manager.list_all_installed().await?;
         let mut candidates: Vec<_> = installed
             .into_iter()
-            .filter(|p| p.name.eq_ignore_ascii_case(package_name))
+            .filter(|p| p.name.eq_ignore_ascii_case(name))
             .collect();
 
         if let Some(src) = source {
@@ -148,7 +146,7 @@ pub async fn run(
         }
 
         if candidates.is_empty() {
-            bail!("Package '{}' is not installed", package_name);
+            bail!("Package '{}' is not installed", name);
         }
 
         let package = if candidates.len() == 1 {
@@ -157,7 +155,7 @@ pub async fn run(
             // Multiple installed, pick first or exact match
             candidates
                 .iter()
-                .find(|p| p.name.eq_ignore_ascii_case(package_name))
+                .find(|p| p.name.eq_ignore_ascii_case(name))
                 .cloned()
                 .unwrap_or_else(|| candidates.remove(0))
         };

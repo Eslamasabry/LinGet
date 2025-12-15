@@ -602,7 +602,7 @@ impl PackageDetailsDialog {
                     }
                     Err(e) => {
                         let error_label = gtk::Label::builder()
-                            .label(&format!("Failed to fetch changelog: {}", e))
+                            .label(format!("Failed to fetch changelog: {}", e))
                             .xalign(0.0)
                             .margin_top(8)
                             .margin_bottom(8)

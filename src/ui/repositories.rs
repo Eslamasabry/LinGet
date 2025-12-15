@@ -292,12 +292,7 @@ impl RepositoriesDialog {
     fn create_repo_row(repo: &Repository, pm: Arc<Mutex<PackageManager>>) -> adw::ActionRow {
         let row = adw::ActionRow::builder()
             .title(&repo.name)
-            .subtitle(
-                repo.url
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("No URL"),
-            )
+            .subtitle(repo.url.as_deref().unwrap_or("No URL"))
             .build();
 
         // Status indicator

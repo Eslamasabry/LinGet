@@ -33,10 +33,6 @@ impl OutputWriter {
         matches!(self.format, OutputFormat::Json)
     }
 
-    pub fn is_verbose(&self) -> bool {
-        self.verbose
-    }
-
     pub fn is_quiet(&self) -> bool {
         self.quiet
     }
@@ -45,6 +41,13 @@ impl OutputWriter {
     pub fn message(&self, msg: &str) {
         if !self.quiet && !self.is_json() {
             println!("{}", msg);
+        }
+    }
+
+    /// Print a verbose message (only in verbose mode)
+    pub fn verbose(&self, msg: &str) {
+        if self.verbose && !self.quiet && !self.is_json() {
+            println!("{} {}", style("▸").dim(), style(msg).dim());
         }
     }
 
