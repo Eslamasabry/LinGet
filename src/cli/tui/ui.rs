@@ -14,13 +14,15 @@ pub fn draw(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(3), // Title bar
             Constraint::Min(10),   // Main content
+            Constraint::Length(1), // Commands bar
             Constraint::Length(3), // Status bar
         ])
         .split(f.area());
 
     draw_title_bar(f, app, chunks[0]);
     draw_main_content(f, app, chunks[1]);
-    draw_status_bar(f, app, chunks[2]);
+    draw_commands_bar(f, app, chunks[2]);
+    draw_status_bar(f, app, chunks[3]);
 
     // Draw search popup if in search mode
     if app.mode == AppMode::Search {
@@ -29,25 +31,36 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
-    let title = if app.show_updates_only {
-        " LinGet TUI - Updates "
+    let (title, title_color) = if app.show_updates_only {
+        (" LinGet TUI - Updates Available ", Color::Yellow)
     } else {
-        " LinGet TUI - Installed Packages "
+        (" LinGet TUI - Installed Packages ", Color::Cyan)
     };
 
     let title_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(title_color))
         .title(title)
-        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .title_style(Style::default().fg(title_color).add_modifier(Modifier::BOLD));
 
-    let pkg_count = format!(
-        " {} packages | Source: {} ",
-        app.filtered_packages.len(),
-        app.selected_source
-            .map(|s| format!("{:?}", s))
-            .unwrap_or_else(|| "All".to_string())
-    );
+    let source_name = app
+        .selected_source
+        .map(|s| format!("{:?}", s))
+        .unwrap_or_else(|| "All".to_string());
+
+    let pkg_count = if app.show_updates_only {
+        format!(
+            " {} updates available | Source: {} ",
+            app.filtered_packages.len(),
+            source_name
+        )
+    } else {
+        format!(
+            " {} packages | Source: {} ",
+            app.filtered_packages.len(),
+            source_name
+        )
+    };
 
     let paragraph = Paragraph::new(pkg_count)
         .block(title_block)
@@ -231,6 +244,61 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     f.render_widget(table, area);
+}
+
+fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
+    let key_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::DarkGray);
+    let sep_style = Style::default().fg(Color::DarkGray);
+
+    let commands = match app.mode {
+        AppMode::Normal => {
+            let updates_label = if app.show_updates_only { "all" } else { "updates" };
+            vec![
+                Span::styled("↑↓/jk", key_style),
+                Span::styled(" nav ", desc_style),
+                Span::styled("│", sep_style),
+                Span::styled(" Tab", key_style),
+                Span::styled(" panel ", desc_style),
+                Span::styled("│", sep_style),
+                Span::styled(" /", key_style),
+                Span::styled(" search ", desc_style),
+                Span::styled("│", sep_style),
+                Span::styled(" u", key_style),
+                Span::styled(format!(" {} ", updates_label), desc_style),
+                Span::styled("│", sep_style),
+                Span::styled(" r", key_style),
+                Span::styled(" refresh ", desc_style),
+                Span::styled("│", sep_style),
+                Span::styled(" i", key_style),
+                Span::styled(" install ", desc_style),
+                Span::styled("│", sep_style),
+                Span::styled(" x", key_style),
+                Span::styled(" remove ", desc_style),
+                Span::styled("│", sep_style),
+                Span::styled(" q", key_style),
+                Span::styled(" quit", desc_style),
+            ]
+        }
+        AppMode::Search => vec![
+            Span::styled("Enter", key_style),
+            Span::styled(" confirm ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" Esc", key_style),
+            Span::styled(" cancel", desc_style),
+        ],
+        AppMode::Confirm => vec![
+            Span::styled("y", key_style),
+            Span::styled(" yes ", desc_style),
+            Span::styled("│", sep_style),
+            Span::styled(" n", key_style),
+            Span::styled(" no", desc_style),
+        ],
+    };
+
+    let line = Line::from(commands);
+    let paragraph = Paragraph::new(line).style(Style::default());
+    f.render_widget(paragraph, area);
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
