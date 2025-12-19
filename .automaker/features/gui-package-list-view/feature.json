@@ -1,0 +1,15 @@
+{
+  "id": "gui-package-list-view",
+  "category": "UI",
+  "title": "GUI Package List View",
+  "description": "Create scrollable package list with columns (name, version, source, status) with sorting and row selection.",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "moderate",
+  "dependencies": [
+    "gui-main-window",
+    "unified-package-model"
+  ],
+  "createdAt": "2025-12-19T20:29:52.546Z",
+  "updatedAt": "2025-12-19T20:29:52.546Z"
+}

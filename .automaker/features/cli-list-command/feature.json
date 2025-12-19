@@ -1,0 +1,14 @@
+{
+  "id": "cli-list-command",
+  "category": "CLI",
+  "title": "CLI List Command",
+  "description": "Implement 'list' command with filtering by source, search term, and update status across all backends.",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "moderate",
+  "dependencies": [
+    "cli-command-structure"
+  ],
+  "createdAt": "2025-12-19T20:29:52.542Z",
+  "updatedAt": "2025-12-19T20:29:52.542Z"
+}

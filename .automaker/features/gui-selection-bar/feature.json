@@ -1,0 +1,14 @@
+{
+  "id": "gui-selection-bar",
+  "category": "UI",
+  "title": "GUI Selection and Bulk Actions",
+  "description": "Implement multi-select mode with selection counter and bulk operation buttons (update, remove, install).",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "moderate",
+  "dependencies": [
+    "gui-package-list-view"
+  ],
+  "createdAt": "2025-12-19T20:29:52.547Z",
+  "updatedAt": "2025-12-19T20:29:52.547Z"
+}

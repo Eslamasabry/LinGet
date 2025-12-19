@@ -57,7 +57,7 @@ type ShowDetailsFn = Rc<dyn Fn(Package)>;
 type ShowDetailsFnHolder = Rc<RefCell<Option<ShowDetailsFn>>>;
 
 pub struct LinGetWindow {
-    pub window: gtk::ApplicationWindow,
+    pub window: adw::ApplicationWindow,
     package_manager: Arc<Mutex<PackageManager>>,
     available_sources: Rc<RefCell<HashSet<PackageSource>>>,
     enabled_sources: Rc<RefCell<HashSet<PackageSource>>>,
@@ -83,11 +83,11 @@ pub struct LinGetWindow {
     current_view: Rc<RefCell<View>>,
     // Command center
     command_center: CommandCenter,
-    command_center_flap: adw::Flap,
+    command_center_split: adw::OverlaySplitView,
     command_center_btn: gtk::ToggleButton,
     // Details panel
     details_panel: PackageDetailsPanel,
-    details_flap: adw::Flap,
+    details_split: adw::OverlaySplitView,
     // Progress overlay
     progress_overlay: gtk::Box,
     progress_bar: gtk::ProgressBar,
@@ -300,27 +300,27 @@ impl LinGetWindow {
 
         // Details Panel (right-side slide-in)
         let details_panel = PackageDetailsPanel::new();
-        let details_flap = adw::Flap::builder()
+        let details_split = adw::OverlaySplitView::builder()
             .content(&toast_overlay)
-            .flap(details_panel.widget())
+            .sidebar(details_panel.widget())
+            .sidebar_position(gtk::PackType::End)
+            .collapsed(true)
+            .show_sidebar(false)
+            .enable_hide_gesture(true)
+            .enable_show_gesture(false)
             .build();
-        details_flap.set_flap_position(gtk::PackType::End);
-        details_flap.set_fold_policy(adw::FlapFoldPolicy::Always);
-        details_flap.set_reveal_flap(false);
-        details_flap.set_modal(true);
 
         // Command Center (right-side panel)
         let command_center = CommandCenter::new();
         command_center.attach_badge(header.command_center_badge.clone());
         let command_center_widget = command_center.widget();
-        let command_center_flap = adw::Flap::builder()
-            .content(&details_flap)
-            .flap(&command_center_widget)
-            .hexpand(true)
+        let command_center_split = adw::OverlaySplitView::builder()
+            .content(&details_split)
+            .sidebar(&command_center_widget)
+            .sidebar_position(gtk::PackType::End)
+            .show_sidebar(false)
             .build();
-        command_center_flap.set_flap_position(gtk::PackType::End);
-        command_center_flap.set_fold_policy(adw::FlapFoldPolicy::Auto);
-        command_center_flap.set_reveal_flap(false);
+        command_center_split.set_hexpand(true);
 
         // Main Layout
         let main_paned = gtk::Box::builder()
@@ -330,19 +330,22 @@ impl LinGetWindow {
 
         main_paned.append(&sidebar.widget);
         main_paned.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        main_paned.append(&command_center_flap);
+        main_paned.append(&command_center_split);
 
-        let window = gtk::ApplicationWindow::builder()
+        let toolbar_view = adw::ToolbarView::new();
+        toolbar_view.add_top_bar(&header.widget);
+        toolbar_view.set_content(Some(&main_paned));
+
+        let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("LinGet")
             .icon_name("io.github.linget")
             .default_width(1000)
             .default_height(700)
-            .resizable(true)
+            .width_request(360)
+            .height_request(294)
+            .content(&toolbar_view)
             .build();
-
-        window.set_titlebar(Some(&header.widget));
-        window.set_child(Some(&main_paned));
 
         if let Ok(startup_id) = std::env::var("DESKTOP_STARTUP_ID") {
             window.set_startup_id(&startup_id);
@@ -373,10 +376,10 @@ impl LinGetWindow {
             toast_overlay,
             current_view,
             command_center,
-            command_center_flap: command_center_flap.clone(),
+            command_center_split: command_center_split.clone(),
             command_center_btn: header.command_center_btn.clone(),
             details_panel,
-            details_flap: details_flap.clone(),
+            details_split: details_split.clone(),
             progress_overlay,
             progress_bar,
             progress_label,
@@ -731,7 +734,7 @@ impl LinGetWindow {
         app.set_accels_for_action("app.shortcuts", &["<Ctrl>question", "F1"]);
     }
 
-    fn show_shortcuts_dialog(window: &gtk::ApplicationWindow) {
+    fn show_shortcuts_dialog(window: &adw::ApplicationWindow) {
         let dialog = gtk::ShortcutsWindow::builder()
             .transient_for(window)
             .modal(true)
@@ -826,10 +829,10 @@ impl LinGetWindow {
             self.content.updates.search_chip.clone(),
         ];
         let command_center = self.command_center.clone();
-        let command_center_flap = self.command_center_flap.clone();
+        let command_center_split = self.command_center_split.clone();
         let command_center_btn = self.command_center_btn.clone();
         let details_panel = self.details_panel.clone();
-        let details_flap = self.details_flap.clone();
+        let details_split = self.details_split.clone();
         let progress_overlay = self.progress_overlay.clone();
         let progress_bar = self.progress_bar.clone();
         let progress_label = self.progress_label.clone();
@@ -844,11 +847,11 @@ impl LinGetWindow {
         let operation_history = self.operation_history.clone();
 
         let reveal_command_center: Rc<dyn Fn(bool)> = Rc::new({
-            let command_center_flap = command_center_flap.clone();
+            let command_center_split = command_center_split.clone();
             let command_center_btn = command_center_btn.clone();
             let command_center = command_center.clone();
             move |reveal| {
-                command_center_flap.set_reveal_flap(reveal);
+                command_center_split.set_show_sidebar(reveal);
                 command_center_btn.set_active(reveal);
                 if reveal {
                     command_center.mark_read();
@@ -857,11 +860,11 @@ impl LinGetWindow {
         });
 
         command_center_btn.connect_toggled({
-            let command_center_flap = command_center_flap.clone();
+            let command_center_split = command_center_split.clone();
             let command_center = command_center.clone();
             move |btn| {
                 let reveal = btn.is_active();
-                command_center_flap.set_reveal_flap(reveal);
+                command_center_split.set_show_sidebar(reveal);
                 if reveal {
                     command_center.mark_read();
                 }
@@ -869,10 +872,10 @@ impl LinGetWindow {
         });
 
         let close_details_panel: Rc<dyn Fn()> = Rc::new({
-            let details_flap = details_flap.clone();
+            let details_split = details_split.clone();
             let details_panel = details_panel.clone();
             move || {
-                details_flap.set_reveal_flap(false);
+                details_split.set_show_sidebar(false);
                 details_panel.clear();
             }
         });
@@ -950,7 +953,7 @@ impl LinGetWindow {
         let reload_holder: LocalFnHolder = Rc::new(RefCell::new(None));
 
         *show_details_panel_holder.borrow_mut() = Some(Rc::new({
-            let details_flap = details_flap.clone();
+            let details_split = details_split.clone();
             let details_panel = details_panel.clone();
             let pm = pm.clone();
             let toast_overlay = toast_overlay.clone();
@@ -970,7 +973,7 @@ impl LinGetWindow {
                     Some(reveal_command_center.clone()),
                     close_details_panel.clone(),
                 );
-                details_flap.set_reveal_flap(true);
+                details_split.set_show_sidebar(true);
             }
         }));
 
@@ -1282,6 +1285,7 @@ impl LinGetWindow {
                         let row = PackageRow::new(placeholder, None, true);
                         let wrapper = gtk::Box::builder()
                             .orientation(gtk::Orientation::Vertical)
+                            .hexpand(true)
                             .css_classes(vec!["boxed-row"])
                             .build();
                         wrapper.append(&row.widget);
@@ -1298,7 +1302,9 @@ impl LinGetWindow {
                                 if gesture.current_button() != gtk::gdk::BUTTON_PRIMARY {
                                     return;
                                 }
-                                let widget = gesture.widget();
+                                let Some(widget) = gesture.widget() else {
+                                    return;
+                                };
                                 let width = widget.width() as f64;
                                 let height = widget.height() as f64;
                                 if x < 0.0 || y < 0.0 || x > width || y > height {
@@ -2758,7 +2764,7 @@ impl LinGetWindow {
                 remove_selected_btn: remove_selected_btn.clone(),
                 refresh_fn: Rc::new(load_packages.clone()),
                 close_details_panel: close_details_panel.clone(),
-                details_flap: details_flap.clone(),
+                details_split: details_split.clone(),
             },
         );
 

@@ -19,7 +19,7 @@ impl Sidebar {
     pub fn new() -> Self {
         let widget = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .width_request(220)
+            .width_request(200)
             .css_classes(vec!["sidebar"])
             .build();
 

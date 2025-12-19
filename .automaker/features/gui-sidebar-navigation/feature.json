@@ -1,0 +1,14 @@
+{
+  "id": "gui-sidebar-navigation",
+  "category": "UI",
+  "title": "GUI Sidebar Navigation",
+  "description": "Implement sidebar with navigation items (Library, Updates, Discover, Favorites) and collapsible provider list with enable/disable toggles.",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "moderate",
+  "dependencies": [
+    "gui-main-window"
+  ],
+  "createdAt": "2025-12-19T20:29:52.546Z",
+  "updatedAt": "2025-12-19T20:29:52.546Z"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "cli-shell-completions",
+  "category": "CLI",
+  "title": "CLI Shell Completions",
+  "description": "Implement 'completions' command to generate bash, zsh, and fish shell completions with dynamic package name suggestions.",
+  "status": "backlog",
+  "priority": 2,
+  "complexity": "simple",
+  "dependencies": [
+    "cli-command-structure"
+  ],
+  "createdAt": "2025-12-19T20:29:52.544Z",
+  "updatedAt": "2025-12-19T20:29:52.544Z"
+}

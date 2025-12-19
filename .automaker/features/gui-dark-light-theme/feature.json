@@ -1,0 +1,14 @@
+{
+  "id": "gui-dark-light-theme",
+  "category": "UI",
+  "title": "GUI Dark/Light Theme Support",
+  "description": "Implement theme toggle with Libadwaita dark/light style variant and persistent preference storage.",
+  "status": "backlog",
+  "priority": 2,
+  "complexity": "simple",
+  "dependencies": [
+    "gui-preferences-dialog"
+  ],
+  "createdAt": "2025-12-19T20:29:52.548Z",
+  "updatedAt": "2025-12-19T20:29:52.548Z"
+}

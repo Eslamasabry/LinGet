@@ -1,0 +1,15 @@
+{
+  "id": "backup-restore",
+  "category": "Core",
+  "title": "Backup and Restore System",
+  "description": "Implement export of package lists to files and restore from previously exported lists with per-source selective restoration.",
+  "status": "backlog",
+  "priority": 2,
+  "complexity": "moderate",
+  "dependencies": [
+    "cli-list-command",
+    "unified-package-model"
+  ],
+  "createdAt": "2025-12-19T20:29:52.545Z",
+  "updatedAt": "2025-12-19T20:29:52.545Z"
+}

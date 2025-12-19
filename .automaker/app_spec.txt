@@ -1,0 +1,339 @@
+Perfect! I now have enough information to create a comprehensive specification. Let me write the XML specification:
+
+<project_specification>
+  <project_name>LinGet - A Unified Package Manager for Linux</project_name>
+
+  <overview>
+    LinGet is a modern, unified package manager for Linux that provides a single graphical interface to manage packages from multiple package managers (APT, DNF, Pacman, Zypper, Flatpak, Snap, npm, pip, pipx, cargo, brew, AUR, conda, mamba, dart, dpkg, and AppImage). Inspired by Windows Package Manager (winget), LinGet aims to simplify package management across different Linux distributions by aggregating all installed packages and available updates into a unified interface. The project provides three interaction modes: GUI (GTK4/Libadwaita-based), TUI (terminal user interface), and CLI (command-line interface) for various workflows. It supports features like bulk operations, package caching for instant startup times, backup and restore functionality, update checking, package search, and system tray integration.
+  </overview>
+
+  <technology_stack>
+    <technology>Rust</technology>
+    <technology>GTK4 (0.9) - GUI Framework</technology>
+    <technology>Libadwaita (0.7) - GNOME Design System</technology>
+    <technology>Tokio (1.0) - Async Runtime</technology>
+    <technology>Ratatui - Terminal UI Library</technology>
+    <technology>Crossterm - Terminal Handling</technology>
+    <technology>Serde/serde_json - Serialization</technology>
+    <technology>Clap (4.5) - CLI Argument Parsing</technology>
+    <technology>Reqwest (0.12) - HTTP Client</technology>
+    <technology>Chrono - Date/Time Handling</technology>
+    <technology>Tokio Sync - Multi-threaded Synchronization</technology>
+    <technology>Async-channel - Channel Communication</technology>
+    <technology>Async-trait - Async Trait Support</technology>
+    <technology>Tracing/Tracing-subscriber - Logging</technology>
+    <technology>KSNI - System Tray Integration</technology>
+    <technology>Notify-rust - Desktop Notifications</technology>
+    <technology>GDK-pixbuf - Image Handling</technology>
+    <technology>Regex - Pattern Matching</technology>
+    <technology>Tabled - Table Formatting</technology>
+    <technology>Indicatif - Progress Bars</technology>
+    <technology>Humansize - Human-Readable File Sizes</technology>
+    <technology>Dirs - Directory Paths</technology>
+    <technology>Which - Command Location Detection</technology>
+    <technology>Toml - Configuration Parsing</technology>
+  </technology_stack>
+
+  <core_capabilities>
+    <capability>Unified Package Library - View and manage packages from 17 different package managers in a single list</capability>
+    <capability>Multi-Source Support - Supports APT, DNF, Pacman, Zypper, Flatpak, Snap, npm, pip, pipx, cargo, brew, AUR, conda, mamba, dart, DEB, and AppImage</capability>
+    <capability>GUI Interface - Modern, native GNOME experience using GTK4 and Libadwaita with dark/light theme support</capability>
+    <capability>TUI Interface - Interactive terminal-based UI for users who prefer command-line workflows</capability>
+    <capability>CLI Interface - Full command-line interface for scripting and automation with multiple output formats</capability>
+    <capability>Provider Management - Enable/disable package sources from the sidebar for granular control</capability>
+    <capability>Package Filtering - Filter packages by source using the top toolbar in GUI</capability>
+    <capability>Bulk Operations - Select multiple packages to update or remove simultaneously</capability>
+    <capability>Update Management - View all available updates across all sources in a dedicated Update Center</capability>
+    <capability>Update Pinning - Ignore specific packages to prevent automatic updates</capability>
+    <capability>Smart Caching - Local caching system for instant startup and performance optimization</capability>
+    <capability>Backup and Restore - Export package lists to files and restore on other machines</capability>
+    <capability>Package Search - Search for packages across enabled sources</capability>
+    <capability>Package Details - View detailed package information including version history and metadata</capability>
+    <capability>System Tray Integration - Minimize to tray with real-time package and update counters</capability>
+    <capability>Configuration Management - User preferences stored in TOML configuration file at ~/.config/linget/config.toml</capability>
+    <capability>Desktop Integration - Desktop launcher file (io.github.linget.desktop) for seamless GNOME integration</capability>
+    <capability>Multiple Output Formats - Support for human-readable and JSON output in CLI mode</capability>
+    <capability>Shell Completions - Generate shell completions for bash, zsh, and fish</capability>
+    <capability>Repository Management - List, add, and remove repositories for supported backends</capability>
+    <capability>Version Checking - Display available updates across all installed packages</capability>
+    <capability>Package Installation/Removal - Install, remove, and update packages with privilege escalation support</capability>
+  </core_capabilities>
+
+  <implemented_features>
+    <feature>
+      <name>GUI Application</name>
+      <description>Full GTK4/Libadwaita graphical interface with main window, sidebar navigation, package list view, and details panel</description>
+      <status>implemented</status>
+      <components>
+        <component>LinGetWindow - Main application window</component>
+        <component>Sidebar - Navigation and provider management</component>
+        <component>HeaderBar - Search, refresh, and action buttons</component>
+        <component>PackageListView - Scrollable package list with columns</component>
+        <component>PackageDetailsPanel - Detailed package information display</component>
+        <component>SelectionBar - Bulk action selection interface</component>
+        <component>UpdatesView - Dedicated updates section</component>
+        <component>LibraryView - All packages view</component>
+        <component>DiscoverView - Browse and discover packages</component>
+        <component>FavoritesView - Bookmarked packages</component>
+      </components>
+    </feature>
+    <feature>
+      <name>CLI Interface</name>
+      <description>Command-line interface with subcommands for all package management operations</description>
+      <status>implemented</status>
+      <commands>
+        <command>list - List installed packages with filtering options</command>
+        <command>search - Search for packages by query</command>
+        <command>install - Install a package with optional confirmation</command>
+        <command>remove - Remove a package with optional confirmation</command>
+        <command>update - Update specific package or all packages</command>
+        <command>info - Display detailed package information</command>
+        <command>check - Check for available updates</command>
+        <command>sources - Manage package sources (enable/disable)</command>
+        <command>completions - Generate shell completions</command>
+      </commands>
+    </feature>
+    <feature>
+      <name>TUI Interface</name>
+      <description>Terminal user interface using ratatui with split panels for sources and packages</description>
+      <status>implemented</status>
+      <components>
+        <component>SourcesPanel - Left panel showing enabled/disabled package sources</component>
+        <component>PackagesPanel - Right panel showing filterable package list</component>
+        <component>SearchMode - Interactive package search functionality</component>
+        <component>DetailsView - Package detail display in TUI</component>
+      </components>
+    </feature>
+    <feature>
+      <name>Package Manager Backends</name>
+      <description>Abstracted backend implementations for each supported package manager</description>
+      <status>implemented</status>
+      <backends>
+        <backend>AptBackend - Debian/Ubuntu system packages</backend>
+        <backend>DnfBackend - Fedora/RHEL system packages</backend>
+        <backend>PacmanBackend - Arch Linux packages</backend>
+        <backend>ZypperBackend - openSUSE packages</backend>
+        <backend>FlatpakBackend - Sandboxed application packages</backend>
+        <backend>SnapBackend - Ubuntu Snap packages</backend>
+        <backend>NpmBackend - Node.js package manager</backend>
+        <backend>PipBackend - Python package manager</backend>
+        <backend>PipxBackend - Isolated Python applications</backend>
+        <backend>CargoBackend - Rust package manager</backend>
+        <backend>BrewBackend - Homebrew/Linuxbrew</backend>
+        <backend>AurBackend - Arch User Repository (list/check only)</backend>
+        <backend>CondaBackend - Conda package manager</backend>
+        <backend>MambaBackend - Mamba package manager</backend>
+        <backend>DartBackend - Dart/Flutter pub global tools</backend>
+        <backend>DebBackend - Local .deb file handling</backend>
+        <backend>AppImageBackend - Portable AppImage support</backend>
+      </backends>
+    </feature>
+    <feature>
+      <name>Provider Detection System</name>
+      <description>Automatic detection of available package managers on the system with version information</description>
+      <status>implemented</status>
+      <details>
+        <detail>Probes for each package manager using which() system call</detail>
+        <detail>Retrieves version information for available providers</detail>
+        <detail>Tracks command locations and privilege requirements</detail>
+        <detail>Provides installation hints for unavailable providers</detail>
+      </details>
+    </feature>
+    <feature>
+      <name>Configuration System</name>
+      <description>TOML-based configuration with persistent user preferences</description>
+      <status>implemented</status>
+      <settings>
+        <setting>check_updates_on_startup - Boolean flag for automatic update checking</setting>
+        <setting>update_check_interval - Hours between update checks (0 disables)</setting>
+        <setting>show_notifications - Desktop notification toggling</setting>
+        <setting>enabled_sources - Per-source enable/disable flags</setting>
+        <setting>run_in_background - System tray mode support</setting>
+        <setting>start_minimized - Startup behavior configuration</setting>
+        <setting>window_width/height - Persistent window dimensions</setting>
+        <setting>window_maximized - Maximize state persistence</setting>
+        <setting>ignored_packages - List of packages to ignore during updates</setting>
+        <setting>ui_compact - Dense list view mode</setting>
+        <setting>ui_show_icons - Package icon display toggling</setting>
+        <setting>last_source_filter - Session filter preservation</setting>
+        <setting>favorite_packages - Starred/favorited packages</setting>
+        <setting>onboarding_completed - First-run guide completion</setting>
+        <setting>recent_searches - Search history (last 5 queries)</setting>
+      </settings>
+    </feature>
+    <feature>
+      <name>Caching System</name>
+      <description>Package information caching for instant startup and improved performance</description>
+      <status>implemented</status>
+      <components>
+        <component>Cache storage for installed packages</component>
+        <component>Cache storage for available updates</component>
+        <component>Icon cache for package artwork</component>
+        <component>Enrichment cache for package metadata</component>
+      </components>
+    </feature>
+    <feature>
+      <name>Backup and Restore</name>
+      <description>Export installed packages and restore them on another system</description>
+      <status>implemented</status>
+      <details>
+        <detail>Export package lists to files by source</detail>
+        <detail>Restore packages from previously exported lists</detail>
+        <detail>Support for selective restoration by source</detail>
+      </details>
+    </feature>
+    <feature>
+      <name>System Tray Integration</name>
+      <description>KSNI-based system tray with real-time statistics</description>
+      <status>implemented</status>
+      <features>
+        <feature>Live package count display</feature>
+        <feature>Available updates counter in tray</feature>
+        <feature>Quick access menu from tray</feature>
+        <feature>Minimize/restore functionality</feature>
+      </features>
+    </feature>
+    <feature>
+      <name>Desktop Integration</name>
+      <description>GNOME desktop environment integration</description>
+      <status>implemented</status>
+      <components>
+        <component>Desktop launcher file (io.github.linget.desktop)</component>
+        <component>SVG application icon (multiple sizes)</component>
+        <component>Symbolic icon for dark theme support</component>
+      </components>
+    </feature>
+    <feature>
+      <name>Notification System</name>
+      <description>Desktop notifications for package operations and status updates</description>
+      <status>implemented</status>
+      <notification_types>
+        <type>Update completion notifications</type>
+        <type>Installation status notifications</type>
+        <type>Removal confirmation notifications</type>
+        <type>Error and warning notifications</type>
+        <type>Available updates alerts</type>
+      </notification_types>
+    </feature>
+    <feature>
+      <name>Output Formatting</name>
+      <description>Multiple output format support for different use cases</description>
+      <status>implemented</status>
+      <formats>
+        <format>human - Human-readable text output (default)</format>
+        <format>json - JSON structured output for scripting</format>
+      </formats>
+    </feature>
+    <feature>
+      <name>Privilege Escalation</name>
+      <description>pkexec-based privilege escalation for system package managers</description>
+      <status>implemented</status>
+      <details>
+        <detail>Transparent privilege escalation for privileged operations</detail>
+        <detail>Detection of privilege requirements per backend</detail>
+        <detail>Secure password prompting via system dialog</detail>
+      </details>
+    </feature>
+    <feature>
+      <name>Keyboard Shortcuts</name>
+      <description>Comprehensive keyboard shortcuts in GUI</description>
+      <status>implemented</status>
+      <shortcuts>
+        <shortcut>Ctrl+F - Package search</shortcut>
+        <shortcut>Ctrl+R - Refresh package list</shortcut>
+        <shortcut>Ctrl+S - Toggle selection mode</shortcut>
+        <shortcut>Ctrl+, - Open preferences</shortcut>
+        <shortcut>Ctrl+Q - Quit application</shortcut>
+      </shortcuts>
+    </feature>
+    <feature>
+      <name>Package History and Enrichment</name>
+      <description>Package metadata enrichment and historical tracking</description>
+      <status>implemented</status>
+      <components>
+        <component>Version history tracking</component>
+        <component>Changelog retrieval (where supported)</component>
+        <component>Package metadata enrichment</component>
+        <component>Operation history tracking</component>
+      </components>
+    </feature>
+  </implemented_features>
+
+  <development_guidelines>
+    <guideline>Use standard Rust formatting with cargo fmt - all code must be properly formatted</guideline>
+    <guideline>Ensure cargo check and cargo clippy pass with no warnings during development</guideline>
+    <guideline>Follow project structure convention: src/ui/ for UI components, src/backend/ for package managers, src/models/ for data structures, src/cli/ for command-line interface</guideline>
+    <guideline>Implement new package managers as backends implementing the PackageBackend trait</guideline>
+    <guideline>Use async_trait for asynchronous trait methods in backend implementations</guideline>
+    <guideline>All user-facing operations should handle errors gracefully and display user-friendly messages</guideline>
+    <guideline>Maintain async/await patterns using Tokio runtime throughout the codebase</guideline>
+    <guideline>Update caching system when package information changes</guideline>
+    <guideline>Implement privilege escalation using pkexec for system-level operations</guideline>
+    <guideline>Use GTK4 and Libadwaita patterns for GUI consistency</guideline>
+    <guideline>Document new features in README.md and update changelog</guideline>
+    <guideline>Test changes against multiple package managers before submitting pull requests</guideline>
+    <guideline>Include error handling and logging using tracing macros</guideline>
+    <guideline>Maintain backward compatibility with existing configuration format</guideline>
+  </development_guidelines>
+
+  <architecture>
+    <layer>
+      <name>Application Layer</name>
+      <description>Entry point and mode detection (GUI/CLI/TUI)</description>
+      <files>src/main.rs, src/app.rs</files>
+    </layer>
+    <layer>
+      <name>UI Layer</name>
+      <description>GUI components built with GTK4 and Libadwaita, plus TUI components with Ratatui</description>
+      <files>src/ui/*, src/cli/tui/*</files>
+    </layer>
+    <layer>
+      <name>CLI Layer</name>
+      <description>Command-line interface with Clap for argument parsing</description>
+      <files>src/cli/*, src/cli/commands/*</files>
+    </layer>
+    <layer>
+      <name>Backend Layer</name>
+      <description>Package manager implementations and provider management</description>
+      <files>src/backend/*, src/backend/traits.rs, src/backend/providers.rs</files>
+    </layer>
+    <layer>
+      <name>Models Layer</name>
+      <description>Data structures, configuration, caching, and business logic</description>
+      <files>src/models/*, src/models/package.rs, src/models/config.rs, src/models/cache.rs</files>
+    </layer>
+  </architecture>
+
+  <additional_requirements>
+    <requirement>
+      <category>System Requirements</category>
+      <detail>Linux operating system with GTK4.14 support for GUI mode</detail>
+      <detail>Rust 1.56+ for building from source</detail>
+      <detail>libgtk-4-1 and libadwaita-1-0 runtime dependencies for GUI</detail>
+      <detail>At least one supported package manager installed</detail>
+    </requirement>
+    <requirement>
+      <category>Security Considerations</category>
+      <detail>Uses pkexec for privilege escalation instead of sudo for safety</detail>
+      <detail>Configuration stored in user home directory (~/.config/linget/)</detail>
+      <detail>No execution of arbitrary scripts from package managers</detail>
+      <detail>Validation of all user input before executing package manager commands</detail>
+    </requirement>
+    <requirement>
+      <category>Known Limitations</category>
+      <detail>AUR backend supports list and update check only (install/remove/update not implemented)</detail>
+      <detail>AppImage backend only supports listing and removal</detail>
+      <detail>Some package managers may require additional configuration for certain operations</detail>
+      <detail>Experimental software - use with caution on production systems</detail>
+    </requirement>
+    <requirement>
+      <category>Distribution Support</category>
+      <detail>Debian/Ubuntu (APT)</detail>
+      <detail>Fedora/RHEL (DNF)</detail>
+      <detail>Arch Linux (Pacman)</detail>
+      <detail>openSUSE (Zypper)</detail>
+      <detail>Multi-distro support for universal package managers (Flatpak, Snap, npm, pip, cargo, etc.)</detail>
+    </requirement>
+  </additional_requirements>
+
+</project_specification>

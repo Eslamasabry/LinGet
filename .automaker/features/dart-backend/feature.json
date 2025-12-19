@@ -1,0 +1,14 @@
+{
+  "id": "dart-backend",
+  "category": "Backend",
+  "title": "Dart/Flutter Backend Implementation",
+  "description": "Implement support for Dart/Flutter pub global tools package management.",
+  "status": "backlog",
+  "priority": 3,
+  "complexity": "simple",
+  "dependencies": [
+    "core-package-detection"
+  ],
+  "createdAt": "2025-12-19T20:29:52.539Z",
+  "updatedAt": "2025-12-19T20:29:52.539Z"
+}

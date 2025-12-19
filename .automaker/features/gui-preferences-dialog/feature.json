@@ -1,0 +1,15 @@
+{
+  "id": "gui-preferences-dialog",
+  "category": "UI",
+  "title": "GUI Preferences Dialog",
+  "description": "Implement preferences window with tabs for general settings, sources, ignored packages, and UI customization.",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "moderate",
+  "dependencies": [
+    "configuration-system",
+    "gui-main-window"
+  ],
+  "createdAt": "2025-12-19T20:29:52.548Z",
+  "updatedAt": "2025-12-19T20:29:52.548Z"
+}

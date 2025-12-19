@@ -1,0 +1,15 @@
+{
+  "id": "gui-updates-view",
+  "category": "UI",
+  "title": "GUI Updates View",
+  "description": "Implement dedicated updates section showing all available updates with bulk update capability and ignore pinning.",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "moderate",
+  "dependencies": [
+    "gui-package-list-view",
+    "caching-system"
+  ],
+  "createdAt": "2025-12-19T20:29:52.547Z",
+  "updatedAt": "2025-12-19T20:29:52.547Z"
+}

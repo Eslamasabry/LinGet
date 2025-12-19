@@ -1,0 +1,14 @@
+{
+  "id": "pipx-backend",
+  "category": "Backend",
+  "title": "Pipx Backend Implementation",
+  "description": "Implement support for isolated Python application manager with separate virtual environment handling.",
+  "status": "backlog",
+  "priority": 2,
+  "complexity": "moderate",
+  "dependencies": [
+    "core-package-detection"
+  ],
+  "createdAt": "2025-12-19T20:29:52.538Z",
+  "updatedAt": "2025-12-19T20:29:52.538Z"
+}

@@ -10,10 +10,10 @@ pub struct ShortcutContext {
     pub remove_selected_btn: gtk::Button,
     pub refresh_fn: Rc<dyn Fn()>,
     pub close_details_panel: Rc<dyn Fn()>,
-    pub details_flap: adw::Flap,
+    pub details_split: adw::OverlaySplitView,
 }
 
-pub fn setup_keyboard_shortcuts(window: &gtk::ApplicationWindow, ctx: ShortcutContext) {
+pub fn setup_keyboard_shortcuts(window: &adw::ApplicationWindow, ctx: ShortcutContext) {
     let controller = gtk::EventControllerKey::new();
 
     controller.connect_key_pressed(move |_, key, _, modifier| {
@@ -40,7 +40,7 @@ pub fn setup_keyboard_shortcuts(window: &gtk::ApplicationWindow, ctx: ShortcutCo
                 return glib::Propagation::Stop;
             }
             gtk::gdk::Key::Escape => {
-                if ctx.details_flap.reveals_flap() {
+                if ctx.details_split.shows_sidebar() {
                     (ctx.close_details_panel)();
                     return glib::Propagation::Stop;
                 }

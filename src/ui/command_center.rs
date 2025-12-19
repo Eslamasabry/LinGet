@@ -189,7 +189,7 @@ impl CommandCenter {
 
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .width_request(360)
+            .width_request(280)
             .build();
         root.add_css_class("command-center");
         root.append(&header);

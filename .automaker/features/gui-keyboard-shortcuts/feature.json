@@ -1,0 +1,14 @@
+{
+  "id": "gui-keyboard-shortcuts",
+  "category": "UI",
+  "title": "GUI Keyboard Shortcuts",
+  "description": "Implement comprehensive keyboard shortcuts (Ctrl+F search, Ctrl+R refresh, Ctrl+S select, Ctrl+, preferences, Ctrl+Q quit) with shortcut hint overlay.",
+  "status": "backlog",
+  "priority": 2,
+  "complexity": "simple",
+  "dependencies": [
+    "gui-main-window"
+  ],
+  "createdAt": "2025-12-19T20:29:52.549Z",
+  "updatedAt": "2025-12-19T20:29:52.549Z"
+}

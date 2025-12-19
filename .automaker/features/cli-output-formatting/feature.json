@@ -1,0 +1,15 @@
+{
+  "id": "cli-output-formatting",
+  "category": "CLI",
+  "title": "CLI Output Formatting",
+  "description": "Implement human-readable and JSON output formats for all CLI commands with optional colorization.",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "moderate",
+  "dependencies": [
+    "cli-list-command",
+    "cli-search-command"
+  ],
+  "createdAt": "2025-12-19T20:29:52.544Z",
+  "updatedAt": "2025-12-19T20:29:52.544Z"
+}

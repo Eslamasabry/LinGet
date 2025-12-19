@@ -1,0 +1,14 @@
+{
+  "id": "deb-backend",
+  "category": "Backend",
+  "title": "DEB File Backend Implementation",
+  "description": "Implement local .deb file handling for installing and tracking manually downloaded packages.",
+  "status": "backlog",
+  "priority": 2,
+  "complexity": "simple",
+  "dependencies": [
+    "core-package-detection"
+  ],
+  "createdAt": "2025-12-19T20:29:52.540Z",
+  "updatedAt": "2025-12-19T20:29:52.540Z"
+}

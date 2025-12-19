@@ -1,0 +1,14 @@
+{
+  "id": "dnf-backend",
+  "category": "Backend",
+  "title": "DNF Backend Implementation",
+  "description": "Implement support for Fedora/RHEL DNF package manager with feature parity to APT backend.",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "moderate",
+  "dependencies": [
+    "core-package-detection"
+  ],
+  "createdAt": "2025-12-19T20:29:52.508Z",
+  "updatedAt": "2025-12-19T20:29:52.508Z"
+}

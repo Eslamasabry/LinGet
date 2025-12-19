@@ -1,0 +1,14 @@
+{
+  "id": "desktop-entry-integration",
+  "category": "Core",
+  "title": "Desktop Entry File",
+  "description": "Create io.github.linget.desktop launcher file with icon references and GNOME integration settings.",
+  "status": "backlog",
+  "priority": 2,
+  "complexity": "simple",
+  "dependencies": [
+    "gui-main-window"
+  ],
+  "createdAt": "2025-12-19T20:29:52.549Z",
+  "updatedAt": "2025-12-19T20:29:52.549Z"
+}

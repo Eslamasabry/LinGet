@@ -1,0 +1,14 @@
+{
+  "id": "gui-header-bar",
+  "category": "UI",
+  "title": "GUI Header Bar",
+  "description": "Implement header bar with search box, refresh button, action menu, and preferences toggle.",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "simple",
+  "dependencies": [
+    "gui-main-window"
+  ],
+  "createdAt": "2025-12-19T20:29:52.546Z",
+  "updatedAt": "2025-12-19T20:29:52.546Z"
+}

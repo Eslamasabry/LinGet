@@ -1,0 +1,12 @@
+{
+  "id": "core-package-detection",
+  "category": "Core",
+  "title": "Package Manager Detection",
+  "description": "Detect which package managers are installed on the system and retrieve their version information. This is the foundation for all backend operations.",
+  "status": "backlog",
+  "priority": 1,
+  "complexity": "simple",
+  "dependencies": [],
+  "createdAt": "2025-12-19T20:29:52.507Z",
+  "updatedAt": "2025-12-19T20:29:52.507Z"
+}
