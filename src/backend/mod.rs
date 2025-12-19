@@ -259,6 +259,7 @@ impl PackageManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn available_downgrade_versions(&self, package: &Package) -> Result<Vec<String>> {
         Self::validate_package_name(&package.name)?;
         if !self.enabled_sources.contains(&package.source) {

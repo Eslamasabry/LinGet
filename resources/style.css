@@ -1,143 +1,56 @@
+/* 
+ * LinGet Design System
+ * 
+ * Spacing Scale: 4px, 8px, 12px, 16px, 24px, 32px
+ * Border Radius: 4px (chips), 6px (rows), 8px (cards), 12px (containers), 999px (pills)
+ * Font Sizes: 9pt (caption), 14pt (body), 16pt (title-2), 18pt (title-1)
+ */
+
 /* LinGet Style Sheet */
 
-/* Source chips (used in rows/details) */
-.chip.source-apt {
-    background-color: alpha(@orange_3, 0.2);
-    color: @orange_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-dnf {
-    background-color: alpha(@red_2, 0.18);
-    color: @red_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-pacman {
-    background-color: alpha(@purple_3, 0.2);
-    color: @purple_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-flatpak {
-    background-color: alpha(@blue_3, 0.2);
-    color: @blue_4;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-npm {
-    background-color: alpha(@red_3, 0.2);
-    color: @red_4;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-pip {
-    background-color: alpha(@yellow_4, 0.2);
-    color: @yellow_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-pipx {
-    background-color: alpha(@yellow_3, 0.18);
-    color: @yellow_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-cargo {
-    background-color: alpha(@blue_3, 0.18);
-    color: @blue_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-brew {
-    background-color: alpha(@orange_2, 0.18);
-    color: @orange_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-aur {
-    background-color: alpha(@purple_2, 0.18);
-    color: @purple_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-conda {
-    background-color: alpha(@cyan_2, 0.18);
-    color: @cyan_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-mamba {
-    background-color: alpha(@cyan_3, 0.18);
-    color: @cyan_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-zypper {
-    background-color: alpha(@green_2, 0.18);
-    color: @green_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-dart {
-    background-color: alpha(@blue_2, 0.18);
-    color: @blue_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-snap {
-    background-color: alpha(@green_3, 0.2);
-    color: @green_5;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
-.chip.source-deb {
-    background-color: alpha(@purple_3, 0.2);
-    color: @purple_4;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 700;
-}
-
+/* Source Chips - Base Styles */
+.chip.source-apt,
+.chip.source-dnf,
+.chip.source-pacman,
+.chip.source-flatpak,
+.chip.source-npm,
+.chip.source-pip,
+.chip.source-pipx,
+.chip.source-cargo,
+.chip.source-brew,
+.chip.source-aur,
+.chip.source-conda,
+.chip.source-mamba,
+.chip.source-zypper,
+.chip.source-dart,
+.chip.source-snap,
+.chip.source-deb,
 .chip.source-appimage {
-    background-color: alpha(@cyan_3, 0.2);
-    color: @cyan_5;
     padding: 2px 8px;
     border-radius: 4px;
     font-weight: 700;
 }
 
-/* Source dots (sidebar list) */
+/* Source Chips - Colors (subtle, muted palette) */
+.chip.source-apt { background-color: alpha(@orange_4, 0.12); color: alpha(@orange_3, 0.9); }
+.chip.source-dnf { background-color: alpha(@red_3, 0.12); color: alpha(@red_3, 0.9); }
+.chip.source-pacman { background-color: alpha(@purple_3, 0.12); color: alpha(@purple_3, 0.9); }
+.chip.source-flatpak { background-color: alpha(@blue_3, 0.12); color: alpha(@blue_3, 0.9); }
+.chip.source-npm { background-color: alpha(@red_3, 0.12); color: alpha(@red_3, 0.9); }
+.chip.source-pip { background-color: alpha(@yellow_5, 0.12); color: alpha(@yellow_4, 0.9); }
+.chip.source-pipx { background-color: alpha(@yellow_4, 0.12); color: alpha(@yellow_4, 0.9); }
+.chip.source-cargo { background-color: alpha(@orange_4, 0.12); color: alpha(@orange_3, 0.9); }
+.chip.source-brew { background-color: alpha(@yellow_5, 0.12); color: alpha(@yellow_4, 0.9); }
+.chip.source-aur { background-color: alpha(@blue_4, 0.12); color: alpha(@blue_3, 0.9); }
+.chip.source-conda { background-color: alpha(@green_4, 0.12); color: alpha(@green_3, 0.9); }
+.chip.source-mamba { background-color: alpha(@green_4, 0.12); color: alpha(@green_3, 0.9); }
+.chip.source-zypper { background-color: alpha(@green_4, 0.12); color: alpha(@green_3, 0.9); }
+.chip.source-dart { background-color: alpha(@blue_3, 0.12); color: alpha(@blue_3, 0.9); }
+.chip.source-snap { background-color: alpha(@orange_4, 0.12); color: alpha(@orange_3, 0.9); }
+.chip.source-deb { background-color: alpha(@purple_3, 0.12); color: alpha(@purple_3, 0.9); }
+.chip.source-appimage { background-color: alpha(@purple_4, 0.12); color: alpha(@purple_3, 0.9); }
+
+/* Source Dots - Base Styles */
 .source-dot {
     min-width: 10px;
     min-height: 10px;
@@ -146,57 +59,24 @@
     opacity: 0.9;
 }
 
-.source-dot.source-apt {
-    background-color: @orange_5;
-}
-.source-dot.source-dnf {
-    background-color: @red_5;
-}
-.source-dot.source-pacman {
-    background-color: @purple_5;
-}
-.source-dot.source-zypper {
-    background-color: @green_5;
-}
-.source-dot.source-flatpak {
-    background-color: @blue_4;
-}
-.source-dot.source-snap {
-    background-color: @green_5;
-}
-.source-dot.source-npm {
-    background-color: @red_4;
-}
-.source-dot.source-pip {
-    background-color: @yellow_5;
-}
-.source-dot.source-pipx {
-    background-color: @yellow_5;
-}
-.source-dot.source-cargo {
-    background-color: @blue_5;
-}
-.source-dot.source-brew {
-    background-color: @orange_5;
-}
-.source-dot.source-aur {
-    background-color: @purple_5;
-}
-.source-dot.source-conda {
-    background-color: @cyan_5;
-}
-.source-dot.source-mamba {
-    background-color: @cyan_5;
-}
-.source-dot.source-dart {
-    background-color: @blue_5;
-}
-.source-dot.source-deb {
-    background-color: @purple_4;
-}
-.source-dot.source-appimage {
-    background-color: @cyan_5;
-}
+/* Source Dots - Colors */
+.source-dot.source-apt { background-color: @orange_5; }
+.source-dot.source-dnf { background-color: @red_5; }
+.source-dot.source-pacman { background-color: @purple_5; }
+.source-dot.source-zypper { background-color: @green_5; }
+.source-dot.source-flatpak { background-color: @blue_4; }
+.source-dot.source-snap { background-color: @green_5; }
+.source-dot.source-npm { background-color: @red_4; }
+.source-dot.source-pip { background-color: @yellow_5; }
+.source-dot.source-pipx { background-color: @yellow_5; }
+.source-dot.source-cargo { background-color: @blue_5; }
+.source-dot.source-brew { background-color: @orange_5; }
+.source-dot.source-aur { background-color: @purple_5; }
+.source-dot.source-conda { background-color: @cyan_5; }
+.source-dot.source-mamba { background-color: @cyan_5; }
+.source-dot.source-dart { background-color: @blue_5; }
+.source-dot.source-deb { background-color: @purple_4; }
+.source-dot.source-appimage { background-color: @cyan_5; }
 
 /* Sidebar Styling */
 .sidebar {
@@ -220,7 +100,7 @@
 
 .nav-row:selected {
     background-color: alpha(@accent_bg_color, 0.15);
-    color: @accent_fg_color; /* Ensure text is readable */
+    color: @accent_fg_color;
 }
 
 .nav-row:selected label {
@@ -230,6 +110,11 @@
 
 .nav-row:hover:not(:selected) {
     background-color: alpha(@view_fg_color, 0.05);
+}
+
+.nav-row:focus-visible {
+    outline: 2px solid @accent_color;
+    outline-offset: -2px;
 }
 
 /* Source Filter Buttons */
@@ -247,6 +132,11 @@
 
 .source-filter-btn:hover:not(:checked) {
     background-color: alpha(@view_fg_color, 0.04);
+}
+
+.source-filter-btn:focus-visible {
+    outline: 2px solid @accent_color;
+    outline-offset: -2px;
 }
 
 .source-filter-btn.source-unavailable,
@@ -268,6 +158,11 @@
 
 .provider-row:hover {
     background-color: alpha(@view_fg_color, 0.04);
+}
+
+.provider-row:focus-visible {
+    outline: 2px solid @accent_color;
+    outline-offset: -2px;
 }
 
 .provider-row.provider-unavailable {
@@ -296,7 +191,7 @@
 
 .boxed-list > row {
     padding: 12px 16px;
-    min-height: 64px;
+    min-height: 72px;
     border-bottom: 1px solid alpha(@borders, 0.5);
     transition: background-color 150ms ease;
 }
@@ -355,13 +250,29 @@
     border-radius: 10px;
 }
 
-/* Package row affordances */
-.pkg-row .row-action {
-    opacity: 0.18;
-    transition: opacity 140ms ease;
+.pkg-row:focus-visible {
+    outline: 2px solid @accent_color;
+    outline-offset: -2px;
 }
 
-.pkg-row .row-action,
+.pkg-row .title {
+    font-weight: 600;
+    font-size: 11pt;
+}
+
+.pkg-row .subtitle {
+    opacity: 0.55;
+    font-size: 9pt;
+}
+
+.pkg-row .row-action {
+    opacity: 0.15;
+    transition: opacity 150ms ease;
+    min-width: 36px;
+    min-height: 36px;
+    margin-left: 6px;
+}
+
 .pkg-row .row-spinner,
 .pkg-row .row-chevron {
     min-width: 36px;
@@ -387,6 +298,35 @@
 .pkg-row:hover .row-action,
 .pkg-row:focus-within .row-action {
     opacity: 1.0;
+}
+
+.update-dot {
+    min-width: 8px;
+    min-height: 8px;
+    border-radius: 999px;
+    background-color: @accent_color;
+    box-shadow: 0 0 0 2px alpha(@accent_color, 0.25);
+}
+
+.source-chip {
+    opacity: 0.85;
+    font-size: 7pt;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 6px;
+    transition: opacity 150ms ease;
+}
+
+.source-chip:hover {
+    opacity: 1.0;
+}
+
+.pkg-row.row-active-operation {
+    background-color: alpha(@accent_color, 0.08);
+}
+
+.pkg-row.row-success-flash {
+    animation: pulse-success 800ms ease-out;
 }
 
 .pkg-row .row-chevron {
@@ -416,6 +356,12 @@
     background-color: alpha(@view_fg_color, 0.06);
 }
 
+.chip-btn:focus-visible,
+button:focus-visible {
+    outline: 2px solid @accent_color;
+    outline-offset: 2px;
+}
+
 .command-center {
     background-color: @sidebar_bg_color;
     border-left: 1px solid @borders;
@@ -441,15 +387,17 @@
 }
 
 .chip-muted {
-    background-color: alpha(@view_fg_color, 0.06);
-    color: alpha(@view_fg_color, 0.7);
-    border: 1px solid alpha(@borders, 0.35);
+    background-color: alpha(@view_fg_color, 0.04);
+    color: alpha(@view_fg_color, 0.6);
+    border: none;
+    font-size: 8pt;
+    font-weight: 500;
 }
 
 .icon-frame {
-    border-radius: 10px;
-    background-color: alpha(@view_fg_color, 0.04);
-    border: 1px solid alpha(@borders, 0.35);
+    border-radius: 14px;
+    background-color: alpha(@view_fg_color, 0.03);
+    border: 1px solid alpha(@borders, 0.2);
     padding: 6px;
 }
 
@@ -513,11 +461,10 @@ spinner {
     color: @accent_color;
 }
 
-/* Details Dialog */
-.details-header {
-    padding: 24px;
-    background-color: alpha(@view_fg_color, 0.03);
-    border-bottom: 1px solid @borders;
+.details-panel .icon-frame {
+    border-radius: 16px;
+    padding: 0;
+    border: none;
 }
 
 /* Progress Overlay */
@@ -620,4 +567,233 @@ carouselindicatordots {
     color: @yellow_4;
 }
 
-/* (No :root custom properties; GTK CSS doesn't support them reliably) */
+.details-panel {
+    border-left: 1px solid alpha(@borders, 0.5);
+    min-width: 400px;
+}
+
+.details-panel headerbar {
+    background: transparent;
+    box-shadow: none;
+    border-bottom: 1px solid alpha(@borders, 0.3);
+}
+
+.details-panel .title-2 {
+    font-weight: 700;
+}
+
+.details-panel .body {
+    line-height: 1.5;
+}
+
+/* ==========================================================================
+   RESPONSIVE LAYOUT UTILITIES
+   Applied programmatically via adw::Breakpoint in Rust
+   Breakpoints: narrow (<600px), medium (600-900px), wide (>900px)
+   ========================================================================== */
+
+/* Narrow Layout Mode */
+.narrow-layout .sidebar {
+    border-right: none;
+}
+
+.narrow-layout .boxed-list > row {
+    padding: 10px 12px;
+    min-height: 56px;
+}
+
+.narrow-layout .view-toolbar {
+    padding: 4px 8px;
+}
+
+.narrow-layout .details-header {
+    padding: 16px;
+}
+
+.narrow-layout .chip {
+    padding: 2px 8px;
+    font-size: 8pt;
+}
+
+.narrow-layout .icon-frame {
+    padding: 4px;
+}
+
+/* Medium Layout Mode */
+.medium-layout .command-center {
+    border-left: none;
+    border-top: 1px solid @borders;
+}
+
+/* Wide Layout Mode - defaults, no changes needed */
+
+/* Collapsed Sidebar (hamburger menu mode) */
+.sidebar-collapsed .sidebar {
+    min-width: 0;
+    opacity: 0;
+}
+
+.sidebar-collapsed .nav-row {
+    padding: 8px;
+}
+
+/* Overlay panel mode (for details on medium screens) */
+.panel-overlay {
+    box-shadow: -4px 0 24px alpha(black, 0.15);
+}
+
+/* ==========================================================================
+   ANIMATION SYSTEM
+   Keyframes for micro-interactions and transitions
+   ========================================================================== */
+
+/* Fade In */
+@keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Slide In from Right (for panels) */
+@keyframes slide-in-right {
+    from { 
+        opacity: 0;
+    }
+    to { 
+        opacity: 1;
+    }
+}
+
+/* Slide In from Bottom (for toasts, action bars) */
+@keyframes slide-in-bottom {
+    from { 
+        opacity: 0;
+    }
+    to { 
+        opacity: 1;
+    }
+}
+
+/* Scale In (for modals, popovers) */
+@keyframes scale-in {
+    from { 
+        transform: scale(0.95);
+        opacity: 0;
+    }
+    to { 
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+/* Pulse (for success states) */
+@keyframes pulse-success {
+    0% { background-color: alpha(@success_color, 0); }
+    50% { background-color: alpha(@success_color, 0.15); }
+    100% { background-color: alpha(@success_color, 0); }
+}
+
+/* Shimmer (for skeleton loading) */
+@keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+
+/* Spin (for spinners) */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Animation utility classes */
+.animate-fade-in {
+    animation: fade-in 200ms ease-out;
+}
+
+.animate-slide-in-right {
+    animation: slide-in-right 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.animate-slide-in-bottom {
+    animation: slide-in-bottom 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.animate-scale-in {
+    animation: scale-in 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.animate-pulse-success {
+    animation: pulse-success 600ms ease-out;
+}
+
+/* Skeleton shimmer effect */
+.skeleton-shimmer {
+    background: linear-gradient(
+        90deg,
+        alpha(@view_fg_color, 0.06) 0%,
+        alpha(@view_fg_color, 0.12) 50%,
+        alpha(@view_fg_color, 0.06) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite linear;
+}
+
+/* Staggered list animation (apply with inline style for delay) */
+.stagger-item {
+    animation: fade-in 200ms ease-out backwards;
+}
+
+/* Button press feedback */
+button:active:not(:disabled) {
+    transform: scale(0.98);
+}
+
+/* Row highlight on operation complete */
+.row-success-flash {
+    animation: pulse-success 800ms ease-out;
+}
+
+/* ==========================================================================
+   TYPOGRAPHY REFINEMENTS
+   Using Libadwaita semantic classes where possible
+   ========================================================================== */
+
+/* Heading hierarchy */
+.heading {
+    font-weight: 700;
+}
+
+.title-large {
+    font-size: 24pt;
+    font-weight: 800;
+    letter-spacing: -0.75px;
+    line-height: 1.2;
+}
+
+/* Body text improvements */
+.body {
+    font-size: 10pt;
+    line-height: 1.5;
+}
+
+.body-small {
+    font-size: 9pt;
+    line-height: 1.4;
+}
+
+/* Improved dim-label contrast */
+.dim-label {
+    opacity: 0.65;
+}
+
+/* Numeric/version text */
+.numeric {
+    font-feature-settings: "tnum" 1;
+    font-variant-numeric: tabular-nums;
+}
+
+
+
+*:focus-visible {
+    outline: 2px solid @accent_color;
+    outline-offset: 2px;
+}

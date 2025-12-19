@@ -229,10 +229,8 @@ impl PackageBackend for CargoBackend {
                             let version = ver.get("num").and_then(|v| v.as_str()).unwrap_or("?");
                             let created =
                                 ver.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
-                            let yanked = ver
-                                .get("yanked")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
+                            let yanked =
+                                ver.get("yanked").and_then(|v| v.as_bool()).unwrap_or(false);
 
                             // Format date nicely
                             let date = created.split('T').next().unwrap_or(created);

@@ -196,7 +196,10 @@ impl PackageBackend for FlatpakBackend {
             let parts: Vec<&str> = line.split('\t').collect();
             if !parts.is_empty() && !parts[0].is_empty() {
                 let name = parts[0].to_string();
-                let url = parts.get(1).map(|s| s.to_string()).filter(|s| !s.is_empty());
+                let url = parts
+                    .get(1)
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty());
                 let options = parts.get(2).unwrap_or(&"");
                 // Check if disabled by looking at options
                 let enabled = !options.contains("disabled");

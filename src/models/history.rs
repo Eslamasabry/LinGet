@@ -78,7 +78,11 @@ impl OperationRecord {
 
     /// Check if this operation can be undone
     pub fn can_undo(&self) -> bool {
-        self.success && matches!(self.operation, OperationType::Install | OperationType::Remove)
+        self.success
+            && matches!(
+                self.operation,
+                OperationType::Install | OperationType::Remove
+            )
     }
 
     /// Human-readable description

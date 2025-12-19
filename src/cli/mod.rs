@@ -243,8 +243,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             all,
             yes,
         } => {
-            commands::update::run(pm, package.as_deref(), source.map(Into::into), all, yes, &writer)
-                .await
+            commands::update::run(
+                pm,
+                package.as_deref(),
+                source.map(Into::into),
+                all,
+                yes,
+                &writer,
+            )
+            .await
         }
         Commands::Info { package, source } => {
             commands::info::run(pm, &package, source.map(Into::into), &writer).await

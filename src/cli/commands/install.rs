@@ -22,9 +22,7 @@ pub async fn run(
     // Filter to exact matches (or very close)
     let mut candidates: Vec<_> = search_results
         .into_iter()
-        .filter(|p| {
-            p.name.eq_ignore_ascii_case(package_name) || p.name.contains(package_name)
-        })
+        .filter(|p| p.name.eq_ignore_ascii_case(package_name) || p.name.contains(package_name))
         .collect();
 
     // Sort exact matches first

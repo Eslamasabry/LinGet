@@ -42,7 +42,10 @@ pub async fn run(
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    writer.verbose(&format!("Found {} packages from all sources", packages.len()));
+    writer.verbose(&format!(
+        "Found {} packages from all sources",
+        packages.len()
+    ));
 
     // Filter by source if specified
     let packages: Vec<_> = if let Some(src) = source {

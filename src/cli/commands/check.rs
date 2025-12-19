@@ -30,7 +30,10 @@ pub async fn run(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter) -> Resul
     if updates.is_empty() {
         writer.success("All packages are up to date!");
     } else {
-        writer.packages(&updates, Some(&format!("Updates Available ({})", updates.len())));
+        writer.packages(
+            &updates,
+            Some(&format!("Updates Available ({})", updates.len())),
+        );
         if !writer.is_json() {
             writer.message("\nRun 'linget update --all' to update all packages");
             writer.message("Run 'linget update <package>' to update a specific package");

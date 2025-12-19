@@ -1,11 +1,14 @@
 [Desktop Entry]
 Name=LinGet
+GenericName=Package Manager
 Comment=A modern package manager for Linux
-Exec=linget
+Exec=linget %U
 Icon=io.github.linget
 Terminal=false
 Type=Application
-Categories=System;PackageManager;GTK;
-Keywords=package;manager;apt;flatpak;snap;npm;pip;software;
+Categories=System;PackageManager;GTK;GNOME;
+Keywords=package;manager;apt;flatpak;snap;npm;pip;software;install;update;
 StartupNotify=true
 StartupWMClass=io.github.linget
+X-GNOME-UsesNotifications=true
+DBusActivatable=false

@@ -41,7 +41,11 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(title_color))
         .title(title)
-        .title_style(Style::default().fg(title_color).add_modifier(Modifier::BOLD));
+        .title_style(
+            Style::default()
+                .fg(title_color)
+                .add_modifier(Modifier::BOLD),
+        );
 
     let source_name = app
         .selected_source
@@ -93,7 +97,9 @@ fn draw_sources_panel(f: &mut Frame, app: &App, area: Rect) {
         .border_style(border_style)
         .title(" Sources ")
         .title_style(if is_active {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         });
@@ -107,7 +113,9 @@ fn draw_sources_panel(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             "All",
             if app.source_index == 0 {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             },
@@ -124,7 +132,9 @@ fn draw_sources_panel(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 format!("{:?}", source),
                 if is_selected {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
                 },
@@ -150,7 +160,9 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .border_style(border_style)
         .title(" Packages ")
         .title_style(if is_active {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         });
@@ -179,7 +191,9 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, pkg)| {
             let is_selected = i == app.package_index;
             let style = if is_selected {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -209,18 +223,9 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
             };
 
             Row::new(vec![
-                Span::styled(
-                    truncate_string(&pkg.name, 25),
-                    style,
-                ),
-                Span::styled(
-                    truncate_string(&version, 20),
-                    style,
-                ),
-                Span::styled(
-                    format!("{:?}", pkg.source),
-                    style,
-                ),
+                Span::styled(truncate_string(&pkg.name, 25), style),
+                Span::styled(truncate_string(&version, 20), style),
+                Span::styled(format!("{:?}", pkg.source), style),
                 Span::styled(status_icon, status_style),
             ])
             .style(style)
@@ -228,7 +233,11 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let header = Row::new(vec!["Name", "Version", "Source", ""])
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .bottom_margin(1);
 
     let widths = [
@@ -247,13 +256,19 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
-    let key_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let key_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let desc_style = Style::default().fg(Color::DarkGray);
     let sep_style = Style::default().fg(Color::DarkGray);
 
     let commands = match app.mode {
         AppMode::Normal => {
-            let updates_label = if app.show_updates_only { "all" } else { "updates" };
+            let updates_label = if app.show_updates_only {
+                "all"
+            } else {
+                "updates"
+            };
             vec![
                 Span::styled("↑↓/jk", key_style),
                 Span::styled(" nav ", desc_style),
@@ -339,7 +354,11 @@ fn draw_search_popup(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow))
         .title(" Search ")
-        .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        .title_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
 
     let search_text = format!("{}▏", app.search_query);
     let paragraph = Paragraph::new(search_text)

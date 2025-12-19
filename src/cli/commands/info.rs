@@ -42,9 +42,7 @@ pub async fn run(
         let search_results = manager.search(package_name).await?;
         candidates = search_results
             .into_iter()
-            .filter(|p| {
-                p.name.eq_ignore_ascii_case(package_name) || p.name.contains(package_name)
-            })
+            .filter(|p| p.name.eq_ignore_ascii_case(package_name) || p.name.contains(package_name))
             .collect();
     }
 
@@ -76,10 +74,7 @@ pub async fn run(
     } else {
         // Multiple candidates
         if !writer.is_json() {
-            writer.message(&format!(
-                "\nMultiple packages match '{}':",
-                package_name
-            ));
+            writer.message(&format!("\nMultiple packages match '{}':", package_name));
             for (i, pkg) in candidates.iter().enumerate() {
                 println!(
                     "  {} {} ({:?})",

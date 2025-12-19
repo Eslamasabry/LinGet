@@ -20,6 +20,7 @@ pub enum PackageOp {
     Update,
     Remove,
     Downgrade,
+    #[allow(dead_code)]
     DowngradeTo(String),
 }
 

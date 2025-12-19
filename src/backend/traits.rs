@@ -35,7 +35,7 @@ pub trait PackageBackend: Send + Sync {
         anyhow::bail!("Downgrade to a specific version is not supported for this source")
     }
 
-    /// List available downgrade target versions (optional per backend)
+    #[allow(dead_code)]
     async fn available_downgrade_versions(&self, _name: &str) -> Result<Vec<String>> {
         Ok(Vec::new())
     }

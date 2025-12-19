@@ -107,7 +107,11 @@ pub async fn run(
             match manager.update(pkg).await {
                 Ok(_) => {
                     if let Some(pb) = spinner {
-                        pb.finish_with_message(format!("{} {} updated", style("✓").green(), pkg.name));
+                        pb.finish_with_message(format!(
+                            "{} {} updated",
+                            style("✓").green(),
+                            pkg.name
+                        ));
                     }
                     success_count += 1;
                 }

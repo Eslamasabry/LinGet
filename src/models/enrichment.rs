@@ -198,7 +198,10 @@ async fn fetch_flathub(app_id: &str) -> Option<PackageEnrichment> {
         if i.starts_with("http") {
             i
         } else {
-            format!("https://dl.flathub.org/repo/appstream/x86_64/icons/128x128/{}.png", app_id)
+            format!(
+                "https://dl.flathub.org/repo/appstream/x86_64/icons/128x128/{}.png",
+                app_id
+            )
         }
     });
 
@@ -334,12 +337,7 @@ async fn fetch_pypi(name: &str) -> Option<PackageEnrichment> {
         .unwrap_or_default()
         .into_iter()
         .filter(|c| c.starts_with("Topic ::"))
-        .map(|c| {
-            c.split(" :: ")
-                .nth(1)
-                .unwrap_or(&c)
-                .to_string()
-        })
+        .map(|c| c.split(" :: ").nth(1).unwrap_or(&c).to_string())
         .take(5)
         .collect();
 
@@ -451,10 +449,7 @@ struct SnapCategory {
 
 async fn fetch_snapcraft(name: &str) -> Option<PackageEnrichment> {
     let client = http_client().ok()?;
-    let url = format!(
-        "https://api.snapcraft.io/v2/snaps/info/{}",
-        name
-    );
+    let url = format!("https://api.snapcraft.io/v2/snaps/info/{}", name);
 
     let resp = client
         .get(&url)
@@ -470,14 +465,11 @@ async fn fetch_snapcraft(name: &str) -> Option<PackageEnrichment> {
     let data: SnapResponse = resp.json().await.ok()?;
     let snap = data.snap;
 
-    let icon_url = snap
-        .media
-        .as_ref()
-        .and_then(|m| {
-            m.iter()
-                .find(|i| i.media_type.as_deref() == Some("icon"))
-                .and_then(|i| i.url.clone())
-        });
+    let icon_url = snap.media.as_ref().and_then(|m| {
+        m.iter()
+            .find(|i| i.media_type.as_deref() == Some("icon"))
+            .and_then(|i| i.url.clone())
+    });
 
     let screenshots: Vec<String> = snap
         .media

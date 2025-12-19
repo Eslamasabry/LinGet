@@ -147,10 +147,7 @@ impl RepositoriesDialog {
         let header = adw::HeaderBar::builder().build();
 
         let cancel_btn = gtk::Button::builder().label("Cancel").build();
-        let add_btn = gtk::Button::builder()
-            .label("Add")
-            .sensitive(false)
-            .build();
+        let add_btn = gtk::Button::builder().label("Add").sensitive(false).build();
         add_btn.add_css_class("suggested-action");
 
         let add_dialog_for_cancel = add_dialog.clone();

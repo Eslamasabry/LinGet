@@ -48,6 +48,50 @@ impl fmt::Display for PackageSource {
 }
 
 impl PackageSource {
+    /// All available package sources in display order
+    pub const ALL: [PackageSource; 17] = [
+        PackageSource::Apt,
+        PackageSource::Dnf,
+        PackageSource::Pacman,
+        PackageSource::Zypper,
+        PackageSource::Flatpak,
+        PackageSource::Snap,
+        PackageSource::Npm,
+        PackageSource::Pip,
+        PackageSource::Pipx,
+        PackageSource::Cargo,
+        PackageSource::Brew,
+        PackageSource::Aur,
+        PackageSource::Conda,
+        PackageSource::Mamba,
+        PackageSource::Dart,
+        PackageSource::Deb,
+        PackageSource::AppImage,
+    ];
+
+    /// Install hint shown when provider is not detected
+    pub fn install_hint(&self) -> Option<&'static str> {
+        match self {
+            PackageSource::Apt => None, // APT is always available on Debian/Ubuntu
+            PackageSource::Dnf => Some("Install `dnf` (Fedora/RHEL)"),
+            PackageSource::Pacman => Some("Install `pacman` (Arch Linux)"),
+            PackageSource::Zypper => Some("Install `zypper` (openSUSE)"),
+            PackageSource::Flatpak => Some("Install `flatpak`"),
+            PackageSource::Snap => Some("Install `snapd`"),
+            PackageSource::Npm => Some("Install Node.js + `npm`"),
+            PackageSource::Pip => Some("Install Python + `pip` (python3-pip)"),
+            PackageSource::Pipx => Some("Install `pipx` (and Python)"),
+            PackageSource::Cargo => Some("Install Rust (rustup)"),
+            PackageSource::Brew => Some("Install Homebrew"),
+            PackageSource::Aur => Some("Install an AUR helper (e.g. `yay`)"),
+            PackageSource::Conda => Some("Install Conda (Miniforge/Anaconda)"),
+            PackageSource::Mamba => Some("Install Mamba (Miniforge/Mambaforge)"),
+            PackageSource::Dart => Some("Install Dart/Flutter SDK"),
+            PackageSource::Deb => Some("Install `dpkg`/APT (Debian-based)"),
+            PackageSource::AppImage => None, // AppImage doesn't need special tooling
+        }
+    }
+
     pub fn icon_name(&self) -> &'static str {
         match self {
             PackageSource::Apt => "package-x-generic-symbolic",

@@ -591,9 +591,7 @@ impl PreferencesDialog {
             .activatable(true)
             .build();
 
-        let arrow = gtk::Image::builder()
-            .icon_name("go-next-symbolic")
-            .build();
+        let arrow = gtk::Image::builder().icon_name("go-next-symbolic").build();
         repo_row.add_suffix(&arrow);
 
         let pm_for_repo = pm.clone();

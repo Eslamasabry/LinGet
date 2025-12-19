@@ -1,21 +1,36 @@
 mod about;
 mod command_center;
+pub mod content;
 mod diagnostics;
+mod empty_state;
+pub mod header;
 mod notifications;
+mod onboarding;
+mod operations;
 mod package_details;
 mod package_row;
 mod preferences;
 mod repositories;
+mod shortcuts;
+pub mod sidebar;
+mod skeleton;
+mod state;
 mod tray;
+pub mod widgets;
 mod window;
 
 pub use about::show_about_dialog;
 pub use command_center::{CommandCenter, CommandEventKind, PackageOp, RetrySpec};
 pub use diagnostics::DiagnosticsDialog;
+pub use empty_state::EmptyState;
 pub use notifications::notify_updates_available;
-pub use package_details::PackageDetailsDialog;
+pub use onboarding::OnboardingWindow;
+pub use skeleton::SkeletonList;
+
+pub use package_details::PackageDetailsPanel;
 pub use package_row::PackageRow;
 pub use preferences::PreferencesDialog;
 pub use repositories::RepositoriesDialog;
+pub use state::View;
 pub use tray::{TrayAction, TrayHandle};
 pub use window::LinGetWindow;

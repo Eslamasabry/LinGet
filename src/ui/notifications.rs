@@ -22,15 +22,9 @@ pub fn notify_updates_available(count: usize) {
 #[allow(dead_code)]
 pub fn notify_operation_complete(operation: &str, package_name: &str, success: bool) {
     let (summary, icon) = if success {
-        (
-            format!("{} completed", operation),
-            "emblem-ok-symbolic",
-        )
+        (format!("{} completed", operation), "emblem-ok-symbolic")
     } else {
-        (
-            format!("{} failed", operation),
-            "dialog-error-symbolic",
-        )
+        (format!("{} failed", operation), "dialog-error-symbolic")
     };
 
     send_notification(&summary, package_name, icon);

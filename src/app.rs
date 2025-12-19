@@ -16,6 +16,7 @@ thread_local! {
 pub fn build_app() -> adw::Application {
     let app = adw::Application::builder()
         .application_id(APP_ID)
+        .resource_base_path("/io/github/linget")
         .flags(gio::ApplicationFlags::FLAGS_NONE)
         .build();
 

@@ -39,6 +39,7 @@ struct NpmOutdatedEntry {
     latest: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum NpmVersions {

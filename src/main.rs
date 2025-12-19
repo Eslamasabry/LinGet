@@ -54,7 +54,11 @@ fn sanitize_environment() {
 }
 
 fn run_gui(runtime: tokio::runtime::Runtime) {
-    tracing::info!("Starting {} v{} (GUI mode)", app::APP_NAME, app::APP_VERSION);
+    tracing::info!(
+        "Starting {} v{} (GUI mode)",
+        app::APP_NAME,
+        app::APP_VERSION
+    );
 
     sanitize_environment();
 
@@ -73,7 +77,11 @@ fn run_gui(runtime: tokio::runtime::Runtime) {
 }
 
 fn run_tui(runtime: tokio::runtime::Runtime) {
-    tracing::info!("Starting {} v{} (TUI mode)", app::APP_NAME, app::APP_VERSION);
+    tracing::info!(
+        "Starting {} v{} (TUI mode)",
+        app::APP_NAME,
+        app::APP_VERSION
+    );
 
     let result = runtime.block_on(cli::tui::run());
 
@@ -84,7 +92,11 @@ fn run_tui(runtime: tokio::runtime::Runtime) {
 }
 
 fn run_cli(runtime: tokio::runtime::Runtime) {
-    tracing::info!("Starting {} v{} (CLI mode)", app::APP_NAME, app::APP_VERSION);
+    tracing::info!(
+        "Starting {} v{} (CLI mode)",
+        app::APP_NAME,
+        app::APP_VERSION
+    );
 
     // Parse CLI arguments
     let cli = cli::Cli::parse();

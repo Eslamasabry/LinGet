@@ -17,7 +17,7 @@ pub struct PackageRow {
     pub progress_bar: gtk::ProgressBar,
     pub version_label: gtk::Label,
     pub source_button: gtk::Button,
-    pub update_icon: gtk::Image,
+    pub update_icon: gtk::Box,
     pub favorite_button: gtk::ToggleButton,
 }
 
@@ -60,22 +60,19 @@ impl PackageRow {
 
         row.add_prefix(&checkbox);
 
-        // App icon - try to get actual icon, fall back to source icon
         let icon_name = get_package_icon(&pkg.name, pkg.source);
         let app_icon = gtk::Image::builder()
             .icon_name(&icon_name)
-            .pixel_size(32)
+            .pixel_size(48)
             .build();
 
-        // If the icon name is the same as source icon, it's a fallback
-        // Use smaller size for generic icons
         if icon_name == pkg.source.icon_name() {
-            app_icon.set_pixel_size(24);
+            app_icon.set_pixel_size(36);
         }
 
         let icon_frame = gtk::Box::builder()
-            .width_request(40)
-            .height_request(40)
+            .width_request(52)
+            .height_request(52)
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Center)
             .build();
@@ -105,7 +102,6 @@ impl PackageRow {
 
         // Keep the version chip compact; long versions still remain accessible via tooltip.
 
-        // Source badge (clickable to filter)
         let source_button = gtk::Button::builder()
             .label(pkg.source.to_string())
             .valign(gtk::Align::Center)
@@ -113,16 +109,18 @@ impl PackageRow {
             .build();
         source_button.add_css_class("flat");
         source_button.add_css_class("chip");
+        source_button.add_css_class("source-chip");
         source_button.add_css_class(pkg.source.color_class());
         suffix_box.append(&source_button);
 
-        // Update indicator (kept for live UI updates; visibility toggled)
-        let update_icon = gtk::Image::builder()
-            .icon_name("software-update-available-symbolic")
+        let update_icon = gtk::Box::builder()
+            .width_request(8)
+            .height_request(8)
+            .valign(gtk::Align::Center)
             .tooltip_text("Update available")
             .visible(pkg.status == PackageStatus::UpdateAvailable)
             .build();
-        update_icon.add_css_class("accent");
+        update_icon.add_css_class("update-dot");
         suffix_box.append(&update_icon);
 
         // Favorite toggle button
@@ -276,6 +274,7 @@ impl PackageRow {
             _ => {
                 let b = gtk::Button::builder()
                     .icon_name("content-loading-symbolic")
+                    .tooltip_text("Working...")
                     .sensitive(false)
                     .valign(gtk::Align::Center)
                     .build();
@@ -328,11 +327,13 @@ impl PackageRow {
         self.favorite_button.set_active(is_favorite);
         if is_favorite {
             self.favorite_button.set_icon_name("starred-symbolic");
-            self.favorite_button.set_tooltip_text(Some("Remove from favorites"));
+            self.favorite_button
+                .set_tooltip_text(Some("Remove from favorites"));
             self.favorite_button.add_css_class("favorited");
         } else {
             self.favorite_button.set_icon_name("non-starred-symbolic");
-            self.favorite_button.set_tooltip_text(Some("Add to favorites"));
+            self.favorite_button
+                .set_tooltip_text(Some("Add to favorites"));
             self.favorite_button.remove_css_class("favorited");
         }
     }

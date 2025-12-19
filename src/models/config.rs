@@ -53,6 +53,14 @@ pub struct Config {
     /// Favorited package IDs (format: "Source:Name")
     #[serde(default)]
     pub favorite_packages: Vec<String>,
+
+    /// Whether onboarding has been completed
+    #[serde(default)]
+    pub onboarding_completed: bool,
+
+    /// Recent search queries (last 5)
+    #[serde(default)]
+    pub recent_searches: Vec<String>,
 }
 
 fn default_ui_show_icons() -> bool {
@@ -180,6 +188,8 @@ impl Default for Config {
             ui_show_icons: default_ui_show_icons(),
             last_source_filter: None,
             favorite_packages: Vec::new(),
+            onboarding_completed: false,
+            recent_searches: Vec::new(),
         }
     }
 }

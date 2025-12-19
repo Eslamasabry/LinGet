@@ -1,8 +1,11 @@
+pub mod enrichment;
+pub mod panel;
+
+pub use panel::PackageDetailsPanel;
+
 use crate::backend::PackageManager;
-use crate::models::{fetch_enrichment, Config, Package, PackageEnrichment, PackageSource, PackageStatus};
+use crate::models::{fetch_enrichment, Config, Package, PackageSource, PackageStatus};
 use crate::ui::{CommandCenter, CommandEventKind, PackageOp, RetrySpec};
-use gdk_pixbuf::prelude::*;
-use gdk_pixbuf::PixbufLoader;
 use gtk4::prelude::*;
 use gtk4::{self as gtk, glib};
 use libadwaita as adw;
@@ -12,207 +15,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[allow(dead_code)]
 pub struct PackageDetailsDialog;
 
-/// Build enrichment section UI
-fn build_enrichment_section(enrichment: &PackageEnrichment) -> gtk::Box {
-    let section = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(12)
-        .build();
-    section.add_css_class("enrichment-section");
-
-    // Summary (enhanced description)
-    if let Some(ref summary) = enrichment.summary {
-        if !summary.is_empty() {
-            let summary_label = gtk::Label::builder()
-                .label(summary)
-                .wrap(true)
-                .xalign(0.0)
-                .build();
-            summary_label.add_css_class("body");
-            section.append(&summary_label);
-        }
-    }
-
-    // Stats row (developer, downloads, rating)
-    let stats_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(16)
-        .halign(gtk::Align::Start)
-        .build();
-
-    if let Some(ref developer) = enrichment.developer {
-        let dev_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .build();
-        let dev_icon = gtk::Image::builder()
-            .icon_name("avatar-default-symbolic")
-            .build();
-        dev_icon.add_css_class("dim-label");
-        let dev_label = gtk::Label::new(Some(developer));
-        dev_label.add_css_class("caption");
-        dev_box.append(&dev_icon);
-        dev_box.append(&dev_label);
-        stats_box.append(&dev_box);
-    }
-
-    if let Some(downloads) = enrichment.downloads {
-        let dl_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .build();
-        let dl_icon = gtk::Image::builder()
-            .icon_name("folder-download-symbolic")
-            .build();
-        dl_icon.add_css_class("dim-label");
-        let dl_text = if downloads >= 1_000_000 {
-            format!("{:.1}M", downloads as f64 / 1_000_000.0)
-        } else if downloads >= 1_000 {
-            format!("{:.1}K", downloads as f64 / 1_000.0)
-        } else {
-            downloads.to_string()
-        };
-        let dl_label = gtk::Label::new(Some(&dl_text));
-        dl_label.add_css_class("caption");
-        dl_box.append(&dl_icon);
-        dl_box.append(&dl_label);
-        stats_box.append(&dl_box);
-    }
-
-    if let Some(rating) = enrichment.rating {
-        let rating_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .build();
-        let star_icon = gtk::Image::builder()
-            .icon_name("starred-symbolic")
-            .build();
-        star_icon.add_css_class("warning"); // yellow color
-        let rating_label = gtk::Label::new(Some(&format!("{:.1}", rating)));
-        rating_label.add_css_class("caption");
-        rating_box.append(&star_icon);
-        rating_box.append(&rating_label);
-        stats_box.append(&rating_box);
-    }
-
-    if stats_box.first_child().is_some() {
-        section.append(&stats_box);
-    }
-
-    // Categories and keywords as chips
-    let tags: Vec<&str> = enrichment
-        .categories
-        .iter()
-        .chain(enrichment.keywords.iter())
-        .map(|s| s.as_str())
-        .take(8)
-        .collect();
-
-    if !tags.is_empty() {
-        let tags_flow = gtk::FlowBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .max_children_per_line(6)
-            .row_spacing(6)
-            .column_spacing(6)
-            .homogeneous(false)
-            .build();
-        tags_flow.add_css_class("enrichment-tags");
-
-        for tag in tags {
-            let chip = gtk::Label::builder().label(tag).build();
-            chip.add_css_class("chip");
-            chip.add_css_class("caption");
-            tags_flow.insert(&chip, -1);
-        }
-        section.append(&tags_flow);
-    }
-
-    // Repository link
-    if let Some(ref repo) = enrichment.repository {
-        if !repo.is_empty() {
-            let link_btn = gtk::LinkButton::builder()
-                .label("View Repository")
-                .uri(repo)
-                .halign(gtk::Align::Start)
-                .build();
-            link_btn.add_css_class("flat");
-            section.append(&link_btn);
-        }
-    }
-
-    // Screenshots carousel
-    if !enrichment.screenshots.is_empty() {
-        let screenshots_label = gtk::Label::builder()
-            .label("Screenshots")
-            .xalign(0.0)
-            .margin_top(8)
-            .build();
-        screenshots_label.add_css_class("heading");
-        section.append(&screenshots_label);
-
-        let carousel = adw::Carousel::builder()
-            .hexpand(true)
-            .height_request(200)
-            .build();
-        carousel.add_css_class("card");
-
-        // Add placeholder images with async loading
-        for url in enrichment.screenshots.iter().take(5) {
-            let image = gtk::Picture::builder()
-                .height_request(200)
-                .build();
-            image.add_css_class("screenshot");
-
-            // Load image asynchronously using pixbuf
-            let url = url.clone();
-            let image_clone = image.clone();
-            glib::spawn_future_local(async move {
-                if let Ok(bytes) = load_image_bytes(&url).await {
-                    // Load pixbuf from bytes
-                    let loader = PixbufLoader::new();
-                    if loader.write(&bytes).is_ok() && loader.close().is_ok() {
-                        if let Some(pixbuf) = loader.pixbuf() {
-                            let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
-                            image_clone.set_paintable(Some(&texture));
-                        }
-                    }
-                }
-            });
-
-            carousel.append(&image);
-        }
-
-        let carousel_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .build();
-        carousel_box.append(&carousel);
-
-        // Carousel indicators
-        if enrichment.screenshots.len() > 1 {
-            let indicators = adw::CarouselIndicatorDots::builder()
-                .carousel(&carousel)
-                .build();
-            carousel_box.append(&indicators);
-        }
-
-        section.append(&carousel_box);
-    }
-
-    section
-}
-
-/// Load image bytes from URL
-async fn load_image_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
-    let bytes = client.get(url).send().await?.bytes().await?;
-    Ok(bytes.to_vec())
-}
-
+#[allow(dead_code)]
 fn parse_suggestion(message: &str) -> Option<(String, String)> {
     let marker = crate::backend::SUGGEST_PREFIX;
     let idx = message.find(marker)?;
@@ -223,62 +29,54 @@ fn parse_suggestion(message: &str) -> Option<(String, String)> {
     Some((message[..idx].trim().to_string(), command.to_string()))
 }
 
+#[allow(dead_code)]
 fn show_action_required_dialog(parent: &impl IsA<gtk::Window>, details: &str, command: &str) {
     let win = gtk::Window::builder()
-        .title("Action required")
+        .title("Action Required")
         .modal(true)
         .transient_for(parent)
-        .default_width(640)
-        .default_height(240)
+        .default_width(500)
+        .default_height(300)
         .build();
 
     let header = adw::HeaderBar::new();
     win.set_titlebar(Some(&header));
-    let copy_btn = gtk::Button::builder().label("Copy command").build();
-    copy_btn.add_css_class("suggested-action");
-    header.pack_end(&copy_btn);
 
-    let close_btn = gtk::Button::builder().label("Close").build();
-    header.pack_start(&close_btn);
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(16)
+        .margin_start(24)
+        .margin_end(24)
+        .margin_top(16)
+        .margin_bottom(24)
+        .build();
 
     let details_label = gtk::Label::builder()
         .label(details)
         .wrap(true)
         .xalign(0.0)
         .build();
-    details_label.add_css_class("dim-label");
+    content.append(&details_label);
 
     let command_entry = gtk::Entry::builder().text(command).editable(false).build();
     command_entry.add_css_class("monospace");
-
-    let content = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(12)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
-    content.append(&details_label);
     content.append(&command_entry);
 
-    let root = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .build();
-    root.append(&content);
-    win.set_child(Some(&root));
-
-    let cmd = command.to_string();
-    copy_btn.connect_clicked({
-        let command_entry = command_entry.clone();
-        move |_| {
-            command_entry.select_region(0, -1);
-            if let Some(display) = gtk::gdk::Display::default() {
-                display.clipboard().set_text(&cmd);
-                display.primary_clipboard().set_text(&cmd);
-            }
+    let copy_btn = gtk::Button::builder().label("Copy Command").build();
+    copy_btn.add_css_class("suggested-action");
+    let cmd_for_copy = command.to_string();
+    copy_btn.connect_clicked(move |btn| {
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&cmd_for_copy);
+            btn.set_label("Copied!");
         }
     });
+    content.append(&copy_btn);
+
+    win.set_child(Some(&content));
+
+    let close_btn = gtk::Button::builder().label("Close").build();
+    header.pack_end(&close_btn);
     close_btn.connect_clicked({
         let win = win.clone();
         move |_| win.close()
@@ -287,6 +85,7 @@ fn show_action_required_dialog(parent: &impl IsA<gtk::Window>, details: &str, co
     win.present();
 }
 
+#[allow(dead_code)]
 impl PackageDetailsDialog {
     #[allow(clippy::too_many_arguments)]
     pub fn show(
@@ -311,7 +110,6 @@ impl PackageDetailsDialog {
         let header = adw::HeaderBar::new();
         dialog.set_titlebar(Some(&header));
 
-        // Content
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(16)
@@ -321,7 +119,6 @@ impl PackageDetailsDialog {
             .margin_bottom(24)
             .build();
 
-        // Package icon and name header
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(16)
@@ -359,7 +156,6 @@ impl PackageDetailsDialog {
 
         content.append(&header_box);
 
-        // Description (fallback if no enrichment summary)
         let desc_label = gtk::Label::builder()
             .label(&package.description)
             .wrap(true)
@@ -369,13 +165,11 @@ impl PackageDetailsDialog {
         desc_label.add_css_class("dim-label");
         content.append(&desc_label);
 
-        // Enrichment section placeholder (with loading spinner)
         let enrichment_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .build();
 
-        // Loading spinner
         let loading_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -393,7 +187,6 @@ impl PackageDetailsDialog {
 
         content.append(&enrichment_box);
 
-        // Fetch enrichment asynchronously
         let pkg_for_enrich = package.clone();
         let desc_label_clone = desc_label.clone();
         let enrichment_box_clone = enrichment_box.clone();
@@ -402,32 +195,26 @@ impl PackageDetailsDialog {
 
             if let Some(enrichment) = fetch_enrichment(&pkg_for_enrich).await {
                 tracing::debug!("Got enrichment for {}", pkg_for_enrich.name);
-                // Remove loading spinner
                 while let Some(child) = enrichment_box_clone.first_child() {
                     enrichment_box_clone.remove(&child);
                 }
 
-                // Hide original description if we have a summary
                 if enrichment.summary.is_some() {
                     desc_label_clone.set_visible(false);
                 }
 
-                // Build and show enrichment section
-                let section = build_enrichment_section(&enrichment);
+                let section = enrichment::build_section(&enrichment);
                 enrichment_box_clone.append(&section);
             } else {
                 tracing::debug!("No enrichment available for {}", pkg_for_enrich.name);
-                // No enrichment available, just hide the loading spinner
                 while let Some(child) = enrichment_box_clone.first_child() {
                     enrichment_box_clone.remove(&child);
                 }
             }
         });
 
-        // Details group
         let details_group = adw::PreferencesGroup::builder().title("Details").build();
 
-        // Version row
         let version_row = adw::ActionRow::builder()
             .title("Version")
             .subtitle(package.display_version())
@@ -441,28 +228,24 @@ impl PackageDetailsDialog {
         }
         details_group.add(&version_row);
 
-        // Status row
         let status_row = adw::ActionRow::builder()
             .title("Status")
             .subtitle(package.status.to_string())
             .build();
         details_group.add(&status_row);
 
-        // Size row
         let size_row = adw::ActionRow::builder()
             .title("Size")
             .subtitle(package.size_display())
             .build();
         details_group.add(&size_row);
 
-        // Source row
         let source_row = adw::ActionRow::builder()
             .title("Source")
             .subtitle(package.source.description())
             .build();
         details_group.add(&source_row);
 
-        // Ignore Updates row
         let ignore_row = adw::ActionRow::builder()
             .title("Ignore Updates")
             .subtitle("Prevent this package from being updated")
@@ -470,7 +253,6 @@ impl PackageDetailsDialog {
 
         let ignore_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
 
-        // Set initial state
         let pkg_id = package.id();
         let is_ignored = config.borrow().ignored_packages.contains(&pkg_id);
         ignore_switch.set_active(is_ignored);
@@ -496,7 +278,6 @@ impl PackageDetailsDialog {
                 toast_clone.add_toast(t);
             }
             drop(cfg);
-            // Refresh the package list to reflect ignore status change
             if let Some(reload) = reload_packages_ignore.as_ref() {
                 reload();
             }
@@ -508,7 +289,6 @@ impl PackageDetailsDialog {
 
         content.append(&details_group);
 
-        // Changelog expander section
         let changelog_expander = gtk::Expander::builder()
             .label("Release History")
             .expanded(false)
@@ -534,7 +314,6 @@ impl PackageDetailsDialog {
         changelog_expander.set_child(Some(&changelog_content));
         content.append(&changelog_expander);
 
-        // Fetch changelog when expander is opened
         let pkg_for_changelog = package.clone();
         let pm_for_changelog = pm.clone();
         let changelog_content_clone = changelog_content.clone();
@@ -546,7 +325,6 @@ impl PackageDetailsDialog {
             if !exp.is_expanded() {
                 return;
             }
-            // Only fetch once
             if *changelog_fetched_clone.borrow() {
                 return;
             }
@@ -563,12 +341,10 @@ impl PackageDetailsDialog {
                     manager.get_changelog(&pkg).await
                 };
 
-                // Remove spinner
                 spinner.set_visible(false);
 
                 match changelog_result {
                     Ok(Some(changelog)) => {
-                        // Create a scrolled text view for the changelog
                         let scrolled = gtk::ScrolledWindow::builder()
                             .min_content_height(200)
                             .max_content_height(400)
@@ -615,7 +391,6 @@ impl PackageDetailsDialog {
             });
         });
 
-        // Show warning banner for sources with special considerations (e.g., AUR)
         if let Some(warning) = package.source.gui_operation_warning() {
             let info_bar = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
@@ -647,7 +422,6 @@ impl PackageDetailsDialog {
             content.append(&info_bar);
         }
 
-        // Action buttons
         let actions_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
@@ -655,7 +429,6 @@ impl PackageDetailsDialog {
             .margin_top(16)
             .build();
 
-        // Downgrade/Revert (source-specific)
         if matches!(package.source, PackageSource::Snap | PackageSource::Dnf)
             && matches!(
                 package.status,
@@ -792,7 +565,6 @@ impl PackageDetailsDialog {
             actions_box.append(&downgrade_btn);
         }
 
-        // APT downgrade (version picker)
         if matches!(
             package.source,
             PackageSource::Apt
@@ -1248,7 +1020,6 @@ impl PackageDetailsDialog {
                 let command_center = command_center_clone.clone();
                 let reveal_command_center = reveal_command_center_clone.clone();
 
-                // Confirm dialog could be here, but for now direct action
                 btn.set_sensitive(false);
                 btn.set_label("Removing...");
 
@@ -1327,7 +1098,6 @@ impl PackageDetailsDialog {
 
         content.append(&actions_box);
 
-        // Scrolled content
         let scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)

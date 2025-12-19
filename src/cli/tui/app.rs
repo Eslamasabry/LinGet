@@ -68,7 +68,8 @@ impl App {
     pub async fn load_sources(&mut self) {
         let manager = self.pm.lock().await;
         self.available_sources = manager.available_sources().into_iter().collect();
-        self.available_sources.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+        self.available_sources
+            .sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
     }
 
     /// Start loading packages in the background (non-blocking)
@@ -96,9 +97,7 @@ impl App {
                 }
             };
 
-            let _ = tx
-                .send(result.map_err(|e| e.to_string()))
-                .await;
+            let _ = tx.send(result.map_err(|e| e.to_string())).await;
         });
     }
 
@@ -359,7 +358,8 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         KeyCode::Char('/') | KeyCode::Char('s') => {
             app.mode = AppMode::Search;
             app.search_query.clear();
-            app.status_message = String::from("Search: type query, Enter to confirm, Esc to cancel");
+            app.status_message =
+                String::from("Search: type query, Enter to confirm, Esc to cancel");
         }
         KeyCode::Char('u') => {
             app.show_updates_only = !app.show_updates_only;
