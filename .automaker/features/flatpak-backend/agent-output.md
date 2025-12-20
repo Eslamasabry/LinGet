@@ -502,3 +502,53 @@ Input: {
   "file_path": "/home/eslam/Storage/Code/LinGet/src/backend/mod.rs",
   "offset": 350
 }
+
+🔧 Tool: Edit
+Input: {
+  "file_path": "/home/eslam/Storage/Code/LinGet/src/backend/mod.rs",
+  "old_string": "        all_results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));\n        Ok(all_results)\n    }\n}\n\nimpl Default for PackageManager {\n    fn default() -> Self {\n        Self::new()\n    }\n}",
+  "new_string": "        all_results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));\n        Ok(all_results)\n    }\n\n    // =========================================================================\n    // Flatpak-specific methods for sandbox management\n    // =========================================================================\n\n    /// Get detailed Flatpak metadata including sandbox permissions for an application\n    pub async fn get_flatpak_metadata(&self, app_id: &str) -> Result<FlatpakMetadata> {\n        if !self.backends.contains_key(&PackageSource::Flatpak) {\n            anyhow::bail!(\"Flatpak backend is not available\");\n        }\n\n        let backend = FlatpakBackend::new();\n        backend.get_metadata(app_id).await\n    }\n\n    /// Get the permission overrides for a Flatpak application\n    pub async fn get_flatpak_overrides(&self, app_id: &str) -> Result<Vec<FlatpakPermission>> {\n        if !self.backends.contains_key(&PackageSource::Flatpak) {\n            anyhow::bail!(\"Flatpak backend is not available\");\n        }\n\n        let backend = FlatpakBackend::new();\n        backend.get_overrides(app_id).await\n    }\n\n    /// Add a permission override for a Flatpak application\n    pub async fn add_flatpak_override(&self, app_id: &str, permission: &str) -> Result<()> {\n        if !self.backends.contains_key(&PackageSource::Flatpak) {\n            anyhow::bail!(\"Flatpak backend is not available\");\n        }\n\n        let backend = FlatpakBackend::new();\n        backend.add_override(app_id, permission).await\n    }\n\n    /// Remove a permission override for a Flatpak application\n    pub async fn remove_flatpak_override(&self, app_id: &str, permission: &str) -> Result<()> {\n        if !self.backends.contains_key(&PackageSource::Flatpak) {\n            anyhow::bail!(\"Flatpak backend is not available\");\n        }\n\n        let backend = FlatpakBackend::new();\n        backend.remove_override(app_id, permission).await\n    }\n\n    /// Reset all overrides for a Flatpak application\n    pub async fn reset_flatpak_overrides(&self, app_id: &str) -> Result<()> {\n        if !self.backends.contains_key(&PackageSource::Flatpak) {\n            anyhow::bail!(\"Flatpak backend is not available\");\n        }\n\n        let backend = FlatpakBackend::new();\n        backend.reset_overrides(app_id).await\n    }\n\n    /// List all Flatpak runtimes installed on the system\n    pub async fn list_flatpak_runtimes(&self) -> Result<Vec<Package>> {\n        if !self.backends.contains_key(&PackageSource::Flatpak) {\n            anyhow::bail!(\"Flatpak backend is not available\");\n        }\n\n        let backend = FlatpakBackend::new();\n        backend.list_runtimes().await\n    }\n\n    /// Check if a Flatpak application is well sandboxed\n    pub async fn is_flatpak_well_sandboxed(&self, app_id: &str) -> Result<bool> {\n        if !self.backends.contains_key(&PackageSource::Flatpak) {\n            anyhow::bail!(\"Flatpak backend is not available\");\n        }\n\n        let backend = FlatpakBackend::new();\n        backend.is_well_sandboxed(app_id).await\n    }\n}\n\nimpl Default for PackageManager {\n    fn default() -> Self {\n        Self::new()\n    }\n}"
+}
+
+Now let me update the todo list and add a CLI command for showing Flatpak permissions. First, let me check the existing CLI structure:
+
+🔧 Tool: TodoWrite
+Input: {
+  "todos": [
+    {
+      "content": "Add FlatpakMetadata struct to models for sandbox permissions",
+      "status": "completed",
+      "activeForm": "Adding FlatpakMetadata struct to models"
+    },
+    {
+      "content": "Enhance Flatpak backend with sandbox permissions detection",
+      "status": "completed",
+      "activeForm": "Enhancing Flatpak backend with sandbox detection"
+    },
+    {
+      "content": "Add method to get app permissions and runtime info",
+      "status": "completed",
+      "activeForm": "Adding method for app permissions"
+    },
+    {
+      "content": "Update Package model to include Flatpak-specific metadata",
+      "status": "completed",
+      "activeForm": "Updating Package model"
+    },
+    {
+      "content": "Add CLI command to show Flatpak permissions",
+      "status": "in_progress",
+      "activeForm": "Adding CLI command for permissions"
+    },
+    {
+      "content": "Update UI to display sandbox information",
+      "status": "pending",
+      "activeForm": "Updating UI for sandbox display"
+    },
+    {
+      "content": "Add tests for Flatpak sandbox functionality",
+      "status": "pending",
+      "activeForm": "Adding tests for Flatpak sandbox"
+    }
+  ]
+}

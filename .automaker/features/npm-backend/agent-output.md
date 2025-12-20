@@ -388,3 +388,54 @@ Input: {
   "old_string": "    async fn list_installed(&self) -> Result<Vec<Package>> {\n        let output = Command::new(\"npm\")\n            .args([\"list\", \"-g\", \"--depth=0\", \"--json\"])\n            .stdout(Stdio::piped())\n            .stderr(Stdio::piped())\n            .output()\n            .await\n            .context(\"Failed to list npm packages\")?;\n\n        let stdout = String::from_utf8_lossy(&output.stdout);\n        let mut packages = Vec::new();\n\n        if let Ok(parsed) = serde_json::from_str::<NpmListOutput>(&stdout) {\n            if let Some(deps) = parsed.dependencies {\n                for (name, info) in deps {\n                    packages.push(Package {\n                        name,\n                        version: info.version.unwrap_or_default(),\n                        available_version: None,\n                        description: String::new(),\n                        source: PackageSource::Npm,\n                        status: PackageStatus::Installed,\n                        size: None,\n                        homepage: None,\n                        license: None,\n                        maintainer: None,\n                        dependencies: Vec::new(),\n                        install_date: None,\n                        enrichment: None,\n                    });\n                }\n            }\n        }\n\n        Ok(packages)\n    }",
   "new_string": "    async fn list_installed(&self) -> Result<Vec<Package>> {\n        let output = Command::new(\"npm\")\n            .args([\"list\", \"-g\", \"--depth=0\", \"--json\"])\n            .stdout(Stdio::piped())\n            .stderr(Stdio::piped())\n            .output()\n            .await\n            .context(\"Failed to list npm packages\")?;\n\n        let stdout = String::from_utf8_lossy(&output.stdout);\n        let mut packages = Vec::new();\n\n        if let Ok(parsed) = serde_json::from_str::<NpmListOutput>(&stdout) {\n            if let Some(deps) = parsed.dependencies {\n                for (name, info) in deps {\n                    packages.push(Package {\n                        name,\n                        version: info.version.unwrap_or_default(),\n                        available_version: None,\n                        description: String::new(),\n                        source: PackageSource::Npm,\n                        status: PackageStatus::Installed,\n                        size: None,\n                        homepage: None,\n                        license: None,\n                        maintainer: None,\n                        dependencies: Vec::new(),\n                        install_date: None,\n                        enrichment: None,\n                    });\n                }\n            }\n        }\n\n        // Enrich packages with metadata from npm registry API\n        // We do this in parallel for better performance\n        let enrichment_futures: Vec<_> = packages\n            .iter()\n            .map(|pkg| self.fetch_package_info(&pkg.name))\n            .collect();\n\n        let enrichments = futures::future::join_all(enrichment_futures).await;\n\n        for (pkg, info_opt) in packages.iter_mut().zip(enrichments.into_iter()) {\n            if let Some(info) = info_opt {\n                // Extract description\n                if let Some(ref desc) = info.description {\n                    pkg.description = desc.clone();\n                }\n\n                // Extract homepage\n                pkg.homepage = info.homepage.clone().or_else(|| {\n                    info.repository.as_ref().and_then(|r| r.url())\n                });\n\n                // Extract license\n                pkg.license = info.license.as_ref().map(|l| l.name());\n\n                // Extract maintainer (first one or author)\n                pkg.maintainer = info.author.as_ref().map(|a| a.name()).or_else(|| {\n                    info.maintainers\n                        .as_ref()\n                        .and_then(|m| m.first())\n                        .and_then(|m| m.name.clone())\n                });\n\n                // Extract size from latest version\n                let latest_version = info.dist_tags.as_ref().and_then(|dt| dt.latest.clone());\n                if let Some(ref latest) = latest_version {\n                    if let Some(version_info) = info.versions.as_ref().and_then(|vs| vs.get(latest)) {\n                        pkg.size = version_info.dist.as_ref().and_then(|d| d.unpacked_size);\n                    }\n                }\n\n                // Add enrichment\n                pkg.enrichment = Some(Self::create_enrichment(&info));\n            }\n        }\n\n        Ok(packages)\n    }"
 }
+
+🔧 Tool: TodoWrite
+Input: {
+  "todos": [
+    {
+      "content": "Analyze existing npm.rs implementation gaps",
+      "status": "completed",
+      "activeForm": "Analyzing existing npm.rs implementation gaps"
+    },
+    {
+      "content": "Add HTTP client for npm registry API integration",
+      "status": "completed",
+      "activeForm": "Adding HTTP client for npm registry API integration"
+    },
+    {
+      "content": "Add npm registry API data structures",
+      "status": "completed",
+      "activeForm": "Adding npm registry API data structures"
+    },
+    {
+      "content": "Enhance list_installed with enrichment",
+      "status": "completed",
+      "activeForm": "Enhancing list_installed with enrichment"
+    },
+    {
+      "content": "Enhance check_updates with API integration",
+      "status": "in_progress",
+      "activeForm": "Enhancing check_updates with API integration"
+    },
+    {
+      "content": "Add changelog support via npm registry",
+      "status": "pending",
+      "activeForm": "Adding changelog support via npm registry"
+    },
+    {
+      "content": "Improve install/remove/update error handling",
+      "status": "pending",
+      "activeForm": "Improving install/remove/update error handling"
+    },
+    {
+      "content": "Enhance search with registry enrichment",
+      "status": "pending",
+      "activeForm": "Enhancing search with registry enrichment"
+    },
+    {
+      "content": "Add unit tests for the npm backend",
+      "status": "pending",
+      "activeForm": "Adding unit tests for the npm backend"
+    }
+  ]
+}

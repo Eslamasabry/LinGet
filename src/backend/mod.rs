@@ -355,6 +355,80 @@ impl PackageManager {
         all_results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         Ok(all_results)
     }
+
+    // =========================================================================
+    // Flatpak-specific methods for sandbox management
+    // =========================================================================
+
+    /// Get detailed Flatpak metadata including sandbox permissions for an application
+    pub async fn get_flatpak_metadata(&self, app_id: &str) -> Result<FlatpakMetadata> {
+        if !self.backends.contains_key(&PackageSource::Flatpak) {
+            anyhow::bail!("Flatpak backend is not available");
+        }
+
+        let backend = FlatpakBackend::new();
+        backend.get_metadata(app_id).await
+    }
+
+    /// Get the permission overrides for a Flatpak application
+    pub async fn get_flatpak_overrides(&self, app_id: &str) -> Result<Vec<FlatpakPermission>> {
+        if !self.backends.contains_key(&PackageSource::Flatpak) {
+            anyhow::bail!("Flatpak backend is not available");
+        }
+
+        let backend = FlatpakBackend::new();
+        backend.get_overrides(app_id).await
+    }
+
+    /// Add a permission override for a Flatpak application
+    pub async fn add_flatpak_override(&self, app_id: &str, permission: &str) -> Result<()> {
+        if !self.backends.contains_key(&PackageSource::Flatpak) {
+            anyhow::bail!("Flatpak backend is not available");
+        }
+
+        let backend = FlatpakBackend::new();
+        backend.add_override(app_id, permission).await
+    }
+
+    /// Remove a permission override for a Flatpak application
+    pub async fn remove_flatpak_override(&self, app_id: &str, permission: &str) -> Result<()> {
+        if !self.backends.contains_key(&PackageSource::Flatpak) {
+            anyhow::bail!("Flatpak backend is not available");
+        }
+
+        let backend = FlatpakBackend::new();
+        backend.remove_override(app_id, permission).await
+    }
+
+    /// Reset all overrides for a Flatpak application
+    pub async fn reset_flatpak_overrides(&self, app_id: &str) -> Result<()> {
+        if !self.backends.contains_key(&PackageSource::Flatpak) {
+            anyhow::bail!("Flatpak backend is not available");
+        }
+
+        let backend = FlatpakBackend::new();
+        backend.reset_overrides(app_id).await
+    }
+
+    /// List all Flatpak runtimes installed on the system
+    pub async fn list_flatpak_runtimes(&self) -> Result<Vec<Package>> {
+        if !self.backends.contains_key(&PackageSource::Flatpak) {
+            anyhow::bail!("Flatpak backend is not available");
+        }
+
+        let backend = FlatpakBackend::new();
+        backend.list_runtimes().await
+    }
+
+    /// Check if a Flatpak application is well sandboxed
+    pub async fn is_flatpak_well_sandboxed(&self, app_id: &str) -> Result<bool> {
+        if !self.backends.contains_key(&PackageSource::Flatpak) {
+            anyhow::bail!("Flatpak backend is not available");
+        }
+
+        let backend = FlatpakBackend::new();
+        backend.is_well_sandboxed(app_id).await
+    }
 }
 
 impl Default for PackageManager {
