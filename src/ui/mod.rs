@@ -16,6 +16,7 @@ pub mod sidebar;
 mod skeleton;
 mod state;
 mod tray;
+mod utils;
 pub mod widgets;
 mod window;
 
@@ -26,6 +27,7 @@ pub use empty_state::EmptyState;
 pub use notifications::notify_updates_available;
 pub use onboarding::OnboardingWindow;
 pub use skeleton::SkeletonList;
+pub use utils::{parse_suggestion, ErrorDisplay, ErrorSeverity};
 
 pub use package_details::PackageDetailsPanel;
 pub use package_row::PackageRow;

@@ -206,7 +206,7 @@ pub async fn run(
                 writer.success(&format!("Successfully updated {}", package.name));
             }
             Err(e) => {
-                writer.error(&format!("Failed to update {}: {}", package.name, e));
+                writer.anyhow_error(&e);
                 return Err(e);
             }
         }

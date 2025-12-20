@@ -34,7 +34,7 @@ pub use npm::NpmBackend;
 pub use pacman::PacmanBackend;
 pub use pip::PipBackend;
 pub use pipx::PipxBackend;
-pub use pkexec::{run_pkexec, Suggest, SUGGEST_PREFIX};
+pub use pkexec::{run_command, run_pkexec, Suggest, SUGGEST_PREFIX};
 pub use providers::{detect_available_providers, detect_provider, detect_providers, ProviderStatus};
 pub use snap::SnapBackend;
 pub use traits::*;
@@ -43,6 +43,7 @@ pub use zypper::ZypperBackend;
 use crate::models::{FlatpakMetadata, FlatpakPermission, Package, PackageSource, Repository};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Manager that coordinates all package backends
 pub struct PackageManager {
@@ -52,62 +53,44 @@ pub struct PackageManager {
 
 impl PackageManager {
     pub fn new() -> Self {
+        info!("Initializing PackageManager, detecting available backends");
         let mut backends: HashMap<PackageSource, Box<dyn PackageBackend>> = HashMap::new();
 
-        // Add available backends
-        if AptBackend::is_available() {
-            backends.insert(PackageSource::Apt, Box::new(AptBackend::new()));
-        }
-        if DnfBackend::is_available() {
-            backends.insert(PackageSource::Dnf, Box::new(DnfBackend::new()));
-        }
-        if PacmanBackend::is_available() {
-            backends.insert(PackageSource::Pacman, Box::new(PacmanBackend::new()));
-        }
-        if ZypperBackend::is_available() {
-            backends.insert(PackageSource::Zypper, Box::new(ZypperBackend::new()));
-        }
-        if FlatpakBackend::is_available() {
-            backends.insert(PackageSource::Flatpak, Box::new(FlatpakBackend::new()));
-        }
-        if SnapBackend::is_available() {
-            backends.insert(PackageSource::Snap, Box::new(SnapBackend::new()));
-        }
-        if NpmBackend::is_available() {
-            backends.insert(PackageSource::Npm, Box::new(NpmBackend::new()));
-        }
-        if PipBackend::is_available() {
-            backends.insert(PackageSource::Pip, Box::new(PipBackend::new()));
-        }
-        if PipxBackend::is_available() {
-            backends.insert(PackageSource::Pipx, Box::new(PipxBackend::new()));
-        }
-        if CargoBackend::is_available() {
-            backends.insert(PackageSource::Cargo, Box::new(CargoBackend::new()));
-        }
-        if BrewBackend::is_available() {
-            backends.insert(PackageSource::Brew, Box::new(BrewBackend::new()));
-        }
-        if AurBackend::is_available() {
-            backends.insert(PackageSource::Aur, Box::new(AurBackend::new()));
-        }
-        if CondaBackend::is_available() {
-            backends.insert(PackageSource::Conda, Box::new(CondaBackend::new()));
-        }
-        if MambaBackend::is_available() {
-            backends.insert(PackageSource::Mamba, Box::new(MambaBackend::new()));
-        }
-        if DartBackend::is_available() {
-            backends.insert(PackageSource::Dart, Box::new(DartBackend::new()));
-        }
-        if DebBackend::is_available() {
-            backends.insert(PackageSource::Deb, Box::new(DebBackend::new()));
-        }
-        if AppImageBackend::is_available() {
-            backends.insert(PackageSource::AppImage, Box::new(AppImageBackend::new()));
-        }
+        // Add available backends with logging
+        let mut check_backend = |source: PackageSource, available: bool, backend: Box<dyn PackageBackend>| {
+            if available {
+                debug!(source = ?source, "Backend available");
+                backends.insert(source, backend);
+            } else {
+                debug!(source = ?source, "Backend not available");
+            }
+        };
+
+        check_backend(PackageSource::Apt, AptBackend::is_available(), Box::new(AptBackend::new()));
+        check_backend(PackageSource::Dnf, DnfBackend::is_available(), Box::new(DnfBackend::new()));
+        check_backend(PackageSource::Pacman, PacmanBackend::is_available(), Box::new(PacmanBackend::new()));
+        check_backend(PackageSource::Zypper, ZypperBackend::is_available(), Box::new(ZypperBackend::new()));
+        check_backend(PackageSource::Flatpak, FlatpakBackend::is_available(), Box::new(FlatpakBackend::new()));
+        check_backend(PackageSource::Snap, SnapBackend::is_available(), Box::new(SnapBackend::new()));
+        check_backend(PackageSource::Npm, NpmBackend::is_available(), Box::new(NpmBackend::new()));
+        check_backend(PackageSource::Pip, PipBackend::is_available(), Box::new(PipBackend::new()));
+        check_backend(PackageSource::Pipx, PipxBackend::is_available(), Box::new(PipxBackend::new()));
+        check_backend(PackageSource::Cargo, CargoBackend::is_available(), Box::new(CargoBackend::new()));
+        check_backend(PackageSource::Brew, BrewBackend::is_available(), Box::new(BrewBackend::new()));
+        check_backend(PackageSource::Aur, AurBackend::is_available(), Box::new(AurBackend::new()));
+        check_backend(PackageSource::Conda, CondaBackend::is_available(), Box::new(CondaBackend::new()));
+        check_backend(PackageSource::Mamba, MambaBackend::is_available(), Box::new(MambaBackend::new()));
+        check_backend(PackageSource::Dart, DartBackend::is_available(), Box::new(DartBackend::new()));
+        check_backend(PackageSource::Deb, DebBackend::is_available(), Box::new(DebBackend::new()));
+        check_backend(PackageSource::AppImage, AppImageBackend::is_available(), Box::new(AppImageBackend::new()));
 
         let enabled_sources = backends.keys().copied().collect();
+        info!(
+            available_backends = backends.len(),
+            backends = ?backends.keys().collect::<Vec<_>>(),
+            "PackageManager initialized"
+        );
+
         Self {
             backends,
             enabled_sources,
@@ -120,6 +103,10 @@ impl PackageManager {
             .into_iter()
             .filter(|s| self.backends.contains_key(s))
             .collect();
+        debug!(
+            enabled_sources = ?self.enabled_sources,
+            "Updated enabled sources"
+        );
     }
 
     pub fn available_sources(&self) -> HashSet<PackageSource> {
@@ -149,87 +136,176 @@ impl PackageManager {
             .filter(|(source, _)| self.enabled_sources.contains(source))
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn list_all_installed(&self) -> Result<Vec<Package>> {
         use futures::future::join_all;
+
+        let enabled_count = self.enabled_sources.len();
+        debug!(enabled_backends = enabled_count, "Listing installed packages from all enabled backends");
 
         // Load all backends in parallel
         let futures: Vec<_> = self
             .enabled_backends()
-            .map(|(_, backend)| backend.list_installed())
+            .map(|(source, backend)| {
+                let source = *source;
+                async move { (source, backend.list_installed().await) }
+            })
             .collect();
 
         let results = join_all(futures).await;
 
         let mut all_packages = Vec::new();
-        for result in results {
+        let mut success_count = 0;
+        let mut error_count = 0;
+
+        for (source, result) in results {
             match result {
-                Ok(packages) => all_packages.extend(packages),
-                Err(e) => tracing::warn!("Failed to list packages: {}", e),
+                Ok(packages) => {
+                    debug!(source = ?source, package_count = packages.len(), "Listed packages from backend");
+                    success_count += 1;
+                    all_packages.extend(packages);
+                }
+                Err(e) => {
+                    error_count += 1;
+                    warn!(source = ?source, error = %e, "Failed to list packages from backend");
+                }
             }
         }
 
         all_packages.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        info!(
+            total_packages = all_packages.len(),
+            successful_backends = success_count,
+            failed_backends = error_count,
+            "Finished listing installed packages"
+        );
+
         Ok(all_packages)
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub async fn check_all_updates(&self) -> Result<Vec<Package>> {
         use futures::future::join_all;
+
+        debug!("Checking for updates from all enabled backends");
 
         // Check all backends in parallel
         let futures: Vec<_> = self
             .enabled_backends()
-            .map(|(_, backend)| backend.check_updates())
+            .map(|(source, backend)| {
+                let source = *source;
+                async move { (source, backend.check_updates().await) }
+            })
             .collect();
 
         let results = join_all(futures).await;
 
         let mut all_updates = Vec::new();
-        for result in results {
+        let mut success_count = 0;
+        let mut error_count = 0;
+
+        for (source, result) in results {
             match result {
-                Ok(packages) => all_updates.extend(packages),
-                Err(e) => tracing::warn!("Failed to check updates: {}", e),
+                Ok(packages) => {
+                    if !packages.is_empty() {
+                        debug!(source = ?source, update_count = packages.len(), "Found updates");
+                    }
+                    success_count += 1;
+                    all_updates.extend(packages);
+                }
+                Err(e) => {
+                    error_count += 1;
+                    warn!(source = ?source, error = %e, "Failed to check updates from backend");
+                }
             }
         }
+
+        info!(
+            total_updates = all_updates.len(),
+            successful_backends = success_count,
+            failed_backends = error_count,
+            "Finished checking for updates"
+        );
 
         Ok(all_updates)
     }
 
+    #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
     pub async fn install(&self, package: &Package) -> Result<()> {
         Self::validate_package_name(&package.name)?;
         if !self.enabled_sources.contains(&package.source) {
-            anyhow::bail!("{:?} source is disabled", package.source);
+            warn!(source = ?package.source, "Attempted to install from disabled source");
+            anyhow::bail!("{} source is disabled. Enable it in settings to install packages from this source.", package.source);
         }
 
         if let Some(backend) = self.backends.get(&package.source) {
-            backend.install(&package.name).await
+            info!(package = %package.name, source = ?package.source, "Installing package");
+            match backend.install(&package.name).await {
+                Ok(()) => {
+                    info!(package = %package.name, source = ?package.source, "Package installed successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to install package");
+                    Err(e)
+                }
+            }
         } else {
-            anyhow::bail!("No backend available for {:?}", package.source)
+            error!(source = ?package.source, "No backend available for source");
+            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
         }
     }
 
+    #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
     pub async fn remove(&self, package: &Package) -> Result<()> {
         Self::validate_package_name(&package.name)?;
         if !self.enabled_sources.contains(&package.source) {
-            anyhow::bail!("{:?} source is disabled", package.source);
+            warn!(source = ?package.source, "Attempted to remove from disabled source");
+            anyhow::bail!("{} source is disabled. Enable it in settings to manage packages from this source.", package.source);
         }
 
         if let Some(backend) = self.backends.get(&package.source) {
-            backend.remove(&package.name).await
+            info!(package = %package.name, source = ?package.source, "Removing package");
+            match backend.remove(&package.name).await {
+                Ok(()) => {
+                    info!(package = %package.name, source = ?package.source, "Package removed successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to remove package");
+                    Err(e)
+                }
+            }
         } else {
-            anyhow::bail!("No backend available for {:?}", package.source)
+            error!(source = ?package.source, "No backend available for source");
+            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
         }
     }
 
+    #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
     pub async fn update(&self, package: &Package) -> Result<()> {
         Self::validate_package_name(&package.name)?;
         if !self.enabled_sources.contains(&package.source) {
-            anyhow::bail!("{:?} source is disabled", package.source);
+            warn!(source = ?package.source, "Attempted to update from disabled source");
+            anyhow::bail!("{} source is disabled. Enable it in settings to manage packages from this source.", package.source);
         }
 
         if let Some(backend) = self.backends.get(&package.source) {
-            backend.update(&package.name).await
+            info!(package = %package.name, source = ?package.source, "Updating package");
+            match backend.update(&package.name).await {
+                Ok(()) => {
+                    info!(package = %package.name, source = ?package.source, "Package updated successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to update package");
+                    Err(e)
+                }
+            }
         } else {
-            anyhow::bail!("No backend available for {:?}", package.source)
+            error!(source = ?package.source, "No backend available for source");
+            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
         }
     }
 
@@ -334,25 +410,52 @@ impl PackageManager {
         }
     }
 
+    #[instrument(skip(self), fields(query = %query))]
     pub async fn search(&self, query: &str) -> Result<Vec<Package>> {
         use futures::future::join_all;
 
+        debug!(query = %query, "Searching across all enabled backends");
+
         let futures: Vec<_> = self
             .enabled_backends()
-            .map(|(_, backend)| backend.search(query))
+            .map(|(source, backend)| {
+                let source = *source;
+                async move { (source, backend.search(query).await) }
+            })
             .collect();
 
         let results = join_all(futures).await;
 
         let mut all_results = Vec::new();
-        for result in results {
+        let mut success_count = 0;
+        let mut error_count = 0;
+
+        for (source, result) in results {
             match result {
-                Ok(packages) => all_results.extend(packages),
-                Err(e) => tracing::warn!("Search failed: {}", e),
+                Ok(packages) => {
+                    if !packages.is_empty() {
+                        debug!(source = ?source, result_count = packages.len(), "Search results from backend");
+                    }
+                    success_count += 1;
+                    all_results.extend(packages);
+                }
+                Err(e) => {
+                    error_count += 1;
+                    warn!(source = ?source, error = %e, "Search failed for backend");
+                }
             }
         }
 
         all_results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        info!(
+            query = %query,
+            total_results = all_results.len(),
+            successful_backends = success_count,
+            failed_backends = error_count,
+            "Search completed"
+        );
+
         Ok(all_results)
     }
 

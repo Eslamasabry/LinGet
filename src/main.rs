@@ -119,7 +119,11 @@ fn run_cli(runtime: tokio::runtime::Runtime) {
     let result = runtime.block_on(cli::run(cli));
 
     if let Err(e) = result {
-        eprintln!("Error: {}", e);
+        // Log the error with tracing for debugging
+        tracing::error!(error = %e, "CLI command failed");
+
+        // The error display is already handled by the command itself
+        // using the OutputWriter, so we just need to exit with error code
         std::process::exit(1);
     }
 }

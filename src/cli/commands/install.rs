@@ -169,7 +169,7 @@ pub async fn run(
             Ok(())
         }
         Err(e) => {
-            writer.error(&format!("Failed to install {}: {}", package.name, e));
+            writer.anyhow_error(&e);
             Err(e)
         }
     }
