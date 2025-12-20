@@ -1,5 +1,6 @@
 pub mod enrichment;
 pub mod panel;
+pub mod sandbox;
 
 pub use panel::PackageDetailsPanel;
 

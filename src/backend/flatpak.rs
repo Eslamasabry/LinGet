@@ -647,3 +647,233 @@ impl PackageBackend for FlatpakBackend {
         Ok(packages)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{PermissionCategory, PrivacyLevel, SandboxRating};
+
+    #[test]
+    fn test_parse_human_size() {
+        assert_eq!(parse_human_size("1.0 GB"), Some(1024 * 1024 * 1024));
+        assert_eq!(parse_human_size("500 MB"), Some(500 * 1024 * 1024));
+        assert_eq!(parse_human_size("100 kB"), Some(100 * 1024));
+        assert_eq!(parse_human_size("1024 bytes"), Some(1024));
+        assert_eq!(parse_human_size("invalid"), None);
+        assert_eq!(parse_human_size(""), None);
+    }
+
+    #[test]
+    fn test_parse_runtime_ref() {
+        let runtime = FlatpakBackend::parse_runtime_ref("org.gnome.Platform/x86_64/45");
+        assert!(runtime.is_some());
+        let rt = runtime.unwrap();
+        assert_eq!(rt.id, "org.gnome.Platform");
+        assert_eq!(rt.version, "45");
+    }
+
+    #[test]
+    fn test_parse_metadata_basic() {
+        let metadata_content = r#"
+[Application]
+runtime=org.gnome.Platform/x86_64/45
+sdk=org.gnome.Sdk/x86_64/45
+
+[Context]
+shared=network;ipc;
+sockets=x11;wayland;pulseaudio;
+devices=dri;
+filesystems=host;xdg-download;
+"#;
+        let metadata = FlatpakBackend::parse_metadata(metadata_content, "com.example.App");
+
+        assert_eq!(metadata.app_id, "com.example.App");
+        assert!(metadata.runtime.is_some());
+        assert_eq!(metadata.runtime.as_ref().unwrap().id, "org.gnome.Platform");
+        assert!(!metadata.permissions.is_empty());
+
+        // Check that we have network permission
+        assert!(metadata.has_network_access());
+
+        // Check that we have filesystem access
+        assert!(metadata.has_full_filesystem_access());
+    }
+
+    #[test]
+    fn test_parse_metadata_with_dbus() {
+        let metadata_content = r#"
+[Application]
+runtime=org.gnome.Platform/x86_64/45
+
+[Context]
+shared=network;
+
+[Session Bus Policy]
+org.freedesktop.Notifications=talk
+org.gtk.vfs.*=talk
+org.freedesktop.secrets=talk
+"#;
+        let metadata = FlatpakBackend::parse_metadata(metadata_content, "com.example.App");
+
+        // Should have D-Bus permissions
+        let dbus_perms: Vec<_> = metadata
+            .permissions
+            .iter()
+            .filter(|p| p.category == PermissionCategory::SessionBus)
+            .collect();
+
+        assert!(!dbus_perms.is_empty());
+    }
+
+    #[test]
+    fn test_permission_from_raw() {
+        // Test filesystem permission
+        let perm = FlatpakPermission::from_raw(PermissionCategory::Filesystem, "host");
+        assert_eq!(perm.value, "host");
+        assert!(!perm.negated);
+        assert_eq!(perm.privacy_level, PrivacyLevel::High);
+
+        // Test negated permission
+        let neg_perm = FlatpakPermission::from_raw(PermissionCategory::Filesystem, "!host");
+        assert!(neg_perm.negated);
+
+        // Test socket permission
+        let socket_perm = FlatpakPermission::from_raw(PermissionCategory::Socket, "x11");
+        assert_eq!(socket_perm.category, PermissionCategory::Socket);
+        assert_eq!(socket_perm.privacy_level, PrivacyLevel::Medium);
+    }
+
+    #[test]
+    fn test_sandbox_summary_ratings() {
+        // Test strong sandbox (no high-risk permissions)
+        let metadata = FlatpakMetadata {
+            app_id: "com.example.Sandboxed".to_string(),
+            permissions: vec![
+                FlatpakPermission::from_raw(PermissionCategory::Socket, "wayland"),
+                FlatpakPermission::from_raw(PermissionCategory::Device, "dri"),
+            ],
+            ..Default::default()
+        };
+        let summary = metadata.sandbox_summary();
+        assert_eq!(summary.rating, SandboxRating::Strong);
+
+        // Test weak sandbox (full filesystem + network)
+        let weak_metadata = FlatpakMetadata {
+            app_id: "com.example.Weak".to_string(),
+            permissions: vec![
+                FlatpakPermission::from_raw(PermissionCategory::Filesystem, "host"),
+                FlatpakPermission::from_raw(PermissionCategory::Share, "network"),
+            ],
+            ..Default::default()
+        };
+        let weak_summary = weak_metadata.sandbox_summary();
+        assert_eq!(weak_summary.rating, SandboxRating::Weak);
+    }
+
+    #[test]
+    fn test_permissions_by_category() {
+        let metadata = FlatpakMetadata {
+            app_id: "com.example.App".to_string(),
+            permissions: vec![
+                FlatpakPermission::from_raw(PermissionCategory::Filesystem, "home"),
+                FlatpakPermission::from_raw(PermissionCategory::Filesystem, "xdg-download"),
+                FlatpakPermission::from_raw(PermissionCategory::Socket, "x11"),
+                FlatpakPermission::from_raw(PermissionCategory::Device, "dri"),
+            ],
+            ..Default::default()
+        };
+
+        let grouped = metadata.permissions_by_category();
+
+        // Should have 3 categories
+        assert_eq!(grouped.len(), 3);
+
+        // Filesystem should have 2 permissions
+        let fs_group = grouped.iter().find(|(cat, _)| *cat == PermissionCategory::Filesystem);
+        assert!(fs_group.is_some());
+        assert_eq!(fs_group.unwrap().1.len(), 2);
+    }
+
+    #[test]
+    fn test_flatpak_runtime_display() {
+        let runtime = FlatpakRuntime {
+            id: "org.gnome.Platform".to_string(),
+            version: "45".to_string(),
+            branch: "stable".to_string(),
+        };
+
+        assert_eq!(format!("{}", runtime), "org.gnome.Platform/45/stable");
+    }
+
+    #[test]
+    fn test_installation_type_display() {
+        assert_eq!(format!("{}", InstallationType::User), "User");
+        assert_eq!(format!("{}", InstallationType::System), "System");
+    }
+
+    #[test]
+    fn test_privacy_level_ordering() {
+        assert!(PrivacyLevel::Low < PrivacyLevel::Medium);
+        assert!(PrivacyLevel::Medium < PrivacyLevel::High);
+    }
+
+    #[test]
+    fn test_sandbox_rating_ordering() {
+        assert!(SandboxRating::Strong < SandboxRating::Good);
+        assert!(SandboxRating::Good < SandboxRating::Moderate);
+        assert!(SandboxRating::Moderate < SandboxRating::Weak);
+    }
+
+    #[test]
+    fn test_max_privacy_level() {
+        let metadata = FlatpakMetadata {
+            app_id: "com.example.App".to_string(),
+            permissions: vec![
+                FlatpakPermission::from_raw(PermissionCategory::Socket, "wayland"),  // Low
+                FlatpakPermission::from_raw(PermissionCategory::Socket, "x11"),       // Medium
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(metadata.max_privacy_level(), PrivacyLevel::Medium);
+    }
+
+    #[test]
+    fn test_parse_info() {
+        let info_content = r#"
+        Ref: com.example.App/x86_64/stable
+        Origin: flathub
+        Commit: abc123def456
+        Installation: user
+        Arch: x86_64
+        Branch: stable
+        "#;
+
+        let mut metadata = FlatpakMetadata::default();
+        FlatpakBackend::parse_info(info_content, &mut metadata);
+
+        assert_eq!(metadata.remote, Some("flathub".to_string()));
+        assert_eq!(metadata.commit, Some("abc123def456".to_string()));
+        assert_eq!(metadata.installation, InstallationType::User);
+        assert_eq!(metadata.arch, Some("x86_64".to_string()));
+        assert_eq!(metadata.branch, Some("stable".to_string()));
+    }
+
+    #[test]
+    fn test_permission_category_metadata() {
+        // Test icon names
+        assert_eq!(PermissionCategory::Filesystem.icon_name(), "folder-symbolic");
+        assert_eq!(PermissionCategory::Socket.icon_name(), "network-wired-symbolic");
+
+        // Test descriptions
+        assert_eq!(PermissionCategory::Filesystem.description(), "Filesystem Access");
+        assert_eq!(PermissionCategory::Socket.description(), "Socket Access");
+    }
+
+    #[test]
+    fn test_flatpak_backend_is_available() {
+        // This will depend on whether flatpak is installed on the test system
+        // At minimum, it shouldn't panic
+        let _ = FlatpakBackend::is_available();
+    }
+}

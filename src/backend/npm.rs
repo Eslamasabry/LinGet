@@ -80,11 +80,11 @@ impl NpmBackend {
             icon_url: None, // npm packages don't have standard icons
             screenshots: Vec::new(),
             categories: Vec::new(), // npm doesn't categorize like other registries
-            developer: info.author.as_ref().map(|a| a.name.clone()),
+            developer: info.author.as_ref().map(|a| a.name()),
             rating: None, // npm doesn't provide ratings
             downloads: None, // Would require separate API call to npm download counts
             summary: info.description.clone(),
-            repository: info.repository.as_ref().and_then(|r| r.url.clone()),
+            repository: info.repository.as_ref().and_then(|r| r.url()),
             keywords,
             last_updated: info.time.as_ref().and_then(|t| t.modified.clone()),
         }
@@ -376,49 +376,143 @@ impl PackageBackend for NpmBackend {
             }
         }
 
+        // Enrich packages with metadata from npm registry
+        let enrichment_futures: Vec<_> = packages
+            .iter()
+            .map(|pkg| self.fetch_package_info(&pkg.name))
+            .collect();
+
+        let enrichments = futures::future::join_all(enrichment_futures).await;
+
+        for (pkg, info_opt) in packages.iter_mut().zip(enrichments.into_iter()) {
+            if let Some(info) = info_opt {
+                if let Some(ref desc) = info.description {
+                    pkg.description.clone_from(desc);
+                }
+                pkg.homepage = info.homepage.clone().or_else(|| {
+                    info.repository.as_ref().and_then(|r| r.url())
+                });
+                pkg.license = info.license.as_ref().map(|l| l.name());
+                pkg.maintainer = info.author.as_ref().map(|a| a.name());
+                pkg.enrichment = Some(Self::create_enrichment(&info));
+            }
+        }
+
         Ok(packages)
     }
 
     async fn install(&self, name: &str) -> Result<()> {
-        let status = Command::new("npm")
+        let output = Command::new("npm")
             .args(["install", "-g", name])
-            .status()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
             .await
-            .context("Failed to install npm package")?;
+            .context("Failed to run npm install")?;
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to install npm package {}", name)
+        if output.status.success() {
+            return Ok(());
         }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let lowered = stderr.to_lowercase();
+
+        // Permission errors
+        if lowered.contains("eacces")
+            || lowered.contains("permission denied")
+            || lowered.contains("access")
+        {
+            anyhow::bail!(
+                "Failed to install npm package '{}'.\n\n{} sudo npm install -g {}\n",
+                name,
+                SUGGEST_PREFIX,
+                name
+            );
+        }
+
+        // Package not found
+        if lowered.contains("404") || lowered.contains("not found") || lowered.contains("e404") {
+            anyhow::bail!(
+                "Package '{}' not found on npm registry. Check the name and try again.",
+                name
+            );
+        }
+
+        // Network errors
+        if lowered.contains("network") || lowered.contains("enotfound") || lowered.contains("etimedout") {
+            anyhow::bail!(
+                "Network error while installing '{}'. Check your internet connection and try again.\n\n{}",
+                name,
+                stderr.lines().take(5).collect::<Vec<_>>().join("\n")
+            );
+        }
+
+        anyhow::bail!("Failed to install npm package '{}': {}", name, stderr.trim())
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
-        let status = Command::new("npm")
+        let output = Command::new("npm")
             .args(["uninstall", "-g", name])
-            .status()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
             .await
-            .context("Failed to remove npm package")?;
+            .context("Failed to run npm uninstall")?;
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to remove npm package {}", name)
+        if output.status.success() {
+            return Ok(());
         }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let lowered = stderr.to_lowercase();
+
+        // Permission errors
+        if lowered.contains("eacces") || lowered.contains("permission") {
+            anyhow::bail!(
+                "Failed to remove npm package '{}'.\n\n{} sudo npm uninstall -g {}\n",
+                name,
+                SUGGEST_PREFIX,
+                name
+            );
+        }
+
+        // Package not installed
+        if lowered.contains("not installed") {
+            anyhow::bail!("Package '{}' is not installed globally.", name);
+        }
+
+        anyhow::bail!("Failed to remove npm package '{}': {}", name, stderr.trim())
     }
 
     async fn update(&self, name: &str) -> Result<()> {
-        let status = Command::new("npm")
-            .args(["update", "-g", name])
-            .status()
+        // npm update -g doesn't work well for specific packages
+        // Use install -g to get the latest version
+        let output = Command::new("npm")
+            .args(["install", "-g", &format!("{}@latest", name)])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
             .await
-            .context("Failed to update npm package")?;
+            .context("Failed to run npm install for update")?;
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to update npm package {}", name)
+        if output.status.success() {
+            return Ok(());
         }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let lowered = stderr.to_lowercase();
+
+        // Permission errors
+        if lowered.contains("eacces") || lowered.contains("permission") {
+            anyhow::bail!(
+                "Failed to update npm package '{}'.\n\n{} sudo npm install -g {}@latest\n",
+                name,
+                SUGGEST_PREFIX,
+                name
+            );
+        }
+
+        anyhow::bail!("Failed to update npm package '{}': {}", name, stderr.trim())
     }
 
     async fn downgrade_to(&self, name: &str, version: &str) -> Result<()> {
@@ -478,6 +572,97 @@ impl PackageBackend for NpmBackend {
         Ok(versions)
     }
 
+    async fn get_changelog(&self, name: &str) -> Result<Option<String>> {
+        // Fetch package info from npm registry
+        let Some(info) = self.fetch_package_info(name).await else {
+            return Ok(None);
+        };
+
+        let mut changelog = String::new();
+        changelog.push_str(&format!("# {} Release History\n\n", name));
+
+        // Add description
+        if let Some(ref desc) = info.description {
+            if !desc.is_empty() {
+                changelog.push_str(&format!("_{}_\n\n", desc));
+            }
+        }
+
+        // Add repository link
+        if let Some(ref repo) = info.repository {
+            if let Some(url) = repo.url() {
+                changelog.push_str(&format!("**Repository:** {}\n", url));
+            }
+        }
+
+        // Add homepage
+        if let Some(ref homepage) = info.homepage {
+            if !homepage.is_empty() {
+                changelog.push_str(&format!("**Homepage:** {}\n", homepage));
+            }
+        }
+
+        // Add license
+        if let Some(ref license) = info.license {
+            let license_name = license.name();
+            if !license_name.is_empty() {
+                changelog.push_str(&format!("**License:** {}\n", license_name));
+            }
+        }
+
+        // Add author/maintainers
+        if let Some(ref author) = info.author {
+            changelog.push_str(&format!("**Author:** {}\n", author.name()));
+        }
+
+        changelog.push_str("\n---\n\n");
+        changelog.push_str("## Version History\n\n");
+
+        // Get version timeline from time field
+        if let Some(ref time) = info.time {
+            // Collect versions with their release dates
+            let mut version_dates: Vec<(&str, &str)> = time
+                .versions
+                .iter()
+                .filter(|(k, _)| *k != "created" && *k != "modified")
+                .map(|(v, d)| (v.as_str(), d.as_str()))
+                .collect();
+
+            // Sort by date (newest first)
+            version_dates.sort_by(|a, b| b.1.cmp(a.1));
+
+            // Get the latest version tag
+            let latest_version = info.dist_tags.as_ref().and_then(|dt| dt.latest.as_ref());
+
+            for (version, date) in version_dates.iter().take(25) {
+                let date_part = date.split('T').next().unwrap_or(date);
+                let is_latest = latest_version.is_some_and(|lv| lv == *version);
+
+                if is_latest {
+                    changelog.push_str(&format!("### v{} (Latest)\n", version));
+                } else {
+                    changelog.push_str(&format!("### v{}\n", version));
+                }
+                changelog.push_str(&format!("*Released: {}*\n\n", date_part));
+            }
+
+            if version_dates.len() > 25 {
+                changelog.push_str(&format!(
+                    "\n*...and {} more versions on npm*\n",
+                    version_dates.len() - 25
+                ));
+            }
+        }
+
+        // Link to npm page
+        changelog.push_str(&format!(
+            "\n---\n\n[View on npm](https://www.npmjs.com/package/{})\n",
+            name
+        ));
+
+        Ok(Some(changelog))
+    }
+
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
         let output = Command::new("npm")
             .args(["search", query, "--json", "--long"])
@@ -517,6 +702,143 @@ impl PackageBackend for NpmBackend {
             }
         }
 
+        // Enrich first 10 search results with additional metadata
+        let enrichment_futures: Vec<_> = packages
+            .iter()
+            .take(10)
+            .map(|pkg| self.fetch_package_info(&pkg.name))
+            .collect();
+
+        let enrichments = futures::future::join_all(enrichment_futures).await;
+
+        for (pkg, info_opt) in packages.iter_mut().take(10).zip(enrichments.into_iter()) {
+            if let Some(info) = info_opt {
+                // Update description if empty or shorter
+                if let Some(ref desc) = info.description {
+                    if pkg.description.is_empty() || pkg.description.len() < desc.len() {
+                        pkg.description.clone_from(desc);
+                    }
+                }
+                pkg.homepage = info.homepage.clone().or_else(|| {
+                    info.repository.as_ref().and_then(|r| r.url())
+                });
+                pkg.license = info.license.as_ref().map(|l| l.name());
+                pkg.maintainer = info.author.as_ref().map(|a| a.name());
+                pkg.enrichment = Some(Self::create_enrichment(&info));
+            }
+        }
+
         Ok(packages)
+    }
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Format download count for display
+#[allow(dead_code)]
+fn format_downloads(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}K", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_comparison() {
+        // Basic version comparisons
+        assert!(NpmBackend::is_newer_version("1.0.1", "1.0.0"));
+        assert!(NpmBackend::is_newer_version("1.1.0", "1.0.0"));
+        assert!(NpmBackend::is_newer_version("2.0.0", "1.9.9"));
+
+        // Equal versions
+        assert!(!NpmBackend::is_newer_version("1.0.0", "1.0.0"));
+
+        // Older versions
+        assert!(!NpmBackend::is_newer_version("1.0.0", "1.0.1"));
+        assert!(!NpmBackend::is_newer_version("1.0.0", "2.0.0"));
+
+        // Pre-release versions
+        assert!(NpmBackend::is_newer_version("1.0.0-2", "1.0.0-1"));
+        assert!(NpmBackend::is_newer_version("1.0.1-alpha", "1.0.0"));
+
+        // Build metadata
+        assert!(NpmBackend::is_newer_version("1.0.1+build", "1.0.0+build"));
+
+        // Different length versions
+        assert!(NpmBackend::is_newer_version("1.0.0.1", "1.0.0"));
+        assert!(!NpmBackend::is_newer_version("1.0.0", "1.0.0.1"));
+    }
+
+    #[test]
+    fn test_npm_author_parsing() {
+        // Object format
+        let author_obj = NpmAuthor::Object {
+            name: "John Doe".to_string(),
+            email: Some("john@example.com".to_string()),
+            url: None,
+        };
+        assert_eq!(author_obj.name(), "John Doe");
+
+        // String format
+        let author_str = NpmAuthor::String("Jane Doe <jane@example.com>".to_string());
+        assert_eq!(author_str.name(), "Jane Doe");
+
+        // Simple string
+        let author_simple = NpmAuthor::String("Bob Smith".to_string());
+        assert_eq!(author_simple.name(), "Bob Smith");
+    }
+
+    #[test]
+    fn test_npm_repository_url_parsing() {
+        // Object format with git+ prefix
+        let repo_obj = NpmRepository::Object {
+            url: Some("git+https://github.com/user/repo.git".to_string()),
+            _type: Some("git".to_string()),
+        };
+        assert_eq!(
+            repo_obj.url(),
+            Some("https://github.com/user/repo".to_string())
+        );
+
+        // String format
+        let repo_str = NpmRepository::String("https://github.com/user/repo".to_string());
+        assert_eq!(
+            repo_str.url(),
+            Some("https://github.com/user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_npm_license_parsing() {
+        // Object format
+        let license_obj = NpmLicense::Object {
+            license_type: Some("MIT".to_string()),
+        };
+        assert_eq!(license_obj.name(), "MIT");
+
+        // String format
+        let license_str = NpmLicense::String("Apache-2.0".to_string());
+        assert_eq!(license_str.name(), "Apache-2.0");
+    }
+
+    #[test]
+    fn test_format_downloads() {
+        assert_eq!(format_downloads(500), "500");
+        assert_eq!(format_downloads(1500), "1.5K");
+        assert_eq!(format_downloads(1_500_000), "1.5M");
+        assert_eq!(format_downloads(0), "0");
     }
 }

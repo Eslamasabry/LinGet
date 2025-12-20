@@ -1,6 +1,6 @@
 use crate::backend::PackageManager;
 use crate::models::{fetch_enrichment, Config, Package, PackageSource, PackageStatus};
-use crate::ui::package_details::enrichment;
+use crate::ui::package_details::{enrichment, sandbox};
 use crate::ui::{CommandCenter, CommandEventKind, PackageOp, RetrySpec};
 use gtk4::prelude::*;
 use gtk4::{self as gtk, glib};
@@ -317,6 +317,12 @@ impl PackageDetailsPanel {
         details_group.add(&ignore_row);
 
         content.append(&details_group);
+
+        // Add sandbox permissions section for Flatpak packages
+        if package.source == PackageSource::Flatpak {
+            let sandbox_section = sandbox::build_sandbox_section(pm.clone(), package.name.clone());
+            content.append(&sandbox_section);
+        }
 
         let changelog_expander = gtk::Expander::builder()
             .label("Release History")

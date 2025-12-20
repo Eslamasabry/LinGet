@@ -135,6 +135,23 @@ pub enum Commands {
         shell: clap_complete::Shell,
     },
 
+    /// Show Flatpak sandbox permissions for an application
+    Permissions {
+        /// Flatpak application ID
+        app_id: String,
+
+        /// Show only overrides
+        #[arg(short, long)]
+        overrides: bool,
+
+        /// Reset all overrides for this app
+        #[arg(long)]
+        reset: bool,
+    },
+
+    /// List Flatpak runtimes installed on the system
+    Runtimes,
+
     /// Launch interactive TUI mode
     Tui,
 
@@ -270,6 +287,21 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             commands::completions::run(shell);
             Ok(())
         }
+        Commands::Permissions {
+            app_id,
+            overrides,
+            reset,
+        } => {
+            let action = if reset {
+                commands::permissions::PermissionsAction::Reset
+            } else if overrides {
+                commands::permissions::PermissionsAction::Overrides
+            } else {
+                commands::permissions::PermissionsAction::Show
+            };
+            commands::permissions::run(pm, &app_id, action, &writer).await
+        }
+        Commands::Runtimes => commands::permissions::list_runtimes(pm, &writer).await,
         Commands::Tui => tui::run().await,
         Commands::Gui => {
             // This is handled in main.rs - should not reach here

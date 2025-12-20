@@ -19,7 +19,7 @@ impl fmt::Display for FlatpakRuntime {
 }
 
 /// Represents a Flatpak permission category
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum PermissionCategory {
     /// Filesystem access permissions
     Filesystem,
@@ -121,116 +121,116 @@ impl FlatpakPermission {
 
         match category {
             PermissionCategory::Filesystem => {
-                let (desc, level) = match value {
+                let (desc, level): (String, PrivacyLevel) = match value {
                     "host" => (
-                        "Full access to all files",
+                        "Full access to all files".to_string(),
                         PrivacyLevel::High,
                     ),
                     "host-os" => (
-                        "Access to host operating system files",
+                        "Access to host operating system files".to_string(),
                         PrivacyLevel::High,
                     ),
                     "host-etc" => (
-                        "Access to /etc directory",
+                        "Access to /etc directory".to_string(),
                         PrivacyLevel::Medium,
                     ),
                     "home" => (
-                        "Full access to home directory",
+                        "Full access to home directory".to_string(),
                         PrivacyLevel::High,
                     ),
                     "xdg-desktop" => (
-                        "Access to Desktop folder",
+                        "Access to Desktop folder".to_string(),
                         PrivacyLevel::Medium,
                     ),
                     "xdg-documents" => (
-                        "Access to Documents folder",
+                        "Access to Documents folder".to_string(),
                         PrivacyLevel::Medium,
                     ),
                     "xdg-download" => (
-                        "Access to Downloads folder",
+                        "Access to Downloads folder".to_string(),
                         PrivacyLevel::Medium,
                     ),
                     "xdg-music" => (
-                        "Access to Music folder",
+                        "Access to Music folder".to_string(),
                         PrivacyLevel::Low,
                     ),
                     "xdg-pictures" => (
-                        "Access to Pictures folder",
+                        "Access to Pictures folder".to_string(),
                         PrivacyLevel::Medium,
                     ),
                     "xdg-videos" => (
-                        "Access to Videos folder",
+                        "Access to Videos folder".to_string(),
                         PrivacyLevel::Low,
                     ),
                     "xdg-config" => (
-                        "Access to configuration files",
+                        "Access to configuration files".to_string(),
                         PrivacyLevel::Medium,
                     ),
                     "xdg-cache" => (
-                        "Access to cache directory",
+                        "Access to cache directory".to_string(),
                         PrivacyLevel::Low,
                     ),
                     "xdg-data" => (
-                        "Access to application data",
+                        "Access to application data".to_string(),
                         PrivacyLevel::Medium,
                     ),
                     "xdg-run" => (
-                        "Access to runtime directory",
+                        "Access to runtime directory".to_string(),
                         PrivacyLevel::Low,
                     ),
                     _ if value.starts_with('/') => (
-                        format!("Access to {}", value).leak(),
+                        format!("Access to {}", value),
                         PrivacyLevel::Medium,
                     ),
                     _ if value.starts_with('~') => (
-                        format!("Access to {}", value).leak(),
+                        format!("Access to {}", value),
                         PrivacyLevel::Medium,
                     ),
                     _ => (
-                        format!("Filesystem: {}", value).leak(),
+                        format!("Filesystem: {}", value),
                         PrivacyLevel::Low,
                     ),
                 };
                 (format!("{}{}", prefix, desc), level)
             }
             PermissionCategory::Socket => {
-                let (desc, level) = match value {
-                    "x11" => ("X11 window system access", PrivacyLevel::Medium),
-                    "wayland" => ("Wayland display access", PrivacyLevel::Low),
-                    "fallback-x11" => ("Fallback X11 access", PrivacyLevel::Medium),
-                    "pulseaudio" => ("Audio playback and recording", PrivacyLevel::Medium),
-                    "session-bus" => ("D-Bus session bus access", PrivacyLevel::Medium),
-                    "system-bus" => ("D-Bus system bus access", PrivacyLevel::High),
-                    "ssh-auth" => ("SSH authentication agent", PrivacyLevel::High),
-                    "pcsc" => ("Smart card access", PrivacyLevel::High),
-                    "cups" => ("Printing access", PrivacyLevel::Low),
-                    "gpg-agent" => ("GPG agent access", PrivacyLevel::High),
+                let (desc, level): (String, PrivacyLevel) = match value {
+                    "x11" => ("X11 window system access".to_string(), PrivacyLevel::Medium),
+                    "wayland" => ("Wayland display access".to_string(), PrivacyLevel::Low),
+                    "fallback-x11" => ("Fallback X11 access".to_string(), PrivacyLevel::Medium),
+                    "pulseaudio" => ("Audio playback and recording".to_string(), PrivacyLevel::Medium),
+                    "session-bus" => ("D-Bus session bus access".to_string(), PrivacyLevel::Medium),
+                    "system-bus" => ("D-Bus system bus access".to_string(), PrivacyLevel::High),
+                    "ssh-auth" => ("SSH authentication agent".to_string(), PrivacyLevel::High),
+                    "pcsc" => ("Smart card access".to_string(), PrivacyLevel::High),
+                    "cups" => ("Printing access".to_string(), PrivacyLevel::Low),
+                    "gpg-agent" => ("GPG agent access".to_string(), PrivacyLevel::High),
                     _ => (
-                        format!("Socket: {}", value).leak(),
+                        format!("Socket: {}", value),
                         PrivacyLevel::Medium,
                     ),
                 };
                 (format!("{}{}", prefix, desc), level)
             }
             PermissionCategory::Device => {
-                let (desc, level) = match value {
-                    "dri" => ("GPU/graphics acceleration", PrivacyLevel::Low),
-                    "kvm" => ("Kernel virtualization access", PrivacyLevel::High),
-                    "shm" => ("Shared memory access", PrivacyLevel::Low),
-                    "all" => ("All device access", PrivacyLevel::High),
+                let (desc, level): (String, PrivacyLevel) = match value {
+                    "dri" => ("GPU/graphics acceleration".to_string(), PrivacyLevel::Low),
+                    "kvm" => ("Kernel virtualization access".to_string(), PrivacyLevel::High),
+                    "shm" => ("Shared memory access".to_string(), PrivacyLevel::Low),
+                    "all" => ("All device access".to_string(), PrivacyLevel::High),
                     _ => (
-                        format!("Device: {}", value).leak(),
+                        format!("Device: {}", value),
                         PrivacyLevel::Medium,
                     ),
                 };
                 (format!("{}{}", prefix, desc), level)
             }
             PermissionCategory::Share => {
-                let (desc, level) = match value {
-                    "network" => ("Network access", PrivacyLevel::Medium),
-                    "ipc" => ("Inter-process communication", PrivacyLevel::Low),
+                let (desc, level): (String, PrivacyLevel) = match value {
+                    "network" => ("Network access".to_string(), PrivacyLevel::Medium),
+                    "ipc" => ("Inter-process communication".to_string(), PrivacyLevel::Low),
                     _ => (
-                        format!("Share: {}", value).leak(),
+                        format!("Share: {}", value),
                         PrivacyLevel::Low,
                     ),
                 };
