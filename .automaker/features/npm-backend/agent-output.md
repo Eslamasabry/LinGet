@@ -439,3 +439,5 @@ Input: {
     }
   ]
 }
+
+Now let me update `check_updates` with enrichment:

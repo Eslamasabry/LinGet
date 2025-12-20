@@ -552,3 +552,9 @@ Input: {
     }
   ]
 }
+
+🔧 Tool: Glob
+Input: {
+  "pattern": "**/cli/**/*.rs",
+  "path": "/home/eslam/Storage/Code/LinGet/src"
+}
