@@ -1,5 +1,8 @@
 use super::PackageBackend;
-use crate::models::{Package, PackageSource, PackageStatus, Repository};
+use crate::models::{
+    FlatpakMetadata, FlatpakPermission, FlatpakRuntime, InstallationType, Package, PackageSource,
+    PackageStatus, PermissionCategory, Repository,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::process::Stdio;
@@ -34,6 +37,369 @@ pub struct FlatpakBackend;
 impl FlatpakBackend {
     pub fn new() -> Self {
         Self
+    }
+
+    /// Get detailed metadata for a Flatpak application including sandbox permissions
+    pub async fn get_metadata(&self, app_id: &str) -> Result<FlatpakMetadata> {
+        // Get basic info using flatpak info
+        let info_output = Command::new("flatpak")
+            .args(["info", "--show-metadata", app_id])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get flatpak metadata")?;
+
+        let metadata_str = String::from_utf8_lossy(&info_output.stdout);
+
+        // Parse the metadata
+        let mut metadata = Self::parse_metadata(&metadata_str, app_id);
+
+        // Get additional info
+        let info_output = Command::new("flatpak")
+            .args(["info", app_id])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get flatpak info")?;
+
+        let info_str = String::from_utf8_lossy(&info_output.stdout);
+        Self::parse_info(&info_str, &mut metadata);
+
+        Ok(metadata)
+    }
+
+    /// Get metadata for a specific installation type (user or system)
+    pub async fn get_metadata_for_installation(
+        &self,
+        app_id: &str,
+        installation: InstallationType,
+    ) -> Result<FlatpakMetadata> {
+        let install_arg = match installation {
+            InstallationType::User => "--user",
+            InstallationType::System => "--system",
+        };
+
+        // Get basic info using flatpak info
+        let info_output = Command::new("flatpak")
+            .args(["info", install_arg, "--show-metadata", app_id])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get flatpak metadata")?;
+
+        let metadata_str = String::from_utf8_lossy(&info_output.stdout);
+        let mut metadata = Self::parse_metadata(&metadata_str, app_id);
+        metadata.installation = installation;
+
+        // Get additional info
+        let info_output = Command::new("flatpak")
+            .args(["info", install_arg, app_id])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get flatpak info")?;
+
+        let info_str = String::from_utf8_lossy(&info_output.stdout);
+        Self::parse_info(&info_str, &mut metadata);
+
+        Ok(metadata)
+    }
+
+    /// Parse the metadata from flatpak info --show-metadata output
+    fn parse_metadata(content: &str, app_id: &str) -> FlatpakMetadata {
+        let mut metadata = FlatpakMetadata {
+            app_id: app_id.to_string(),
+            ..Default::default()
+        };
+
+        let mut current_section = String::new();
+
+        for line in content.lines() {
+            let line = line.trim();
+
+            // Section headers
+            if line.starts_with('[') && line.ends_with(']') {
+                current_section = line[1..line.len() - 1].to_string();
+                continue;
+            }
+
+            // Key-value pairs
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+
+                match current_section.as_str() {
+                    "Application" | "Runtime" => match key {
+                        "runtime" => {
+                            if let Some(rt) = Self::parse_runtime_ref(value) {
+                                metadata.runtime = Some(rt);
+                            }
+                        }
+                        "sdk" => metadata.sdk = Some(value.to_string()),
+                        _ => {}
+                    },
+                    "Context" => {
+                        Self::parse_context_permissions(key, value, &mut metadata.permissions);
+                    }
+                    "Session Bus Policy" => {
+                        Self::parse_dbus_permissions(
+                            key,
+                            value,
+                            PermissionCategory::SessionBus,
+                            &mut metadata.permissions,
+                        );
+                    }
+                    "System Bus Policy" => {
+                        Self::parse_dbus_permissions(
+                            key,
+                            value,
+                            PermissionCategory::SystemBus,
+                            &mut metadata.permissions,
+                        );
+                    }
+                    "Environment" => {
+                        metadata.permissions.push(FlatpakPermission::from_raw(
+                            PermissionCategory::Environment,
+                            &format!("{}={}", key, value),
+                        ));
+                    }
+                    "Extension" => {
+                        // Track extensions
+                        if key.starts_with("Extension ") {
+                            let ext_name = key.strip_prefix("Extension ").unwrap_or(key);
+                            metadata.extensions.push(ext_name.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        metadata
+    }
+
+    /// Parse runtime reference string
+    fn parse_runtime_ref(runtime_ref: &str) -> Option<FlatpakRuntime> {
+        // Format: org.gnome.Platform/x86_64/45 or org.gnome.Platform//45
+        let parts: Vec<&str> = runtime_ref.split('/').collect();
+        if parts.len() >= 3 {
+            Some(FlatpakRuntime {
+                id: parts[0].to_string(),
+                version: parts.get(2).unwrap_or(&"").to_string(),
+                branch: parts.get(3).unwrap_or(&"stable").to_string(),
+            })
+        } else if parts.len() == 2 {
+            Some(FlatpakRuntime {
+                id: parts[0].to_string(),
+                version: parts[1].to_string(),
+                branch: "stable".to_string(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Parse Context section permissions
+    fn parse_context_permissions(key: &str, value: &str, permissions: &mut Vec<FlatpakPermission>) {
+        let category = match key {
+            "filesystems" => PermissionCategory::Filesystem,
+            "sockets" => PermissionCategory::Socket,
+            "devices" => PermissionCategory::Device,
+            "shared" => PermissionCategory::Share,
+            "features" => PermissionCategory::Other,
+            "persistent" => PermissionCategory::Filesystem,
+            _ => return,
+        };
+
+        // Values are semicolon-separated
+        for item in value.split(';') {
+            let item = item.trim();
+            if !item.is_empty() {
+                permissions.push(FlatpakPermission::from_raw(category, item));
+            }
+        }
+    }
+
+    /// Parse D-Bus permissions
+    fn parse_dbus_permissions(
+        bus_name: &str,
+        access: &str,
+        category: PermissionCategory,
+        permissions: &mut Vec<FlatpakPermission>,
+    ) {
+        // Access can be: talk, own, see, none
+        let perm_str = match access.trim() {
+            "none" => format!("!{}", bus_name),
+            "talk" => format!("{} (talk)", bus_name),
+            "own" => format!("{} (own)", bus_name),
+            "see" => format!("{} (see)", bus_name),
+            _ => format!("{} ({})", bus_name, access),
+        };
+        permissions.push(FlatpakPermission::from_raw(category, &perm_str));
+    }
+
+    /// Parse additional info from flatpak info output
+    fn parse_info(content: &str, metadata: &mut FlatpakMetadata) {
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some((key, value)) = line.split_once(':') {
+                let key = key.trim();
+                let value = value.trim();
+
+                match key {
+                    "Ref" | "ID" => {
+                        if metadata.app_id.is_empty() {
+                            metadata.app_id = value.to_string();
+                        }
+                    }
+                    "Origin" => metadata.remote = Some(value.to_string()),
+                    "Commit" => metadata.commit = Some(value.to_string()),
+                    "Installation" => {
+                        metadata.installation = if value.to_lowercase().contains("system") {
+                            InstallationType::System
+                        } else {
+                            InstallationType::User
+                        };
+                    }
+                    "Arch" => metadata.arch = Some(value.to_string()),
+                    "Branch" => metadata.branch = Some(value.to_string()),
+                    "End-of-life" | "EOL" => {
+                        metadata.is_eol = true;
+                        if !value.is_empty() && value != "yes" && value != "true" {
+                            metadata.eol_reason = Some(value.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// List all runtimes installed on the system
+    pub async fn list_runtimes(&self) -> Result<Vec<Package>> {
+        let output = Command::new("flatpak")
+            .args([
+                "list",
+                "--runtime",
+                "--columns=application,version,name,size,origin",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to list flatpak runtimes")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 3 {
+                let app_id = parts[0].to_string();
+                let version = parts[1].to_string();
+                let name = parts[2].to_string();
+                let size = parts.get(3).and_then(|s| parse_human_size(s));
+
+                packages.push(Package {
+                    name: app_id,
+                    version,
+                    available_version: None,
+                    description: format!("Runtime: {}", name),
+                    source: PackageSource::Flatpak,
+                    status: PackageStatus::Installed,
+                    size,
+                    homepage: None,
+                    license: None,
+                    maintainer: None,
+                    dependencies: Vec::new(),
+                    install_date: None,
+                    enrichment: None,
+                });
+            }
+        }
+
+        Ok(packages)
+    }
+
+    /// Get permissions override for an application
+    pub async fn get_overrides(&self, app_id: &str) -> Result<Vec<FlatpakPermission>> {
+        let output = Command::new("flatpak")
+            .args(["override", "--show", app_id])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get flatpak overrides")?;
+
+        let override_str = String::from_utf8_lossy(&output.stdout);
+        let metadata = Self::parse_metadata(&override_str, app_id);
+        Ok(metadata.permissions)
+    }
+
+    /// Add a permission override for an application
+    pub async fn add_override(&self, app_id: &str, permission: &str) -> Result<()> {
+        let status = Command::new("flatpak")
+            .args(["override", "--user", permission, app_id])
+            .status()
+            .await
+            .context("Failed to add flatpak override")?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("Failed to add override {} for {}", permission, app_id)
+        }
+    }
+
+    /// Remove a permission override for an application
+    pub async fn remove_override(&self, app_id: &str, permission: &str) -> Result<()> {
+        // To remove, we need to use the negated version
+        let neg_perm = if permission.starts_with("--") {
+            permission.replacen("--", "--no", 1)
+        } else {
+            format!("--no{}", permission.trim_start_matches('-'))
+        };
+
+        let status = Command::new("flatpak")
+            .args(["override", "--user", &neg_perm, app_id])
+            .status()
+            .await
+            .context("Failed to remove flatpak override")?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("Failed to remove override {} for {}", permission, app_id)
+        }
+    }
+
+    /// Reset all overrides for an application
+    pub async fn reset_overrides(&self, app_id: &str) -> Result<()> {
+        let status = Command::new("flatpak")
+            .args(["override", "--user", "--reset", app_id])
+            .status()
+            .await
+            .context("Failed to reset flatpak overrides")?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("Failed to reset overrides for {}", app_id)
+        }
+    }
+
+    /// Check if an application is sandboxed (has limited permissions)
+    pub async fn is_well_sandboxed(&self, app_id: &str) -> Result<bool> {
+        let metadata = self.get_metadata(app_id).await?;
+        let summary = metadata.sandbox_summary();
+        Ok(matches!(
+            summary.rating,
+            crate::models::SandboxRating::Strong | crate::models::SandboxRating::Good
+        ))
     }
 }
 

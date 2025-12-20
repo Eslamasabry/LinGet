@@ -3,12 +3,14 @@
   "category": "Backend",
   "title": "Flatpak Backend Implementation",
   "description": "Implement support for sandboxed Flatpak applications across all Linux distributions.",
-  "status": "backlog",
+  "status": "in_progress",
   "priority": 1,
   "complexity": "moderate",
   "dependencies": [
     "core-package-detection"
   ],
   "createdAt": "2025-12-19T20:29:52.536Z",
-  "updatedAt": "2025-12-19T20:29:52.536Z"
+  "updatedAt": "2025-12-20T05:11:13.624Z",
+  "branchName": "main",
+  "startedAt": "2025-12-20T05:11:12.460Z"
 }

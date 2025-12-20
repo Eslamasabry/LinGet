@@ -3,7 +3,7 @@
   "category": "Core",
   "title": "Package Manager Detection",
   "description": "Detect which package managers are installed on the system and retrieve their version information. This is the foundation for all backend operations.",
-  "status": "waiting_approval",
+  "status": "verified",
   "priority": 1,
   "complexity": "simple",
   "dependencies": [],

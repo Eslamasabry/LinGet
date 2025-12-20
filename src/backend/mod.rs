@@ -40,7 +40,7 @@ pub use snap::SnapBackend;
 pub use traits::*;
 pub use zypper::ZypperBackend;
 
-use crate::models::{Package, PackageSource, Repository};
+use crate::models::{FlatpakMetadata, FlatpakPermission, Package, PackageSource, Repository};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
