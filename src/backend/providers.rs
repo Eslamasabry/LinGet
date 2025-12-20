@@ -1,16 +1,44 @@
 use crate::models::PackageSource;
+use serde::Serialize;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone)]
+/// Status information for a detected package manager provider.
+///
+/// This struct contains all the information about a package manager's
+/// availability on the system, including version information and
+/// the paths to relevant executables.
+#[derive(Debug, Clone, Serialize)]
 pub struct ProviderStatus {
+    /// The package source type (APT, DNF, Flatpak, etc.)
     pub source: PackageSource,
+    /// Human-readable display name
     pub display_name: String,
+    /// Whether this provider is available on the system
     pub available: bool,
+    /// Commands used to list packages (e.g., ["apt", "dpkg-query"])
     pub list_cmds: Vec<String>,
+    /// Commands that require elevated privileges (e.g., ["pkexec"])
     pub privileged_cmds: Vec<String>,
+    /// Absolute paths to found executables
+    #[serde(serialize_with = "serialize_paths")]
     pub found_paths: Vec<PathBuf>,
+    /// Version string from the package manager (if available)
     pub version: Option<String>,
+    /// Reason for unavailability (if not available)
     pub reason: Option<String>,
+}
+
+/// Custom serializer for PathBuf vectors to convert to strings
+fn serialize_paths<S>(paths: &[PathBuf], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeSeq;
+    let mut seq = serializer.serialize_seq(Some(paths.len()))?;
+    for path in paths {
+        seq.serialize_element(&path.display().to_string())?;
+    }
+    seq.end()
 }
 
 struct ProviderProbe {
@@ -188,26 +216,31 @@ fn provider_row(source: PackageSource) -> ProviderStatus {
     }
 }
 
+/// Detect all package manager providers on the system.
+///
+/// This function checks for all supported package managers (APT, DNF, Flatpak, etc.)
+/// and returns their status including version information and executable paths.
+///
+/// The results are sorted with available providers first (alphabetically),
+/// followed by unavailable providers (alphabetically).
+///
+/// # Example
+///
+/// ```no_run
+/// use linget::backend::detect_providers;
+///
+/// let providers = detect_providers();
+/// for provider in providers {
+///     if provider.available {
+///         println!("{}: {}", provider.display_name, provider.version.unwrap_or_default());
+///     }
+/// }
+/// ```
 pub fn detect_providers() -> Vec<ProviderStatus> {
-    let mut rows: Vec<ProviderStatus> = vec![
-        provider_row(PackageSource::Apt),
-        provider_row(PackageSource::Dnf),
-        provider_row(PackageSource::Pacman),
-        provider_row(PackageSource::Zypper),
-        provider_row(PackageSource::Flatpak),
-        provider_row(PackageSource::Snap),
-        provider_row(PackageSource::Npm),
-        provider_row(PackageSource::Pip),
-        provider_row(PackageSource::Pipx),
-        provider_row(PackageSource::Cargo),
-        provider_row(PackageSource::Brew),
-        provider_row(PackageSource::Aur),
-        provider_row(PackageSource::Conda),
-        provider_row(PackageSource::Mamba),
-        provider_row(PackageSource::Dart),
-        provider_row(PackageSource::Deb),
-        provider_row(PackageSource::AppImage),
-    ];
+    let mut rows: Vec<ProviderStatus> = PackageSource::ALL
+        .iter()
+        .map(|&source| provider_row(source))
+        .collect();
 
     rows.sort_by(|a, b| {
         let a_key = (!a.available, a.display_name.to_lowercase());
@@ -215,4 +248,141 @@ pub fn detect_providers() -> Vec<ProviderStatus> {
         a_key.cmp(&b_key)
     });
     rows
+}
+
+/// Detect a single package manager provider.
+///
+/// This is useful when you only need to check one specific provider
+/// without the overhead of detecting all providers.
+///
+/// # Arguments
+///
+/// * `source` - The package source to detect
+///
+/// # Example
+///
+/// ```no_run
+/// use linget::backend::detect_provider;
+/// use linget::models::PackageSource;
+///
+/// let apt_status = detect_provider(PackageSource::Apt);
+/// if apt_status.available {
+///     println!("APT version: {}", apt_status.version.unwrap_or_default());
+/// }
+/// ```
+pub fn detect_provider(source: PackageSource) -> ProviderStatus {
+    provider_row(source)
+}
+
+/// Get only the available providers on the system.
+///
+/// This is a convenience function that filters `detect_providers()`
+/// to return only providers that are actually available.
+pub fn detect_available_providers() -> Vec<ProviderStatus> {
+    detect_providers()
+        .into_iter()
+        .filter(|p| p.available)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_providers_returns_all_sources() {
+        let providers = detect_providers();
+        // Should return status for all 17 package sources
+        assert_eq!(providers.len(), PackageSource::ALL.len());
+    }
+
+    #[test]
+    fn test_provider_status_fields_populated() {
+        let providers = detect_providers();
+        for provider in &providers {
+            // display_name should never be empty
+            assert!(!provider.display_name.is_empty());
+            // If not available, should have a reason (except for AppImage which is always available)
+            if !provider.available && provider.source != PackageSource::AppImage {
+                assert!(provider.reason.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_detect_providers_sorted_correctly() {
+        let providers = detect_providers();
+        // Available providers should come before unavailable ones
+        let mut found_unavailable = false;
+        for provider in &providers {
+            if !provider.available {
+                found_unavailable = true;
+            } else if found_unavailable {
+                // If we found an available after unavailable, sorting is wrong
+                panic!("Available provider found after unavailable providers");
+            }
+        }
+    }
+
+    #[test]
+    fn test_detect_single_provider() {
+        let apt_status = detect_provider(PackageSource::Apt);
+        assert_eq!(apt_status.source, PackageSource::Apt);
+        assert_eq!(apt_status.display_name, "APT");
+        // list_cmds should be populated for APT
+        assert!(!apt_status.list_cmds.is_empty());
+    }
+
+    #[test]
+    fn test_appimage_always_available() {
+        let appimage_status = detect_provider(PackageSource::AppImage);
+        assert!(appimage_status.available);
+        // AppImage has no version command, so version should be None
+        assert!(appimage_status.version.is_none());
+    }
+
+    #[test]
+    fn test_provider_status_serializable() {
+        let provider = detect_provider(PackageSource::Flatpak);
+        // Should be serializable to JSON without errors
+        let json = serde_json::to_string(&provider);
+        assert!(json.is_ok());
+    }
+
+    #[test]
+    fn test_detect_available_providers_subset() {
+        let all = detect_providers();
+        let available = detect_available_providers();
+        // Available should be a subset of all
+        assert!(available.len() <= all.len());
+        // All items in available should have available=true
+        for p in &available {
+            assert!(p.available);
+        }
+    }
+
+    #[test]
+    fn test_version_parsing() {
+        // Test the cmd_version function indirectly through provider detection
+        // At minimum, providers that are available should have attempted version detection
+        let providers = detect_providers();
+        for provider in &providers {
+            if provider.available && provider.version.is_some() {
+                // Version string should not be empty if present
+                assert!(!provider.version.as_ref().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn test_which_all_deduplicates() {
+        // Test the which_all helper function
+        let paths = which_all(&["ls", "ls"]); // Same command twice
+        // Should deduplicate
+        let unique_count = paths.len();
+        let mut deduped = paths.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(unique_count, deduped.len());
+    }
 }

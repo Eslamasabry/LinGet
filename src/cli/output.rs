@@ -37,6 +37,11 @@ impl OutputWriter {
         self.quiet
     }
 
+    /// Get the output format
+    pub fn format(&self) -> OutputFormat {
+        self.format
+    }
+
     /// Print a message (not printed in quiet mode or JSON mode)
     pub fn message(&self, msg: &str) {
         if !self.quiet && !self.is_json() {

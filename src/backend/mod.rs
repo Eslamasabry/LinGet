@@ -35,7 +35,7 @@ pub use pacman::PacmanBackend;
 pub use pip::PipBackend;
 pub use pipx::PipxBackend;
 pub use pkexec::{run_pkexec, Suggest, SUGGEST_PREFIX};
-pub use providers::{detect_providers, ProviderStatus};
+pub use providers::{detect_available_providers, detect_provider, detect_providers, ProviderStatus};
 pub use snap::SnapBackend;
 pub use traits::*;
 pub use zypper::ZypperBackend;

@@ -122,6 +122,13 @@ pub enum Commands {
     /// Check for available updates
     Check,
 
+    /// Detect and show installed package managers
+    Providers {
+        /// Show all providers (including unavailable ones)
+        #[arg(short, long)]
+        all: bool,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -258,6 +265,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Sources { action } => commands::sources::run(pm, action, &writer).await,
         Commands::Check => commands::check::run(pm, &writer).await,
+        Commands::Providers { all } => commands::providers::run(&writer, all).await,
         Commands::Completions { shell } => {
             commands::completions::run(shell);
             Ok(())
