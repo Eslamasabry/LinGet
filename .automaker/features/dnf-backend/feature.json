@@ -3,7 +3,7 @@
   "category": "Backend",
   "title": "DNF Backend Implementation",
   "description": "Implement support for Fedora/RHEL DNF package manager with feature parity to APT backend.",
-  "status": "waiting_approval",
+  "status": "verified",
   "priority": 1,
   "complexity": "moderate",
   "dependencies": [
