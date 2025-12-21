@@ -253,27 +253,6 @@ pub fn detect_providers() -> Vec<ProviderStatus> {
 /// Detect a single package manager provider.
 ///
 /// This is useful when you only need to check one specific provider
-/// without the overhead of detecting all providers.
-///
-/// # Arguments
-///
-/// * `source` - The package source to detect
-///
-/// # Example
-///
-/// ```no_run
-/// use linget::backend::detect_provider;
-/// use linget::models::PackageSource;
-///
-/// let apt_status = detect_provider(PackageSource::Apt);
-/// if apt_status.available {
-///     println!("APT version: {}", apt_status.version.unwrap_or_default());
-/// }
-/// ```
-pub fn detect_provider(source: PackageSource) -> ProviderStatus {
-    provider_row(source)
-}
-
 /// Get only the available providers on the system.
 ///
 /// This is a convenience function that filters `detect_providers()`
@@ -326,7 +305,11 @@ mod tests {
 
     #[test]
     fn test_detect_single_provider() {
-        let apt_status = detect_provider(PackageSource::Apt);
+        let providers = detect_providers();
+        let apt_status = providers
+            .iter()
+            .find(|p| p.source == PackageSource::Apt)
+            .expect("APT provider should be in list");
         assert_eq!(apt_status.source, PackageSource::Apt);
         assert_eq!(apt_status.display_name, "APT");
         // list_cmds should be populated for APT
@@ -335,7 +318,11 @@ mod tests {
 
     #[test]
     fn test_appimage_always_available() {
-        let appimage_status = detect_provider(PackageSource::AppImage);
+        let providers = detect_providers();
+        let appimage_status = providers
+            .iter()
+            .find(|p| p.source == PackageSource::AppImage)
+            .expect("AppImage provider should be in list");
         assert!(appimage_status.available);
         // AppImage has no version command, so version should be None
         assert!(appimage_status.version.is_none());
@@ -343,7 +330,11 @@ mod tests {
 
     #[test]
     fn test_provider_status_serializable() {
-        let provider = detect_provider(PackageSource::Flatpak);
+        let providers = detect_providers();
+        let provider = providers
+            .iter()
+            .find(|p| p.source == PackageSource::Flatpak)
+            .expect("Flatpak provider should be in list");
         // Should be serializable to JSON without errors
         let json = serde_json::to_string(&provider);
         assert!(json.is_ok());
@@ -378,7 +369,7 @@ mod tests {
     fn test_which_all_deduplicates() {
         // Test the which_all helper function
         let paths = which_all(&["ls", "ls"]); // Same command twice
-        // Should deduplicate
+                                              // Should deduplicate
         let unique_count = paths.len();
         let mut deduped = paths.clone();
         deduped.sort();

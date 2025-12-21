@@ -1,4 +1,4 @@
-use crate::backend::{detect_providers, ProviderStatus};
+use crate::backend::{detect_available_providers, detect_providers, ProviderStatus};
 use crate::cli::OutputWriter;
 use anyhow::Result;
 use console::style;
@@ -29,20 +29,19 @@ pub async fn run(writer: &OutputWriter, show_all: bool) -> Result<()> {
     };
 
     // Run detection in a blocking task since it involves synchronous I/O
-    let providers = tokio::task::spawn_blocking(detect_providers)
-        .await
-        .unwrap_or_default();
+    let providers: Vec<ProviderStatus> = if show_all {
+        tokio::task::spawn_blocking(detect_providers)
+            .await
+            .unwrap_or_default()
+    } else {
+        tokio::task::spawn_blocking(detect_available_providers)
+            .await
+            .unwrap_or_default()
+    };
 
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-
-    // Filter to only available providers unless --all is specified
-    let providers: Vec<ProviderStatus> = if show_all {
-        providers
-    } else {
-        providers.into_iter().filter(|p| p.available).collect()
-    };
 
     match writer.format() {
         crate::cli::OutputFormat::Human => print_providers_human(&providers, writer, show_all),

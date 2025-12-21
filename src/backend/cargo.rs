@@ -86,9 +86,7 @@ impl CargoBackend {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string()),
-            downloads: crate_data
-                .get("downloads")
-                .and_then(|v| v.as_u64()),
+            downloads: crate_data.get("downloads").and_then(|v| v.as_u64()),
             categories: json
                 .get("categories")
                 .and_then(|v| v.as_array())
@@ -217,10 +215,7 @@ impl PackageBackend for CargoBackend {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "Failed to list installed cargo crates: {}",
-                stderr.trim()
-            );
+            anyhow::bail!("Failed to list installed cargo crates: {}", stderr.trim());
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -363,7 +358,11 @@ impl PackageBackend for CargoBackend {
             );
         }
 
-        anyhow::bail!("Failed to install cargo crate '{}': {}", name, stderr.trim())
+        anyhow::bail!(
+            "Failed to install cargo crate '{}': {}",
+            name,
+            stderr.trim()
+        )
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
@@ -386,7 +385,11 @@ impl PackageBackend for CargoBackend {
             anyhow::bail!("Crate '{}' is not installed.", name);
         }
 
-        anyhow::bail!("Failed to uninstall cargo crate '{}': {}", name, stderr.trim())
+        anyhow::bail!(
+            "Failed to uninstall cargo crate '{}': {}",
+            name,
+            stderr.trim()
+        )
     }
 
     async fn update(&self, name: &str) -> Result<()> {
@@ -455,12 +458,7 @@ impl PackageBackend for CargoBackend {
             anyhow::bail!("Version '{}' not found for crate '{}'", version, name);
         }
 
-        anyhow::bail!(
-            "Failed to install {} v{}: {}",
-            name,
-            version,
-            stderr.trim()
-        )
+        anyhow::bail!("Failed to install {} v{}: {}", name, version, stderr.trim())
     }
 
     async fn available_downgrade_versions(&self, name: &str) -> Result<Vec<String>> {
@@ -501,7 +499,10 @@ impl PackageBackend for CargoBackend {
             }
 
             if let Some(downloads) = info.downloads {
-                changelog.push_str(&format!("**Total Downloads:** {}\n", format_downloads(downloads)));
+                changelog.push_str(&format!(
+                    "**Total Downloads:** {}\n",
+                    format_downloads(downloads)
+                ));
             }
 
             if !info.categories.is_empty() {

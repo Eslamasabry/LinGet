@@ -8,10 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Build the sandbox permissions section for Flatpak packages
-pub fn build_sandbox_section(
-    pm: Arc<Mutex<PackageManager>>,
-    app_id: String,
-) -> gtk::Box {
+pub fn build_sandbox_section(pm: Arc<Mutex<PackageManager>>, app_id: String) -> gtk::Box {
     let section = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
@@ -77,7 +74,7 @@ fn build_sandbox_content(section: &gtk::Box, metadata: &FlatpakMetadata) {
     if let Some(ref runtime) = metadata.runtime {
         let runtime_row = adw::ActionRow::builder()
             .title("Runtime")
-            .subtitle(&runtime.to_string())
+            .subtitle(runtime.to_string())
             .build();
         runtime_row.add_css_class("property");
 
@@ -93,16 +90,18 @@ fn build_sandbox_content(section: &gtk::Box, metadata: &FlatpakMetadata) {
     // Installation info
     let install_row = adw::ActionRow::builder()
         .title("Installation")
-        .subtitle(&format!("{}", metadata.installation))
+        .subtitle(format!("{}", metadata.installation))
         .build();
     install_row.add_css_class("property");
 
     let install_icon = gtk::Image::builder()
-        .icon_name(if metadata.installation == crate::models::InstallationType::System {
-            "computer-symbolic"
-        } else {
-            "user-home-symbolic"
-        })
+        .icon_name(
+            if metadata.installation == crate::models::InstallationType::System {
+                "computer-symbolic"
+            } else {
+                "user-home-symbolic"
+            },
+        )
         .build();
     install_icon.add_css_class("dim-label");
     install_row.add_prefix(&install_icon);
@@ -162,18 +161,11 @@ fn build_rating_box(summary: &SandboxSummary) -> gtk::Box {
     rating_box.add_css_class("sandbox-rating-box");
 
     // Rating icon
-    let (icon_name, css_class) = match summary.rating {
-        SandboxRating::Strong => ("emblem-ok-symbolic", "success"),
-        SandboxRating::Good => ("emblem-default-symbolic", "accent"),
-        SandboxRating::Moderate => ("dialog-warning-symbolic", "warning"),
-        SandboxRating::Weak => ("dialog-error-symbolic", "error"),
-    };
-
     let rating_icon = gtk::Image::builder()
-        .icon_name(icon_name)
+        .icon_name(summary.rating.icon_name())
         .pixel_size(32)
         .build();
-    rating_icon.add_css_class(css_class);
+    rating_icon.add_css_class(summary.rating.css_class());
 
     // Rating text
     let text_box = gtk::Box::builder()
@@ -187,7 +179,7 @@ fn build_rating_box(summary: &SandboxSummary) -> gtk::Box {
         .xalign(0.0)
         .build();
     rating_label.add_css_class("heading");
-    rating_label.add_css_class(css_class);
+    rating_label.add_css_class(summary.rating.css_class());
 
     let desc_label = gtk::Label::builder()
         .label(&summary.description)
@@ -207,19 +199,33 @@ fn build_rating_box(summary: &SandboxSummary) -> gtk::Box {
 }
 
 fn build_permissions_expander(metadata: &FlatpakMetadata) -> gtk::Expander {
+    let summary = metadata.sandbox_summary();
+
+    let label_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .build();
+
+    let label_text = gtk::Label::new(Some(&format!(
+        "Permissions ({} total, {} high-risk)",
+        metadata.permissions.len(),
+        metadata
+            .permissions
+            .iter()
+            .filter(|p| p.privacy_level == PrivacyLevel::High && !p.negated)
+            .count()
+    )));
+
+    let badge = build_sandbox_badge(summary.rating);
+
+    label_box.append(&label_text);
+    label_box.append(&badge);
+
     let expander = gtk::Expander::builder()
-        .label(format!(
-            "Permissions ({} total, {} high-risk)",
-            metadata.permissions.len(),
-            metadata
-                .permissions
-                .iter()
-                .filter(|p| p.privacy_level == PrivacyLevel::High && !p.negated)
-                .count()
-        ))
         .expanded(false)
         .margin_top(8)
         .build();
+    expander.set_label_widget(Some(&label_box));
     expander.add_css_class("card");
 
     let content = gtk::Box::builder()
@@ -272,14 +278,8 @@ fn build_permissions_expander(metadata: &FlatpakMetadata) -> gtk::Expander {
                 .build();
 
             // Privacy level indicator
-            let (level_icon, level_class) = match perm.privacy_level {
-                PrivacyLevel::Low => ("●", "dim-label"),
-                PrivacyLevel::Medium => ("●", "warning"),
-                PrivacyLevel::High => ("●", "error"),
-            };
-
-            let level_label = gtk::Label::new(Some(level_icon));
-            level_label.add_css_class(level_class);
+            let level_label = gtk::Label::new(Some("●"));
+            level_label.add_css_class(perm.privacy_level.css_class());
 
             // Permission value
             let value_label = gtk::Label::builder()
@@ -324,9 +324,9 @@ fn build_permissions_expander(metadata: &FlatpakMetadata) -> gtk::Expander {
         .halign(gtk::Align::Center)
         .build();
 
-    let low_box = create_legend_item("●", "dim-label", "Low");
-    let med_box = create_legend_item("●", "warning", "Medium");
-    let high_box = create_legend_item("●", "error", "High");
+    let low_box = create_legend_item("●", PrivacyLevel::Low.css_class(), "Low");
+    let med_box = create_legend_item("●", PrivacyLevel::Medium.css_class(), "Medium");
+    let high_box = create_legend_item("●", PrivacyLevel::High.css_class(), "High");
 
     legend.append(&low_box);
     legend.append(&med_box);
@@ -363,18 +363,17 @@ pub fn build_sandbox_badge(rating: SandboxRating) -> gtk::Box {
         .build();
     badge.add_css_class("sandbox-badge");
 
-    let (icon_name, css_class) = match rating {
-        SandboxRating::Strong => ("security-high-symbolic", "success"),
-        SandboxRating::Good => ("security-medium-symbolic", "accent"),
-        SandboxRating::Moderate => ("security-medium-symbolic", "warning"),
-        SandboxRating::Weak => ("security-low-symbolic", "error"),
+    let compact_icon = match rating {
+        SandboxRating::Strong => "security-high-symbolic",
+        SandboxRating::Good | SandboxRating::Moderate => "security-medium-symbolic",
+        SandboxRating::Weak => "security-low-symbolic",
     };
 
     let icon = gtk::Image::builder()
-        .icon_name(icon_name)
+        .icon_name(compact_icon)
         .pixel_size(12)
         .build();
-    icon.add_css_class(css_class);
+    icon.add_css_class(rating.css_class());
 
     badge.append(&icon);
     badge.set_tooltip_text(Some(&format!("Sandbox: {}", rating)));

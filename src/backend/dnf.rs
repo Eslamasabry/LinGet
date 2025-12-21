@@ -258,7 +258,10 @@ impl PackageBackend for DnfBackend {
         run_pkexec(
             "dnf",
             &["downgrade", "-y", "--", &target],
-            &format!("Failed to downgrade package {} to version {}", name, version),
+            &format!(
+                "Failed to downgrade package {} to version {}",
+                name, version
+            ),
             Suggest {
                 command: format!("sudo dnf downgrade -y -- {}", target),
             },

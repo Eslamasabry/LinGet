@@ -25,30 +25,6 @@ impl NpmBackend {
         Self { client }
     }
 
-    /// Simple semver comparison - returns true if new_ver > old_ver
-    fn is_newer_version(new_ver: &str, old_ver: &str) -> bool {
-        let parse_version = |s: &str| -> Vec<u64> {
-            // Split on '.', '-', '+' to handle pre-release versions
-            s.split(['.', '-', '+'])
-                .filter_map(|p| p.parse::<u64>().ok())
-                .collect()
-        };
-
-        let new_parts = parse_version(new_ver);
-        let old_parts = parse_version(old_ver);
-
-        for i in 0..new_parts.len().max(old_parts.len()) {
-            let new_part = new_parts.get(i).copied().unwrap_or(0);
-            let old_part = old_parts.get(i).copied().unwrap_or(0);
-            if new_part > old_part {
-                return true;
-            } else if new_part < old_part {
-                return false;
-            }
-        }
-        false
-    }
-
     /// Fetch package metadata from npm registry API
     async fn fetch_package_info(&self, name: &str) -> Option<NpmRegistryPackage> {
         let url = format!("https://registry.npmjs.org/{}", name);
@@ -63,10 +39,7 @@ impl NpmBackend {
 
     /// Create package enrichment from registry info
     fn create_enrichment(info: &NpmRegistryPackage) -> PackageEnrichment {
-        let latest_version = info
-            .dist_tags
-            .as_ref()
-            .and_then(|dt| dt.latest.clone());
+        let latest_version = info.dist_tags.as_ref().and_then(|dt| dt.latest.clone());
 
         let version_info = latest_version
             .as_ref()
@@ -81,7 +54,7 @@ impl NpmBackend {
             screenshots: Vec::new(),
             categories: Vec::new(), // npm doesn't categorize like other registries
             developer: info.author.as_ref().map(|a| a.name()),
-            rating: None, // npm doesn't provide ratings
+            rating: None,    // npm doesn't provide ratings
             downloads: None, // Would require separate API call to npm download counts
             summary: info.description.clone(),
             repository: info.repository.as_ref().and_then(|r| r.url()),
@@ -136,7 +109,6 @@ enum NpmVersions {
 /// Package metadata from npm registry
 #[derive(Debug, Deserialize)]
 struct NpmRegistryPackage {
-    name: Option<String>,
     description: Option<String>,
     #[serde(rename = "dist-tags")]
     dist_tags: Option<NpmDistTags>,
@@ -146,7 +118,6 @@ struct NpmRegistryPackage {
     repository: Option<NpmRepository>,
     license: Option<NpmLicense>,
     homepage: Option<String>,
-    readme: Option<String>,
     maintainers: Option<Vec<NpmMaintainer>>,
 }
 
@@ -159,22 +130,12 @@ struct NpmDistTags {
 
 #[derive(Debug, Deserialize)]
 struct NpmVersionInfo {
-    version: Option<String>,
-    description: Option<String>,
     keywords: Option<Vec<String>>,
-    homepage: Option<String>,
-    license: Option<NpmLicense>,
-    author: Option<NpmAuthor>,
-    repository: Option<NpmRepository>,
-    dependencies: Option<std::collections::HashMap<String, String>>,
-    #[serde(rename = "devDependencies")]
-    dev_dependencies: Option<std::collections::HashMap<String, String>>,
     dist: Option<NpmDist>,
 }
 
 #[derive(Debug, Deserialize)]
 struct NpmTimeInfo {
-    created: Option<String>,
     modified: Option<String>,
     #[serde(flatten)]
     versions: std::collections::HashMap<String, String>,
@@ -183,14 +144,14 @@ struct NpmTimeInfo {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum NpmAuthor {
-    Object { name: String, email: Option<String>, url: Option<String> },
+    Object { name: String },
     String(String),
 }
 
 impl NpmAuthor {
     fn name(&self) -> String {
         match self {
-            NpmAuthor::Object { name, .. } => name.clone(),
+            NpmAuthor::Object { name } => name.clone(),
             NpmAuthor::String(s) => {
                 // Parse "Name <email> (url)" format
                 s.split('<').next().unwrap_or(s).trim().to_string()
@@ -202,7 +163,11 @@ impl NpmAuthor {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum NpmRepository {
-    Object { url: Option<String>, #[serde(rename = "type")] _type: Option<String> },
+    Object {
+        url: Option<String>,
+        #[serde(rename = "type")]
+        _type: Option<String>,
+    },
     String(String),
 }
 
@@ -224,7 +189,10 @@ impl NpmRepository {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum NpmLicense {
-    Object { #[serde(rename = "type")] license_type: Option<String> },
+    Object {
+        #[serde(rename = "type")]
+        license_type: Option<String>,
+    },
     String(String),
 }
 
@@ -311,9 +279,10 @@ impl PackageBackend for NpmBackend {
                 }
 
                 // Extract homepage
-                pkg.homepage = info.homepage.clone().or_else(|| {
-                    info.repository.as_ref().and_then(|r| r.url())
-                });
+                pkg.homepage = info
+                    .homepage
+                    .clone()
+                    .or_else(|| info.repository.as_ref().and_then(|r| r.url()));
 
                 // Extract license
                 pkg.license = info.license.as_ref().map(|l| l.name());
@@ -329,7 +298,8 @@ impl PackageBackend for NpmBackend {
                 // Extract size from latest version
                 let latest_version = info.dist_tags.as_ref().and_then(|dt| dt.latest.clone());
                 if let Some(ref latest) = latest_version {
-                    if let Some(version_info) = info.versions.as_ref().and_then(|vs| vs.get(latest)) {
+                    if let Some(version_info) = info.versions.as_ref().and_then(|vs| vs.get(latest))
+                    {
                         pkg.size = version_info.dist.as_ref().and_then(|d| d.unpacked_size);
                     }
                 }
@@ -389,9 +359,10 @@ impl PackageBackend for NpmBackend {
                 if let Some(ref desc) = info.description {
                     pkg.description.clone_from(desc);
                 }
-                pkg.homepage = info.homepage.clone().or_else(|| {
-                    info.repository.as_ref().and_then(|r| r.url())
-                });
+                pkg.homepage = info
+                    .homepage
+                    .clone()
+                    .or_else(|| info.repository.as_ref().and_then(|r| r.url()));
                 pkg.license = info.license.as_ref().map(|l| l.name());
                 pkg.maintainer = info.author.as_ref().map(|a| a.name());
                 pkg.enrichment = Some(Self::create_enrichment(&info));
@@ -439,7 +410,10 @@ impl PackageBackend for NpmBackend {
         }
 
         // Network errors
-        if lowered.contains("network") || lowered.contains("enotfound") || lowered.contains("etimedout") {
+        if lowered.contains("network")
+            || lowered.contains("enotfound")
+            || lowered.contains("etimedout")
+        {
             anyhow::bail!(
                 "Network error while installing '{}'. Check your internet connection and try again.\n\n{}",
                 name,
@@ -447,7 +421,11 @@ impl PackageBackend for NpmBackend {
             );
         }
 
-        anyhow::bail!("Failed to install npm package '{}': {}", name, stderr.trim())
+        anyhow::bail!(
+            "Failed to install npm package '{}': {}",
+            name,
+            stderr.trim()
+        )
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
@@ -719,9 +697,10 @@ impl PackageBackend for NpmBackend {
                         pkg.description.clone_from(desc);
                     }
                 }
-                pkg.homepage = info.homepage.clone().or_else(|| {
-                    info.repository.as_ref().and_then(|r| r.url())
-                });
+                pkg.homepage = info
+                    .homepage
+                    .clone()
+                    .or_else(|| info.repository.as_ref().and_then(|r| r.url()));
                 pkg.license = info.license.as_ref().map(|l| l.name());
                 pkg.maintainer = info.author.as_ref().map(|a| a.name());
                 pkg.enrichment = Some(Self::create_enrichment(&info));
@@ -757,38 +736,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_version_comparison() {
-        // Basic version comparisons
-        assert!(NpmBackend::is_newer_version("1.0.1", "1.0.0"));
-        assert!(NpmBackend::is_newer_version("1.1.0", "1.0.0"));
-        assert!(NpmBackend::is_newer_version("2.0.0", "1.9.9"));
-
-        // Equal versions
-        assert!(!NpmBackend::is_newer_version("1.0.0", "1.0.0"));
-
-        // Older versions
-        assert!(!NpmBackend::is_newer_version("1.0.0", "1.0.1"));
-        assert!(!NpmBackend::is_newer_version("1.0.0", "2.0.0"));
-
-        // Pre-release versions
-        assert!(NpmBackend::is_newer_version("1.0.0-2", "1.0.0-1"));
-        assert!(NpmBackend::is_newer_version("1.0.1-alpha", "1.0.0"));
-
-        // Build metadata
-        assert!(NpmBackend::is_newer_version("1.0.1+build", "1.0.0+build"));
-
-        // Different length versions
-        assert!(NpmBackend::is_newer_version("1.0.0.1", "1.0.0"));
-        assert!(!NpmBackend::is_newer_version("1.0.0", "1.0.0.1"));
-    }
-
-    #[test]
     fn test_npm_author_parsing() {
         // Object format
         let author_obj = NpmAuthor::Object {
             name: "John Doe".to_string(),
-            email: Some("john@example.com".to_string()),
-            url: None,
         };
         assert_eq!(author_obj.name(), "John Doe");
 

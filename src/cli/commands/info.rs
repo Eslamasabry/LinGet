@@ -1,3 +1,4 @@
+use super::permissions;
 use crate::backend::PackageManager;
 use crate::cli::OutputWriter;
 use crate::models::PackageSource;
@@ -103,6 +104,16 @@ pub async fn run(
         }
     };
 
+    drop(manager);
+
     writer.package_info(&package);
+
+    if package.source == PackageSource::Flatpak && !writer.is_json() {
+        println!();
+        if let Err(e) = permissions::show_sandbox_summary(pm, &package.name, writer).await {
+            tracing::debug!("Could not fetch sandbox summary: {}", e);
+        }
+    }
+
     Ok(())
 }

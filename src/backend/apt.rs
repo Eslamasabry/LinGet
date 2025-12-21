@@ -89,7 +89,13 @@ impl AptBackend {
                 if components.is_empty() {
                     format!("{} ({} {})", filename, repo_type, s)
                 } else {
-                    format!("{} ({} {} {})", filename, repo_type, s, components.join(" "))
+                    format!(
+                        "{} ({} {} {})",
+                        filename,
+                        repo_type,
+                        s,
+                        components.join(" ")
+                    )
                 }
             } else {
                 format!("{} ({})", filename, repo_type)
@@ -102,12 +108,7 @@ impl AptBackend {
                 .unwrap_or(true);
 
             let description = if let Some(ref s) = suite {
-                Some(format!(
-                    "{} {} {}",
-                    repo_type,
-                    s,
-                    components.join(" ")
-                ))
+                Some(format!("{} {} {}", repo_type, s, components.join(" ")))
             } else {
                 Some(repo_type.to_string())
             };
@@ -180,11 +181,7 @@ impl AptBackend {
                             .split(',')
                             .map(|s| {
                                 // Remove version constraints like " (>= 1.0)"
-                                s.split('(')
-                                    .next()
-                                    .unwrap_or(s)
-                                    .trim()
-                                    .to_string()
+                                s.split('(').next().unwrap_or(s).trim().to_string()
                             })
                             .filter(|s| !s.is_empty())
                             .collect();
@@ -495,7 +492,13 @@ impl PackageBackend for AptBackend {
             let repo_name = name.unwrap_or("custom");
             let safe_name: String = repo_name
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             let filename = format!("{}.list", safe_name);
             let filepath = format!("/etc/apt/sources.list.d/{}", filename);
@@ -519,7 +522,9 @@ impl PackageBackend for AptBackend {
 
             // Write content to stdin
             if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(content.as_bytes()).context("Failed to write to stdin")?;
+                stdin
+                    .write_all(content.as_bytes())
+                    .context("Failed to write to stdin")?;
             }
 
             // Wait for the process to complete
@@ -600,7 +605,11 @@ deb-src http://archive.ubuntu.com/ubuntu jammy main restricted
         let repos = AptBackend::parse_sources_list(content, "sources.list");
         assert_eq!(repos.len(), 3);
 
-        assert!(repos[0].url.as_ref().unwrap().contains("archive.ubuntu.com"));
+        assert!(repos[0]
+            .url
+            .as_ref()
+            .unwrap()
+            .contains("archive.ubuntu.com"));
         assert!(repos[0].enabled);
         assert_eq!(repos[0].source, PackageSource::Apt);
     }
@@ -615,7 +624,11 @@ deb [arch=amd64] http://example.com/repo stable main contrib
         let repos = AptBackend::parse_sources_list(content, "docker.list");
         assert_eq!(repos.len(), 2);
 
-        assert!(repos[0].url.as_ref().unwrap().contains("download.docker.com"));
+        assert!(repos[0]
+            .url
+            .as_ref()
+            .unwrap()
+            .contains("download.docker.com"));
         assert!(repos[1].url.as_ref().unwrap().contains("example.com"));
     }
 

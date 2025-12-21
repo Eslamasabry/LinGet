@@ -1,5 +1,5 @@
 use crate::backend::SUGGEST_PREFIX;
-use crate::models::{LinGetError, Package, PackageSource, PackageStatus};
+use crate::models::{Package, PackageSource, PackageStatus};
 use clap::ValueEnum;
 use console::{style, Style};
 use serde::Serialize;
@@ -80,22 +80,6 @@ impl OutputWriter {
         }
     }
 
-    /// Print a detailed error with optional suggestion
-    pub fn error_with_details(&self, msg: &str, details: Option<&str>, suggestion: Option<&str>) {
-        if self.is_json() {
-            self.print_error_json(msg, suggestion);
-        } else {
-            eprintln!("{} {}", style("✗").red().bold(), msg);
-            if let Some(d) = details {
-                eprintln!("  {}", style(d).dim());
-            }
-            if let Some(s) = suggestion {
-                eprintln!();
-                eprintln!("  {} {}", style("Suggestion:").yellow(), s);
-            }
-        }
-    }
-
     /// Print an anyhow error with proper formatting
     pub fn anyhow_error(&self, error: &anyhow::Error) {
         let msg = error.to_string();
@@ -116,7 +100,11 @@ impl OutputWriter {
                     let cause_str = cause.to_string();
                     // Skip if it's the same as the main message
                     if cause_str != clean_msg {
-                        eprintln!("  {} {}", style("Caused by:").dim(), style(&cause_str).dim());
+                        eprintln!(
+                            "  {} {}",
+                            style("Caused by:").dim(),
+                            style(&cause_str).dim()
+                        );
                     }
                     source = cause.source();
                 }
@@ -126,44 +114,6 @@ impl OutputWriter {
             if let Some(s) = suggestion {
                 eprintln!();
                 eprintln!("  {} {}", style("Try running:").yellow(), style(&s).cyan());
-            }
-        }
-    }
-
-    /// Print a LinGetError with user-friendly formatting
-    pub fn linget_error(&self, error: &LinGetError) {
-        if self.is_json() {
-            #[derive(Serialize)]
-            struct ErrorOutput {
-                error: bool,
-                message: String,
-                short_message: String,
-                #[serde(skip_serializing_if = "Option::is_none")]
-                suggestion: Option<String>,
-            }
-
-            let output = ErrorOutput {
-                error: true,
-                message: error.user_message(),
-                short_message: error.short_message(),
-                suggestion: None, // Could extract from LinGetError if needed
-            };
-            eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
-        } else {
-            // Print short message as the header
-            eprintln!("{} {}", style("✗").red().bold(), error.short_message());
-
-            // Print detailed message with proper indentation
-            let user_msg = error.user_message();
-            for (i, line) in user_msg.lines().enumerate() {
-                if i == 0 {
-                    // Skip first line if it's the same as short_message
-                    if !line.contains(&error.short_message()) {
-                        eprintln!("  {}", line);
-                    }
-                } else {
-                    eprintln!("  {}", line);
-                }
             }
         }
     }
@@ -199,13 +149,6 @@ impl OutputWriter {
             suggestion: suggestion.map(|s| s.to_string()),
         };
         eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
-    }
-
-    /// Print a hint message (for suggestions/tips)
-    pub fn hint(&self, msg: &str) {
-        if !self.quiet && !self.is_json() {
-            println!("  {} {}", style("💡").dim(), style(msg).dim());
-        }
     }
 
     /// Print a header/title

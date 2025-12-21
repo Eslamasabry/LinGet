@@ -98,11 +98,7 @@ pub async fn run(
             );
 
             if let Some(ref remote) = metadata.remote {
-                println!(
-                    "{} {}",
-                    style("Remote:").bold(),
-                    style(remote).dim()
-                );
+                println!("{} {}", style("Remote:").bold(), style(remote).dim());
             }
 
             if metadata.is_eol {
@@ -119,10 +115,7 @@ pub async fn run(
             // Print permissions by category
             let grouped = metadata.permissions_by_category();
             if grouped.is_empty() {
-                println!(
-                    "\n{}",
-                    style("No special permissions required").green()
-                );
+                println!("\n{}", style("No special permissions required").green());
             } else {
                 println!("\n{}", style("Permissions:").bold());
 
@@ -146,7 +139,12 @@ pub async fn run(
                             style(&perm.value).white()
                         };
 
-                        println!("    {} {} - {}", level_indicator, value_style, style(&perm.description).dim());
+                        println!(
+                            "    {} {} - {}",
+                            level_indicator,
+                            value_style,
+                            style(&perm.description).dim()
+                        );
                     }
                 }
             }
@@ -200,7 +198,10 @@ pub async fn run(
                 }
             }
 
-            println!("\n{}", style("Tip: Use 'flatpak override' to modify permissions").dim());
+            println!(
+                "\n{}",
+                style("Tip: Use 'flatpak override' to modify permissions").dim()
+            );
         }
 
         PermissionsAction::Reset => {
@@ -253,10 +254,7 @@ pub async fn show_sandbox_summary(
 }
 
 /// List all Flatpak runtimes
-pub async fn list_runtimes(
-    pm: Arc<Mutex<PackageManager>>,
-    writer: &OutputWriter,
-) -> Result<()> {
+pub async fn list_runtimes(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter) -> Result<()> {
     let spinner = if !writer.is_quiet() && !writer.is_json() {
         let pb = ProgressBar::new_spinner();
         pb.set_style(

@@ -122,26 +122,17 @@ impl FlatpakPermission {
         match category {
             PermissionCategory::Filesystem => {
                 let (desc, level): (String, PrivacyLevel) = match value {
-                    "host" => (
-                        "Full access to all files".to_string(),
-                        PrivacyLevel::High,
-                    ),
+                    "host" => ("Full access to all files".to_string(), PrivacyLevel::High),
                     "host-os" => (
                         "Access to host operating system files".to_string(),
                         PrivacyLevel::High,
                     ),
-                    "host-etc" => (
-                        "Access to /etc directory".to_string(),
-                        PrivacyLevel::Medium,
-                    ),
+                    "host-etc" => ("Access to /etc directory".to_string(), PrivacyLevel::Medium),
                     "home" => (
                         "Full access to home directory".to_string(),
                         PrivacyLevel::High,
                     ),
-                    "xdg-desktop" => (
-                        "Access to Desktop folder".to_string(),
-                        PrivacyLevel::Medium,
-                    ),
+                    "xdg-desktop" => ("Access to Desktop folder".to_string(), PrivacyLevel::Medium),
                     "xdg-documents" => (
                         "Access to Documents folder".to_string(),
                         PrivacyLevel::Medium,
@@ -150,46 +141,29 @@ impl FlatpakPermission {
                         "Access to Downloads folder".to_string(),
                         PrivacyLevel::Medium,
                     ),
-                    "xdg-music" => (
-                        "Access to Music folder".to_string(),
-                        PrivacyLevel::Low,
-                    ),
+                    "xdg-music" => ("Access to Music folder".to_string(), PrivacyLevel::Low),
                     "xdg-pictures" => (
                         "Access to Pictures folder".to_string(),
                         PrivacyLevel::Medium,
                     ),
-                    "xdg-videos" => (
-                        "Access to Videos folder".to_string(),
-                        PrivacyLevel::Low,
-                    ),
+                    "xdg-videos" => ("Access to Videos folder".to_string(), PrivacyLevel::Low),
                     "xdg-config" => (
                         "Access to configuration files".to_string(),
                         PrivacyLevel::Medium,
                     ),
-                    "xdg-cache" => (
-                        "Access to cache directory".to_string(),
-                        PrivacyLevel::Low,
-                    ),
+                    "xdg-cache" => ("Access to cache directory".to_string(), PrivacyLevel::Low),
                     "xdg-data" => (
                         "Access to application data".to_string(),
                         PrivacyLevel::Medium,
                     ),
-                    "xdg-run" => (
-                        "Access to runtime directory".to_string(),
-                        PrivacyLevel::Low,
-                    ),
-                    _ if value.starts_with('/') => (
-                        format!("Access to {}", value),
-                        PrivacyLevel::Medium,
-                    ),
-                    _ if value.starts_with('~') => (
-                        format!("Access to {}", value),
-                        PrivacyLevel::Medium,
-                    ),
-                    _ => (
-                        format!("Filesystem: {}", value),
-                        PrivacyLevel::Low,
-                    ),
+                    "xdg-run" => ("Access to runtime directory".to_string(), PrivacyLevel::Low),
+                    _ if value.starts_with('/') => {
+                        (format!("Access to {}", value), PrivacyLevel::Medium)
+                    }
+                    _ if value.starts_with('~') => {
+                        (format!("Access to {}", value), PrivacyLevel::Medium)
+                    }
+                    _ => (format!("Filesystem: {}", value), PrivacyLevel::Low),
                 };
                 (format!("{}{}", prefix, desc), level)
             }
@@ -198,30 +172,30 @@ impl FlatpakPermission {
                     "x11" => ("X11 window system access".to_string(), PrivacyLevel::Medium),
                     "wayland" => ("Wayland display access".to_string(), PrivacyLevel::Low),
                     "fallback-x11" => ("Fallback X11 access".to_string(), PrivacyLevel::Medium),
-                    "pulseaudio" => ("Audio playback and recording".to_string(), PrivacyLevel::Medium),
+                    "pulseaudio" => (
+                        "Audio playback and recording".to_string(),
+                        PrivacyLevel::Medium,
+                    ),
                     "session-bus" => ("D-Bus session bus access".to_string(), PrivacyLevel::Medium),
                     "system-bus" => ("D-Bus system bus access".to_string(), PrivacyLevel::High),
                     "ssh-auth" => ("SSH authentication agent".to_string(), PrivacyLevel::High),
                     "pcsc" => ("Smart card access".to_string(), PrivacyLevel::High),
                     "cups" => ("Printing access".to_string(), PrivacyLevel::Low),
                     "gpg-agent" => ("GPG agent access".to_string(), PrivacyLevel::High),
-                    _ => (
-                        format!("Socket: {}", value),
-                        PrivacyLevel::Medium,
-                    ),
+                    _ => (format!("Socket: {}", value), PrivacyLevel::Medium),
                 };
                 (format!("{}{}", prefix, desc), level)
             }
             PermissionCategory::Device => {
                 let (desc, level): (String, PrivacyLevel) = match value {
                     "dri" => ("GPU/graphics acceleration".to_string(), PrivacyLevel::Low),
-                    "kvm" => ("Kernel virtualization access".to_string(), PrivacyLevel::High),
+                    "kvm" => (
+                        "Kernel virtualization access".to_string(),
+                        PrivacyLevel::High,
+                    ),
                     "shm" => ("Shared memory access".to_string(), PrivacyLevel::Low),
                     "all" => ("All device access".to_string(), PrivacyLevel::High),
-                    _ => (
-                        format!("Device: {}", value),
-                        PrivacyLevel::Medium,
-                    ),
+                    _ => (format!("Device: {}", value), PrivacyLevel::Medium),
                 };
                 (format!("{}{}", prefix, desc), level)
             }
@@ -229,10 +203,7 @@ impl FlatpakPermission {
                 let (desc, level): (String, PrivacyLevel) = match value {
                     "network" => ("Network access".to_string(), PrivacyLevel::Medium),
                     "ipc" => ("Inter-process communication".to_string(), PrivacyLevel::Low),
-                    _ => (
-                        format!("Share: {}", value),
-                        PrivacyLevel::Low,
-                    ),
+                    _ => (format!("Share: {}", value), PrivacyLevel::Low),
                 };
                 (format!("{}{}", prefix, desc), level)
             }
@@ -279,15 +250,6 @@ impl PrivacyLevel {
             PrivacyLevel::Low => "privacy-low",
             PrivacyLevel::Medium => "privacy-medium",
             PrivacyLevel::High => "privacy-high",
-        }
-    }
-
-    /// Returns an icon name for the privacy level
-    pub fn icon_name(&self) -> &'static str {
-        match self {
-            PrivacyLevel::Low => "security-low-symbolic",
-            PrivacyLevel::Medium => "security-medium-symbolic",
-            PrivacyLevel::High => "security-high-symbolic",
         }
     }
 }
@@ -375,11 +337,9 @@ impl FlatpakMetadata {
 
     /// Returns true if the app has network access
     pub fn has_network_access(&self) -> bool {
-        self.permissions.iter().any(|p| {
-            p.category == PermissionCategory::Share
-                && p.value == "network"
-                && !p.negated
-        })
+        self.permissions
+            .iter()
+            .any(|p| p.category == PermissionCategory::Share && p.value == "network" && !p.negated)
     }
 
     /// Returns true if the app has full filesystem access

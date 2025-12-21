@@ -37,10 +37,16 @@ fn parse_suggestion(message: &str) -> Option<(String, String)> {
     Some((message[..idx].trim().to_string(), command.to_string()))
 }
 
-fn try_remove_source(id: glib::SourceId) {
-    unsafe {
-        glib::ffi::g_source_remove(id.as_raw());
+type ActiveSource = Rc<RefCell<Option<glib::SourceId>>>;
+
+fn cancel_active_source(source: &ActiveSource) {
+    if let Some(id) = source.borrow_mut().take() {
+        id.remove();
     }
+}
+
+fn remove_source(id: glib::SourceId) {
+    id.remove();
 }
 
 /// Filter state for the package list
@@ -110,8 +116,8 @@ impl LinGetWindow {
         const CHUNK_SIZE: usize = 250;
 
         unsafe {
-            if let Some(prev) = list_view.steal_data::<glib::SourceId>("populate_source") {
-                try_remove_source(prev);
+            if let Some(prev) = list_view.steal_data::<ActiveSource>("populate_source") {
+                cancel_active_source(&prev);
             }
         }
 
@@ -121,9 +127,10 @@ impl LinGetWindow {
         }
 
         let store = store.clone();
-        let list_view = list_view.clone();
         let packages: Vec<Package> = packages.to_vec();
         let index = Rc::new(RefCell::new(0usize));
+        let active_source: ActiveSource = Rc::new(RefCell::new(None));
+        let active_source_for_callback = active_source.clone();
 
         let source_id = glib::idle_add_local(move || {
             let mut start = *index.borrow();
@@ -134,14 +141,17 @@ impl LinGetWindow {
             }
             *index.borrow_mut() = start;
             if start >= packages.len() {
+                *active_source_for_callback.borrow_mut() = None;
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
             }
         });
 
+        *active_source.borrow_mut() = Some(source_id);
+
         unsafe {
-            list_view.set_data("populate_source", source_id);
+            list_view.set_data("populate_source", active_source);
         }
     }
 
@@ -1497,7 +1507,7 @@ impl LinGetWindow {
                                         let (pkg, result) = match handle.await {
                                             Ok(v) => v,
                                             Err(e) => {
-                                                try_remove_source(pulser_id);
+                                                remove_source(pulser_id);
                                                 row_progress.set_visible(false);
                                                 spinner.stop();
                                                 spinner.set_visible(false);
@@ -1520,7 +1530,7 @@ impl LinGetWindow {
                                             }
                                         };
 
-                                        try_remove_source(pulser_id);
+                                        remove_source(pulser_id);
                                         row_progress.set_visible(false);
                                         spinner.stop();
                                         spinner.set_visible(false);
@@ -2391,7 +2401,7 @@ impl LinGetWindow {
         let discover_stack_search = discover_stack.clone();
         let discover_list_box_search = discover_list_box.clone();
         let discover_rows_search = discover_rows.clone();
-        let discover_debounce: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        let discover_debounce: ActiveSource = Rc::new(RefCell::new(None));
         let discover_debounce_holder = discover_debounce.clone();
         let reload_holder_search = reload_holder.clone();
         let update_top_chips_search = update_top_chips.clone();
@@ -2411,9 +2421,7 @@ impl LinGetWindow {
                 return;
             }
 
-            if let Some(id) = discover_debounce_holder.borrow_mut().take() {
-                try_remove_source(id);
-            }
+            cancel_active_source(&discover_debounce_holder);
 
             let pm = pm_search.clone();
             let toast = toast_search.clone();
@@ -2439,8 +2447,10 @@ impl LinGetWindow {
             let operation_history_for_timeout = operation_history_search.clone();
             let update_undo_button_for_timeout = update_undo_button_search.clone();
             let show_details_panel_holder_for_timeout = show_details_panel_holder_search.clone();
+            let debounce_clear = discover_debounce_holder.clone();
 
             let id = glib::timeout_add_local_once(Duration::from_millis(300), move || {
+                *debounce_clear.borrow_mut() = None;
                 if *current_view.borrow() != View::Discover {
                     return;
                 }
@@ -2793,8 +2803,8 @@ impl LinGetWindow {
         const CHUNK_SIZE: usize = 200;
 
         unsafe {
-            if let Some(prev) = list_box.steal_data::<glib::SourceId>("populate_source") {
-                try_remove_source(prev);
+            if let Some(prev) = list_box.steal_data::<ActiveSource>("populate_source") {
+                cancel_active_source(&prev);
             }
         }
 
@@ -2804,7 +2814,8 @@ impl LinGetWindow {
         rows.borrow_mut().clear();
 
         let list_box_for_idle = list_box.clone();
-        let list_box_for_data = list_box.clone();
+        let active_source: ActiveSource = Rc::new(RefCell::new(None));
+        let active_source_for_callback = active_source.clone();
         let pm = pm.clone();
         let toast_overlay = toast_overlay.clone();
         let config = config.clone();
@@ -2942,7 +2953,7 @@ impl LinGetWindow {
                         let (pkg, result) = match handle.await {
                             Ok(v) => v,
                             Err(e) => {
-                                try_remove_source(pulser_id);
+                                remove_source(pulser_id);
                                 row_progress.set_visible(false);
                                 spinner.stop();
                                 spinner.set_visible(false);
@@ -2963,7 +2974,7 @@ impl LinGetWindow {
                             }
                         };
 
-                        try_remove_source(pulser_id);
+                        remove_source(pulser_id);
                         row_progress.set_visible(false);
                         spinner.stop();
                         spinner.set_visible(false);
@@ -3076,14 +3087,17 @@ impl LinGetWindow {
 
             *index.borrow_mut() = start;
             if start >= packages.len() {
+                *active_source_for_callback.borrow_mut() = None;
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
             }
         });
 
+        *active_source.borrow_mut() = Some(source_id);
+
         unsafe {
-            list_box_for_data.set_data("populate_source", source_id);
+            list_box.set_data("populate_source", active_source);
         }
     }
 

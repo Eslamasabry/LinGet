@@ -157,10 +157,14 @@ pub async fn run_pkexec(
             msg.push_str("\n\nAuthorization was cancelled.");
         }
         AuthErrorKind::Denied => {
-            msg.push_str("\n\nAuthorization was denied. Please try again with the correct password.");
+            msg.push_str(
+                "\n\nAuthorization was denied. Please try again with the correct password.",
+            );
         }
         AuthErrorKind::NoAgent => {
-            msg.push_str("\n\nNo authentication agent is available. Make sure a polkit agent is running.");
+            msg.push_str(
+                "\n\nNo authentication agent is available. Make sure a polkit agent is running.",
+            );
         }
         AuthErrorKind::Unknown => {
             if !stderr.is_empty() {
@@ -180,58 +184,6 @@ pub async fn run_pkexec(
     anyhow::bail!("{}\n\n{} {}\n", msg, SUGGEST_PREFIX, suggest.command);
 }
 
-/// Run a command without privilege escalation, with proper error handling
-pub async fn run_command(
-    program: &str,
-    args: &[&str],
-    context_msg: &str,
-) -> Result<String> {
-    let full_command = format!("{} {}", program, args.join(" "));
-    debug!(
-        command = %full_command,
-        operation = %context_msg,
-        "Executing command"
-    );
-
-    let output = Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .with_context(|| format!("Failed to execute {}", program))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if output.status.success() {
-        debug!(
-            command = %program,
-            operation = %context_msg,
-            stdout_len = stdout.len(),
-            "Command completed successfully"
-        );
-        Ok(stdout)
-    } else {
-        let exit_code = output.status.code();
-        warn!(
-            command = %full_command,
-            operation = %context_msg,
-            exit_code = ?exit_code,
-            stderr = %stderr,
-            "Command failed"
-        );
-
-        let mut msg = context_msg.to_string();
-        if !stderr.is_empty() {
-            msg.push_str(&format!(": {}", stderr.trim()));
-        } else if let Some(code) = exit_code {
-            msg.push_str(&format!(" (exit code {})", code));
-        }
-        anyhow::bail!("{}", msg)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,10 +198,7 @@ mod tests {
             detect_auth_error("operation cancelled", None),
             AuthErrorKind::Cancelled
         );
-        assert_eq!(
-            detect_auth_error("", Some(126)),
-            AuthErrorKind::Cancelled
-        );
+        assert_eq!(detect_auth_error("", Some(126)), AuthErrorKind::Cancelled);
     }
 
     #[test]

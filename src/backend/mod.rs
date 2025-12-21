@@ -34,8 +34,8 @@ pub use npm::NpmBackend;
 pub use pacman::PacmanBackend;
 pub use pip::PipBackend;
 pub use pipx::PipxBackend;
-pub use pkexec::{run_command, run_pkexec, Suggest, SUGGEST_PREFIX};
-pub use providers::{detect_available_providers, detect_provider, detect_providers, ProviderStatus};
+pub use pkexec::{run_pkexec, Suggest, SUGGEST_PREFIX};
+pub use providers::{detect_available_providers, detect_providers, ProviderStatus};
 pub use snap::SnapBackend;
 pub use traits::*;
 pub use zypper::ZypperBackend;
@@ -57,32 +57,101 @@ impl PackageManager {
         let mut backends: HashMap<PackageSource, Box<dyn PackageBackend>> = HashMap::new();
 
         // Add available backends with logging
-        let mut check_backend = |source: PackageSource, available: bool, backend: Box<dyn PackageBackend>| {
-            if available {
-                debug!(source = ?source, "Backend available");
-                backends.insert(source, backend);
-            } else {
-                debug!(source = ?source, "Backend not available");
-            }
-        };
+        let mut check_backend =
+            |source: PackageSource, available: bool, backend: Box<dyn PackageBackend>| {
+                if available {
+                    debug!(source = ?source, "Backend available");
+                    backends.insert(source, backend);
+                } else {
+                    debug!(source = ?source, "Backend not available");
+                }
+            };
 
-        check_backend(PackageSource::Apt, AptBackend::is_available(), Box::new(AptBackend::new()));
-        check_backend(PackageSource::Dnf, DnfBackend::is_available(), Box::new(DnfBackend::new()));
-        check_backend(PackageSource::Pacman, PacmanBackend::is_available(), Box::new(PacmanBackend::new()));
-        check_backend(PackageSource::Zypper, ZypperBackend::is_available(), Box::new(ZypperBackend::new()));
-        check_backend(PackageSource::Flatpak, FlatpakBackend::is_available(), Box::new(FlatpakBackend::new()));
-        check_backend(PackageSource::Snap, SnapBackend::is_available(), Box::new(SnapBackend::new()));
-        check_backend(PackageSource::Npm, NpmBackend::is_available(), Box::new(NpmBackend::new()));
-        check_backend(PackageSource::Pip, PipBackend::is_available(), Box::new(PipBackend::new()));
-        check_backend(PackageSource::Pipx, PipxBackend::is_available(), Box::new(PipxBackend::new()));
-        check_backend(PackageSource::Cargo, CargoBackend::is_available(), Box::new(CargoBackend::new()));
-        check_backend(PackageSource::Brew, BrewBackend::is_available(), Box::new(BrewBackend::new()));
-        check_backend(PackageSource::Aur, AurBackend::is_available(), Box::new(AurBackend::new()));
-        check_backend(PackageSource::Conda, CondaBackend::is_available(), Box::new(CondaBackend::new()));
-        check_backend(PackageSource::Mamba, MambaBackend::is_available(), Box::new(MambaBackend::new()));
-        check_backend(PackageSource::Dart, DartBackend::is_available(), Box::new(DartBackend::new()));
-        check_backend(PackageSource::Deb, DebBackend::is_available(), Box::new(DebBackend::new()));
-        check_backend(PackageSource::AppImage, AppImageBackend::is_available(), Box::new(AppImageBackend::new()));
+        check_backend(
+            PackageSource::Apt,
+            AptBackend::is_available(),
+            Box::<AptBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Dnf,
+            DnfBackend::is_available(),
+            Box::<DnfBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Pacman,
+            PacmanBackend::is_available(),
+            Box::<PacmanBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Zypper,
+            ZypperBackend::is_available(),
+            Box::<ZypperBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Flatpak,
+            FlatpakBackend::is_available(),
+            Box::<FlatpakBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Snap,
+            SnapBackend::is_available(),
+            Box::<SnapBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Npm,
+            NpmBackend::is_available(),
+            Box::<NpmBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Pip,
+            PipBackend::is_available(),
+            Box::<PipBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Pipx,
+            PipxBackend::is_available(),
+            Box::<PipxBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Cargo,
+            CargoBackend::is_available(),
+            Box::<CargoBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Brew,
+            BrewBackend::is_available(),
+            Box::<BrewBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Aur,
+            AurBackend::is_available(),
+            Box::<AurBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Conda,
+            CondaBackend::is_available(),
+            Box::<CondaBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Mamba,
+            MambaBackend::is_available(),
+            Box::<MambaBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Dart,
+            DartBackend::is_available(),
+            Box::<DartBackend>::default(),
+        );
+        check_backend(
+            PackageSource::Deb,
+            DebBackend::is_available(),
+            Box::<DebBackend>::default(),
+        );
+        check_backend(
+            PackageSource::AppImage,
+            AppImageBackend::is_available(),
+            Box::<AppImageBackend>::default(),
+        );
 
         let enabled_sources = backends.keys().copied().collect();
         info!(
@@ -141,7 +210,10 @@ impl PackageManager {
         use futures::future::join_all;
 
         let enabled_count = self.enabled_sources.len();
-        debug!(enabled_backends = enabled_count, "Listing installed packages from all enabled backends");
+        debug!(
+            enabled_backends = enabled_count,
+            "Listing installed packages from all enabled backends"
+        );
 
         // Load all backends in parallel
         let futures: Vec<_> = self
@@ -262,7 +334,10 @@ impl PackageManager {
         Self::validate_package_name(&package.name)?;
         if !self.enabled_sources.contains(&package.source) {
             warn!(source = ?package.source, "Attempted to remove from disabled source");
-            anyhow::bail!("{} source is disabled. Enable it in settings to manage packages from this source.", package.source);
+            anyhow::bail!(
+                "{} source is disabled. Enable it in settings to manage packages from this source.",
+                package.source
+            );
         }
 
         if let Some(backend) = self.backends.get(&package.source) {
@@ -288,7 +363,10 @@ impl PackageManager {
         Self::validate_package_name(&package.name)?;
         if !self.enabled_sources.contains(&package.source) {
             warn!(source = ?package.source, "Attempted to update from disabled source");
-            anyhow::bail!("{} source is disabled. Enable it in settings to manage packages from this source.", package.source);
+            anyhow::bail!(
+                "{} source is disabled. Enable it in settings to manage packages from this source.",
+                package.source
+            );
         }
 
         if let Some(backend) = self.backends.get(&package.source) {
@@ -483,26 +561,6 @@ impl PackageManager {
         backend.get_overrides(app_id).await
     }
 
-    /// Add a permission override for a Flatpak application
-    pub async fn add_flatpak_override(&self, app_id: &str, permission: &str) -> Result<()> {
-        if !self.backends.contains_key(&PackageSource::Flatpak) {
-            anyhow::bail!("Flatpak backend is not available");
-        }
-
-        let backend = FlatpakBackend::new();
-        backend.add_override(app_id, permission).await
-    }
-
-    /// Remove a permission override for a Flatpak application
-    pub async fn remove_flatpak_override(&self, app_id: &str, permission: &str) -> Result<()> {
-        if !self.backends.contains_key(&PackageSource::Flatpak) {
-            anyhow::bail!("Flatpak backend is not available");
-        }
-
-        let backend = FlatpakBackend::new();
-        backend.remove_override(app_id, permission).await
-    }
-
     /// Reset all overrides for a Flatpak application
     pub async fn reset_flatpak_overrides(&self, app_id: &str) -> Result<()> {
         if !self.backends.contains_key(&PackageSource::Flatpak) {
@@ -521,16 +579,6 @@ impl PackageManager {
 
         let backend = FlatpakBackend::new();
         backend.list_runtimes().await
-    }
-
-    /// Check if a Flatpak application is well sandboxed
-    pub async fn is_flatpak_well_sandboxed(&self, app_id: &str) -> Result<bool> {
-        if !self.backends.contains_key(&PackageSource::Flatpak) {
-            anyhow::bail!("Flatpak backend is not available");
-        }
-
-        let backend = FlatpakBackend::new();
-        backend.is_well_sandboxed(app_id).await
     }
 }
 

@@ -27,7 +27,7 @@ pub use empty_state::EmptyState;
 pub use notifications::notify_updates_available;
 pub use onboarding::OnboardingWindow;
 pub use skeleton::SkeletonList;
-pub use utils::{parse_suggestion, ErrorDisplay, ErrorSeverity};
+pub use utils::ErrorDisplay;
 
 pub use package_details::PackageDetailsPanel;
 pub use package_row::PackageRow;

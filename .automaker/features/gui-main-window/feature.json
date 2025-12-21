@@ -3,7 +3,7 @@
   "category": "UI",
   "title": "GUI Main Window",
   "description": "Create main GTK4/Libadwaita window with headerbar, sidebar, and content area for multi-view layout.",
-  "status": "waiting_approval",
+  "status": "verified",
   "priority": 1,
   "complexity": "moderate",
   "dependencies": [

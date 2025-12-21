@@ -5,7 +5,7 @@
 
 use crate::backend::PackageManager;
 use crate::models::{Package, PackageSource};
-use crate::ui::{CommandCenter, CommandEventKind, ErrorDisplay, ErrorSeverity, RetrySpec};
+use crate::ui::{CommandCenter, CommandEventKind, ErrorDisplay, RetrySpec};
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use libadwaita as adw;
@@ -47,7 +47,6 @@ pub struct FailedOp {
     pub package_name: String,
     pub source: PackageSource,
     pub error: String,
-    pub severity: ErrorSeverity,
 }
 
 /// Result of a bulk operation
@@ -90,7 +89,9 @@ impl BulkOpResult {
             snaps.dedup();
             let shown = snaps.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
             let suffix = if snaps.len() > 3 { ", …" } else { "" };
-            messages.push(format!("Blocked snaps: {shown}{suffix} (close running apps and retry)"));
+            messages.push(format!(
+                "Blocked snaps: {shown}{suffix} (close running apps and retry)"
+            ));
         }
 
         // Add failed operations summary
@@ -98,10 +99,16 @@ impl BulkOpResult {
             let failed_count = self.failed_ops.len();
             if failed_count <= 3 {
                 for fail in &self.failed_ops {
-                    messages.push(format!("  - {} ({}): {}", fail.package_name, fail.source, fail.error));
+                    messages.push(format!(
+                        "  - {} ({}): {}",
+                        fail.package_name, fail.source, fail.error
+                    ));
                 }
             } else {
-                messages.push(format!("{} packages failed (see logs for details)", failed_count));
+                messages.push(format!(
+                    "{} packages failed (see logs for details)",
+                    failed_count
+                ));
             }
         }
 
@@ -251,7 +258,6 @@ async fn run_operation(ctx: &BulkOpContext, packages: &[Package], op: BulkOpKind
             Err(e) => {
                 let error_msg = e.to_string();
                 let error_display = ErrorDisplay::from_anyhow(&e);
-                let severity = ErrorSeverity::from_message(&error_msg);
 
                 // Check if this is an auth cancellation
                 if error_display.is_cancelled {
@@ -283,7 +289,6 @@ async fn run_operation(ctx: &BulkOpContext, packages: &[Package], op: BulkOpKind
                         package_name: pkg.name.clone(),
                         source: pkg.source,
                         error: error_display.title,
-                        severity,
                     });
                 }
             }

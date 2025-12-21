@@ -70,45 +70,6 @@ impl FlatpakBackend {
         Ok(metadata)
     }
 
-    /// Get metadata for a specific installation type (user or system)
-    pub async fn get_metadata_for_installation(
-        &self,
-        app_id: &str,
-        installation: InstallationType,
-    ) -> Result<FlatpakMetadata> {
-        let install_arg = match installation {
-            InstallationType::User => "--user",
-            InstallationType::System => "--system",
-        };
-
-        // Get basic info using flatpak info
-        let info_output = Command::new("flatpak")
-            .args(["info", install_arg, "--show-metadata", app_id])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("Failed to get flatpak metadata")?;
-
-        let metadata_str = String::from_utf8_lossy(&info_output.stdout);
-        let mut metadata = Self::parse_metadata(&metadata_str, app_id);
-        metadata.installation = installation;
-
-        // Get additional info
-        let info_output = Command::new("flatpak")
-            .args(["info", install_arg, app_id])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("Failed to get flatpak info")?;
-
-        let info_str = String::from_utf8_lossy(&info_output.stdout);
-        Self::parse_info(&info_str, &mut metadata);
-
-        Ok(metadata)
-    }
-
     /// Parse the metadata from flatpak info --show-metadata output
     fn parse_metadata(content: &str, app_id: &str) -> FlatpakMetadata {
         let mut metadata = FlatpakMetadata {
@@ -340,43 +301,6 @@ impl FlatpakBackend {
         Ok(metadata.permissions)
     }
 
-    /// Add a permission override for an application
-    pub async fn add_override(&self, app_id: &str, permission: &str) -> Result<()> {
-        let status = Command::new("flatpak")
-            .args(["override", "--user", permission, app_id])
-            .status()
-            .await
-            .context("Failed to add flatpak override")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to add override {} for {}", permission, app_id)
-        }
-    }
-
-    /// Remove a permission override for an application
-    pub async fn remove_override(&self, app_id: &str, permission: &str) -> Result<()> {
-        // To remove, we need to use the negated version
-        let neg_perm = if permission.starts_with("--") {
-            permission.replacen("--", "--no", 1)
-        } else {
-            format!("--no{}", permission.trim_start_matches('-'))
-        };
-
-        let status = Command::new("flatpak")
-            .args(["override", "--user", &neg_perm, app_id])
-            .status()
-            .await
-            .context("Failed to remove flatpak override")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to remove override {} for {}", permission, app_id)
-        }
-    }
-
     /// Reset all overrides for an application
     pub async fn reset_overrides(&self, app_id: &str) -> Result<()> {
         let status = Command::new("flatpak")
@@ -390,16 +314,6 @@ impl FlatpakBackend {
         } else {
             anyhow::bail!("Failed to reset overrides for {}", app_id)
         }
-    }
-
-    /// Check if an application is sandboxed (has limited permissions)
-    pub async fn is_well_sandboxed(&self, app_id: &str) -> Result<bool> {
-        let metadata = self.get_metadata(app_id).await?;
-        let summary = metadata.sandbox_summary();
-        Ok(matches!(
-            summary.rating,
-            crate::models::SandboxRating::Strong | crate::models::SandboxRating::Good
-        ))
     }
 }
 
@@ -789,7 +703,9 @@ org.freedesktop.secrets=talk
         assert_eq!(grouped.len(), 3);
 
         // Filesystem should have 2 permissions
-        let fs_group = grouped.iter().find(|(cat, _)| *cat == PermissionCategory::Filesystem);
+        let fs_group = grouped
+            .iter()
+            .find(|(cat, _)| *cat == PermissionCategory::Filesystem);
         assert!(fs_group.is_some());
         assert_eq!(fs_group.unwrap().1.len(), 2);
     }
@@ -829,8 +745,8 @@ org.freedesktop.secrets=talk
         let metadata = FlatpakMetadata {
             app_id: "com.example.App".to_string(),
             permissions: vec![
-                FlatpakPermission::from_raw(PermissionCategory::Socket, "wayland"),  // Low
-                FlatpakPermission::from_raw(PermissionCategory::Socket, "x11"),       // Medium
+                FlatpakPermission::from_raw(PermissionCategory::Socket, "wayland"), // Low
+                FlatpakPermission::from_raw(PermissionCategory::Socket, "x11"),     // Medium
             ],
             ..Default::default()
         };
@@ -862,11 +778,20 @@ org.freedesktop.secrets=talk
     #[test]
     fn test_permission_category_metadata() {
         // Test icon names
-        assert_eq!(PermissionCategory::Filesystem.icon_name(), "folder-symbolic");
-        assert_eq!(PermissionCategory::Socket.icon_name(), "network-wired-symbolic");
+        assert_eq!(
+            PermissionCategory::Filesystem.icon_name(),
+            "folder-symbolic"
+        );
+        assert_eq!(
+            PermissionCategory::Socket.icon_name(),
+            "network-wired-symbolic"
+        );
 
         // Test descriptions
-        assert_eq!(PermissionCategory::Filesystem.description(), "Filesystem Access");
+        assert_eq!(
+            PermissionCategory::Filesystem.description(),
+            "Filesystem Access"
+        );
         assert_eq!(PermissionCategory::Socket.description(), "Socket Access");
     }
 
