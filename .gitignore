@@ -22,3 +22,5 @@
 
 # LinGet specific
 data/icons/hicolor/icon-theme.cache
+# Experiment targets
+experiments/*/target/
