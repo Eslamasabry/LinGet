@@ -17,6 +17,7 @@ pub enum NavItem {
     Storage,
     Health,
     History,
+    Tasks,
     Aliases,
     Collection(String),
 }
@@ -31,6 +32,7 @@ impl NavItem {
             NavItem::Storage => "drive-harddisk-symbolic",
             NavItem::Health => "emblem-ok-symbolic",
             NavItem::History => "document-open-recent-symbolic",
+            NavItem::Tasks => "alarm-symbolic",
             NavItem::Aliases => "utilities-terminal-symbolic",
             NavItem::Collection(_) => "folder-symbolic",
         }
@@ -45,6 +47,7 @@ impl NavItem {
             NavItem::Storage => "Storage".to_string(),
             NavItem::Health => "Health".to_string(),
             NavItem::History => "History".to_string(),
+            NavItem::Tasks => "Tasks".to_string(),
             NavItem::Aliases => "Aliases".to_string(),
             NavItem::Collection(name) => name.clone(),
         }
@@ -59,7 +62,8 @@ impl NavItem {
             4 => Some(NavItem::Storage),
             5 => Some(NavItem::Health),
             6 => Some(NavItem::History),
-            7 => Some(NavItem::Aliases),
+            7 => Some(NavItem::Tasks),
+            8 => Some(NavItem::Aliases),
             _ => None,
         }
     }
@@ -388,6 +392,9 @@ impl SimpleComponent for SidebarModel {
 
         let history_row = Self::create_nav_row(NavItem::History, None);
         nav_list.append(&history_row);
+
+        let tasks_row = Self::create_nav_row(NavItem::Tasks, None);
+        nav_list.append(&tasks_row);
 
         let aliases_row = Self::create_nav_row(NavItem::Aliases, None);
         nav_list.append(&aliases_row);

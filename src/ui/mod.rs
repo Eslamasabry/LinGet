@@ -6,6 +6,7 @@ mod empty_state;
 pub mod header;
 pub mod health_dashboard;
 pub mod history_view;
+pub mod notifications;
 pub mod package_details;
 pub mod preferences;
 pub mod relm_app;
@@ -13,6 +14,7 @@ pub mod sidebar;
 mod skeleton;
 pub mod storage_view;
 pub mod task_hub;
+pub mod task_queue_view;
 mod tray;
 pub mod widgets;
 

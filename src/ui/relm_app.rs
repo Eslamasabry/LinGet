@@ -12,6 +12,8 @@ use crate::ui::health_dashboard::{
 use crate::ui::history_view::{
     build_history_view, filter_entries, HistoryViewAction, HistoryViewData,
 };
+use crate::ui::notifications;
+use crate::ui::task_queue_view::{build_task_queue_view, TaskQueueAction, TaskQueueViewData};
 use crate::ui::package_details::{
     DetailsPanelInit, DetailsPanelInput, DetailsPanelModel, DetailsPanelOutput,
 };
@@ -51,6 +53,7 @@ pub enum View {
     Storage,
     Health,
     History,
+    Tasks,
     Aliases,
     Collection(String),
 }
@@ -65,6 +68,7 @@ impl View {
             View::Storage => "Storage".to_string(),
             View::Health => "Health".to_string(),
             View::History => "History".to_string(),
+            View::Tasks => "Scheduled Tasks".to_string(),
             View::Aliases => "Aliases".to_string(),
             View::Collection(name) => name.clone(),
         }
@@ -81,6 +85,7 @@ impl From<NavItem> for View {
             NavItem::Storage => View::Storage,
             NavItem::Health => View::Health,
             NavItem::History => View::History,
+            NavItem::Tasks => View::Tasks,
             NavItem::Aliases => View::Aliases,
             NavItem::Collection(name) => View::Collection(name),
         }
@@ -252,6 +257,9 @@ pub enum AppMsg {
         error: String,
     },
     CancelScheduledTask(String),
+    TaskQueueAction(TaskQueueAction),
+    ScheduleAllUpdates,
+    ClearCompletedTasks,
     Shutdown,
 }
 
@@ -314,6 +322,8 @@ pub struct AppModel {
     pub home_recommendations_loading: bool,
     pub pending_home_recommendations_rebuild: RefCell<bool>,
     pub focused_index: usize,
+    pub tasks_data: TaskQueueViewData,
+    pub pending_tasks_rebuild: RefCell<bool>,
 }
 
 const DEFAULT_VISIBLE_LIMIT: usize = 100;
@@ -371,6 +381,7 @@ impl AppModel {
                 | View::Storage
                 | View::Health
                 | View::History
+                | View::Tasks
                 | View::Aliases => true,
             }
         });
@@ -509,6 +520,7 @@ pub struct AppWidgets {
     storage_clamp: adw::Clamp,
     health_clamp: adw::Clamp,
     history_clamp: adw::Clamp,
+    tasks_clamp: adw::Clamp,
     alias_clamp: adw::Clamp,
     pub alias_view: crate::ui::alias_view::AliasWidgets,
     home_recommendations_group: adw::PreferencesGroup,
@@ -685,6 +697,8 @@ impl SimpleComponent for AppModel {
             home_recommendations_loading: false,
             pending_home_recommendations_rebuild: RefCell::new(false),
             focused_index: 0,
+            tasks_data: TaskQueueViewData::default(),
+            pending_tasks_rebuild: RefCell::new(true),
         };
 
         let header = Header::new();
@@ -1091,6 +1105,20 @@ impl SimpleComponent for AppModel {
             .build();
         history_scroll.set_child(Some(&history_clamp));
         content_stack.add_named(&history_scroll, Some("history"));
+
+        let tasks_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .build();
+        let tasks_clamp = adw::Clamp::builder()
+            .maximum_size(800)
+            .tightening_threshold(600)
+            .margin_top(8)
+            .margin_start(24)
+            .margin_end(24)
+            .build();
+        tasks_scroll.set_child(Some(&tasks_clamp));
+        content_stack.add_named(&tasks_scroll, Some("tasks"));
 
         let alias_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -1632,6 +1660,7 @@ impl SimpleComponent for AppModel {
             storage_clamp,
             health_clamp,
             history_clamp,
+            tasks_clamp,
             alias_clamp,
             alias_view,
             home_recommendations_group,
@@ -1668,6 +1697,10 @@ impl SimpleComponent for AppModel {
                 }
                 if view == View::History {
                     sender.input(AppMsg::LoadHistory);
+                }
+                if view == View::Tasks {
+                    self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
+                    *self.pending_tasks_rebuild.borrow_mut() = true;
                 }
                 if view == View::Aliases {
                     *self.pending_alias_rebuild.borrow_mut() = true;
@@ -1831,6 +1864,7 @@ impl SimpleComponent for AppModel {
 
                 let count = self.updates_count;
                 if count > 0 && self.config.borrow().show_notifications {
+                    notifications::send_updates_available_notification(count);
                     sender.input(AppMsg::ShowToast(
                         format!(
                             "{} update{} available",
@@ -3019,6 +3053,12 @@ impl SimpleComponent for AppModel {
                     PaletteCommand::GoToFavorites => {
                         sender.input(AppMsg::ViewChanged(View::Favorites));
                     }
+                    PaletteCommand::GoToTasks => {
+                        sender.input(AppMsg::ViewChanged(View::Tasks));
+                    }
+                    PaletteCommand::ScheduleAllUpdates => {
+                        sender.input(AppMsg::ScheduleAllUpdates);
+                    }
                     PaletteCommand::RefreshPackages => {
                         sender.input(AppMsg::LoadPackages);
                     }
@@ -3441,15 +3481,25 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ScheduleTask(task) => {
+                let package_name = task.package_name.clone();
+                let scheduled_time = task.scheduled_at.format("%H:%M").to_string();
+                let show_notif = self.config.borrow().show_notifications;
+
                 let mut config = self.config.borrow_mut();
                 config.scheduler.add_task(task);
                 if let Err(e) = config.save() {
                     tracing::error!("Failed to save scheduled task: {}", e);
                 }
+                drop(config);
+
+                if show_notif {
+                    notifications::send_task_scheduled_notification(&package_name, &scheduled_time);
+                }
             }
 
             AppMsg::ScheduleBulkTasks(tasks) => {
                 let count = tasks.len();
+                let show_notif = self.config.borrow().show_notifications;
                 {
                     let mut config = self.config.borrow_mut();
                     for task in tasks {
@@ -3459,6 +3509,20 @@ impl SimpleComponent for AppModel {
                         tracing::error!("Failed to save bulk scheduled tasks: {}", e);
                     }
                 }
+
+                if show_notif {
+                    let body = if count == 1 {
+                        "1 package update scheduled".to_string()
+                    } else {
+                        format!("{} package updates scheduled", count)
+                    };
+                    notifications::send_system_notification(
+                        "Tasks Scheduled",
+                        &body,
+                        Some("linget-bulk-scheduled"),
+                    );
+                }
+
                 sender.input(AppMsg::ShowToast(
                     format!("Scheduled {} package updates", count),
                     ToastType::Success,
@@ -3573,6 +3637,13 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::ScheduledTaskCompleted { package_name, .. } => {
+                self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
+                *self.pending_tasks_rebuild.borrow_mut() = true;
+
+                if self.config.borrow().show_notifications {
+                    notifications::send_task_completed_notification(&package_name);
+                }
+
                 sender.input(AppMsg::ShowToast(
                     format!("Scheduled update for {} completed", package_name),
                     ToastType::Success,
@@ -3585,6 +3656,13 @@ impl SimpleComponent for AppModel {
                 error,
                 ..
             } => {
+                self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
+                *self.pending_tasks_rebuild.borrow_mut() = true;
+
+                if self.config.borrow().show_notifications {
+                    notifications::send_task_failed_notification(&package_name, &error);
+                }
+
                 sender.input(AppMsg::ShowToast(
                     format!("Scheduled update for {} failed: {}", package_name, error),
                     ToastType::Error,
@@ -3597,6 +3675,77 @@ impl SimpleComponent for AppModel {
                 if let Err(e) = config.save() {
                     tracing::error!("Failed to save after canceling task: {}", e);
                 }
+                self.tasks_data.scheduler = config.scheduler.clone();
+                *self.pending_tasks_rebuild.borrow_mut() = true;
+            }
+
+            AppMsg::TaskQueueAction(action) => match action {
+                TaskQueueAction::Cancel(task_id) => {
+                    sender.input(AppMsg::CancelScheduledTask(task_id));
+                }
+                TaskQueueAction::Refresh => {
+                    self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
+                    *self.pending_tasks_rebuild.borrow_mut() = true;
+                }
+                TaskQueueAction::RunNow(task_id) => {
+                    sender.input(AppMsg::ExecuteScheduledTask(task_id));
+                }
+                TaskQueueAction::ClearCompleted => {
+                    sender.input(AppMsg::ClearCompletedTasks);
+                }
+            },
+
+            AppMsg::ScheduleAllUpdates => {
+                use crate::models::{SchedulePreset, ScheduledOperation, ScheduledTask};
+
+                let packages: Vec<Package> = self
+                    .packages
+                    .iter()
+                    .filter(|p| p.has_update() && self.enabled_sources.contains(&p.source))
+                    .cloned()
+                    .collect();
+
+                if packages.is_empty() {
+                    sender.input(AppMsg::ShowToast(
+                        "No updates available to schedule".to_string(),
+                        ToastType::Info,
+                    ));
+                    return;
+                }
+
+                if let Some(scheduled_at) = SchedulePreset::Tonight.to_datetime() {
+                    let tasks: Vec<ScheduledTask> = packages
+                        .iter()
+                        .map(|pkg| {
+                            ScheduledTask::new(
+                                pkg.id(),
+                                pkg.name.clone(),
+                                pkg.source,
+                                ScheduledOperation::Update,
+                                scheduled_at,
+                            )
+                        })
+                        .collect();
+
+                    sender.input(AppMsg::ScheduleBulkTasks(tasks));
+                    sender.input(AppMsg::ViewChanged(View::Tasks));
+                }
+            }
+
+            AppMsg::ClearCompletedTasks => {
+                {
+                    let mut config = self.config.borrow_mut();
+                    config.scheduler.tasks.retain(|t| !t.completed);
+                    if let Err(e) = config.save() {
+                        tracing::error!("Failed to save after clearing tasks: {}", e);
+                    }
+                }
+                self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
+                *self.pending_tasks_rebuild.borrow_mut() = true;
+                sender.input(AppMsg::ShowToast(
+                    "Cleared completed tasks".to_string(),
+                    ToastType::Success,
+                ));
             }
 
             AppMsg::Shutdown => {
@@ -3641,6 +3790,17 @@ impl SimpleComponent for AppModel {
             });
             widgets.history_clamp.set_child(Some(&history_content));
             widgets.content_stack.set_visible_child_name("history");
+        } else if self.current_view == View::Tasks {
+            if *self.pending_tasks_rebuild.borrow() {
+                let tasks_data = self.tasks_data.clone();
+                let sender_clone = _sender.clone();
+                let tasks_content = build_task_queue_view(&tasks_data, move |action| {
+                    sender_clone.input(AppMsg::TaskQueueAction(action));
+                });
+                widgets.tasks_clamp.set_child(Some(&tasks_content));
+                *self.pending_tasks_rebuild.borrow_mut() = false;
+            }
+            widgets.content_stack.set_visible_child_name("tasks");
         } else if self.current_view == View::Aliases {
             if *self.pending_alias_rebuild.borrow() {
                 let alias_data = self.alias_data.clone();
@@ -3725,6 +3885,7 @@ impl SimpleComponent for AppModel {
                 View::Health => "health",
                 View::History => "history",
                 View::Aliases => "aliases",
+                View::Tasks => "tasks",
                 View::Collection(_) => "empty-library",
             };
             widgets.content_stack.set_visible_child_name(empty_page);

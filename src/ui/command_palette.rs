@@ -12,6 +12,7 @@ type CommandCallback = Rc<RefCell<Option<Box<dyn Fn(PaletteCommand)>>>>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteCommand {
     UpdateAll,
+    ScheduleAllUpdates,
     CleanCaches,
     GoToHome,
     GoToLibrary,
@@ -20,6 +21,7 @@ pub enum PaletteCommand {
     GoToHealth,
     GoToHistory,
     GoToFavorites,
+    GoToTasks,
     RefreshPackages,
     ToggleSelectionMode,
     OpenPreferences,
@@ -33,6 +35,7 @@ impl PaletteCommand {
     pub fn label(&self) -> &str {
         match self {
             PaletteCommand::UpdateAll => "Update all packages",
+            PaletteCommand::ScheduleAllUpdates => "Schedule all updates for later",
             PaletteCommand::CleanCaches => "Clean all caches",
             PaletteCommand::GoToHome => "Go to Home",
             PaletteCommand::GoToLibrary => "Go to Library",
@@ -41,6 +44,7 @@ impl PaletteCommand {
             PaletteCommand::GoToHealth => "Go to Health",
             PaletteCommand::GoToHistory => "Go to History",
             PaletteCommand::GoToFavorites => "Go to Favorites",
+            PaletteCommand::GoToTasks => "Go to Scheduled Tasks",
             PaletteCommand::RefreshPackages => "Refresh package list",
             PaletteCommand::ToggleSelectionMode => "Toggle selection mode",
             PaletteCommand::OpenPreferences => "Open preferences",
@@ -54,6 +58,7 @@ impl PaletteCommand {
     pub fn icon(&self) -> &str {
         match self {
             PaletteCommand::UpdateAll => "software-update-available-symbolic",
+            PaletteCommand::ScheduleAllUpdates => "alarm-symbolic",
             PaletteCommand::CleanCaches => "edit-clear-all-symbolic",
             PaletteCommand::GoToHome => "go-home-symbolic",
             PaletteCommand::GoToLibrary => "view-grid-symbolic",
@@ -62,6 +67,7 @@ impl PaletteCommand {
             PaletteCommand::GoToHealth => "heart-outline-thick-symbolic",
             PaletteCommand::GoToHistory => "document-open-recent-symbolic",
             PaletteCommand::GoToFavorites => "starred-symbolic",
+            PaletteCommand::GoToTasks => "alarm-symbolic",
             PaletteCommand::RefreshPackages => "view-refresh-symbolic",
             PaletteCommand::ToggleSelectionMode => "selection-mode-symbolic",
             PaletteCommand::OpenPreferences => "emblem-system-symbolic",
@@ -84,6 +90,7 @@ impl PaletteCommand {
     pub fn keywords(&self) -> &[&str] {
         match self {
             PaletteCommand::UpdateAll => &["update", "upgrade", "all", "packages"],
+            PaletteCommand::ScheduleAllUpdates => &["schedule", "later", "defer", "timer", "queue", "all", "updates"],
             PaletteCommand::CleanCaches => &["clean", "cache", "cleanup", "clear", "free", "space"],
             PaletteCommand::GoToHome => &["home", "discover", "browse"],
             PaletteCommand::GoToLibrary => &["library", "installed", "packages", "list"],
@@ -92,6 +99,7 @@ impl PaletteCommand {
             PaletteCommand::GoToHealth => &["health", "status", "score", "issues"],
             PaletteCommand::GoToHistory => &["history", "timeline", "log", "recent"],
             PaletteCommand::GoToFavorites => &["favorites", "starred", "bookmarks"],
+            PaletteCommand::GoToTasks => &["tasks", "scheduled", "queue", "pending", "timer", "alarm"],
             PaletteCommand::RefreshPackages => &["refresh", "reload", "sync"],
             PaletteCommand::ToggleSelectionMode => &["select", "selection", "multi", "bulk"],
             PaletteCommand::OpenPreferences => &["preferences", "settings", "config", "options"],
@@ -105,6 +113,7 @@ impl PaletteCommand {
     fn all_static() -> Vec<PaletteCommand> {
         vec![
             PaletteCommand::UpdateAll,
+            PaletteCommand::ScheduleAllUpdates,
             PaletteCommand::CleanCaches,
             PaletteCommand::GoToHome,
             PaletteCommand::GoToLibrary,
@@ -113,6 +122,7 @@ impl PaletteCommand {
             PaletteCommand::GoToHealth,
             PaletteCommand::GoToHistory,
             PaletteCommand::GoToFavorites,
+            PaletteCommand::GoToTasks,
             PaletteCommand::RefreshPackages,
             PaletteCommand::ToggleSelectionMode,
             PaletteCommand::OpenPreferences,
