@@ -256,6 +256,7 @@ impl PackageBackend for NpmBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        update_category: None,
                         enrichment: None,
                     });
                 }
@@ -341,6 +342,7 @@ impl PackageBackend for NpmBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -675,12 +677,12 @@ impl PackageBackend for NpmBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
         }
 
-        // Enrich first 10 search results with additional metadata
         let enrichment_futures: Vec<_> = packages
             .iter()
             .take(10)
@@ -691,7 +693,6 @@ impl PackageBackend for NpmBackend {
 
         for (pkg, info_opt) in packages.iter_mut().take(10).zip(enrichments.into_iter()) {
             if let Some(info) = info_opt {
-                // Update description if empty or shorter
                 if let Some(ref desc) = info.description {
                     if pkg.description.is_empty() || pkg.description.len() < desc.len() {
                         pkg.description.clone_from(desc);
@@ -708,6 +709,155 @@ impl PackageBackend for NpmBackend {
         }
 
         Ok(packages)
+    }
+
+    async fn get_cache_size(&self) -> Result<u64> {
+        let output = Command::new("npm")
+            .args(["cache", "ls", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+
+        if output.is_err() {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            let cache_path = format!("{}/.npm/_cacache", home);
+            let path = std::path::Path::new(&cache_path);
+
+            if !path.exists() {
+                return Ok(0);
+            }
+
+            let du_output = Command::new("du")
+                .args(["-sb", &cache_path])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .context("Failed to get npm cache size")?;
+
+            let stdout = String::from_utf8_lossy(&du_output.stdout);
+            let size = stdout
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            return Ok(size);
+        }
+
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let cache_path = format!("{}/.npm/_cacache", home);
+        let path = std::path::Path::new(&cache_path);
+
+        if !path.exists() {
+            return Ok(0);
+        }
+
+        let du_output = Command::new("du")
+            .args(["-sb", &cache_path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get npm cache size")?;
+
+        let stdout = String::from_utf8_lossy(&du_output.stdout);
+        let size = stdout
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        Ok(size)
+    }
+
+    async fn get_orphaned_packages(&self) -> Result<Vec<Package>> {
+        Ok(Vec::new())
+    }
+
+    async fn cleanup_cache(&self) -> Result<u64> {
+        let before = self.get_cache_size().await.unwrap_or(0);
+
+        let output = Command::new("npm")
+            .args(["cache", "clean", "--force"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to clean npm cache")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to clean npm cache: {}", stderr);
+        }
+
+        Ok(before)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Npm
+    }
+
+    async fn get_package_commands(&self, name: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let output = Command::new("npm")
+            .args(["root", "-g"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get npm root")?;
+
+        let npm_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let npm_root_path = std::path::Path::new(&npm_root);
+        let bin_dir = npm_root_path
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("bin"));
+
+        let mut commands = Vec::new();
+
+        let pkg_json_path = npm_root_path.join(name).join("package.json");
+        if pkg_json_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&pkg_json_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(bin_dir) = &bin_dir {
+                        if let Some(bin) = json.get("bin") {
+                            match bin {
+                                serde_json::Value::String(_) => {
+                                    let short_name = name.rsplit('/').next().unwrap_or(name);
+                                    let bin_path = bin_dir.join(short_name);
+                                    if bin_path.exists() || bin_path.is_symlink() {
+                                        commands.push((short_name.to_string(), bin_path));
+                                    }
+                                }
+                                serde_json::Value::Object(map) => {
+                                    for key in map.keys() {
+                                        let bin_path = bin_dir.join(key);
+                                        if bin_path.exists() || bin_path.is_symlink() {
+                                            commands.push((key.clone(), bin_path));
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if commands.is_empty() {
+            if let Some(bin_dir) = bin_dir {
+                let short_name = name.rsplit('/').next().unwrap_or(name);
+                let pkg_bin = bin_dir.join(short_name);
+                if pkg_bin.exists() || pkg_bin.is_symlink() {
+                    commands.push((short_name.to_string(), pkg_bin));
+                }
+            }
+        }
+
+        Ok(commands)
     }
 }
 

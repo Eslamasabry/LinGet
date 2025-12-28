@@ -250,6 +250,7 @@ impl PackageBackend for CargoBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
         }
@@ -294,7 +295,7 @@ impl PackageBackend for CargoBackend {
                     let enrichment = Self::create_enrichment(&info);
                     let homepage = info.homepage.or(info.repository);
 
-                    packages_with_updates.push(Package {
+                    let mut pkg = Package {
                         name: pkg.name,
                         version: pkg.version,
                         available_version: Some(info.max_version),
@@ -307,8 +308,11 @@ impl PackageBackend for CargoBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        update_category: None,
                         enrichment: Some(enrichment),
-                    });
+                    };
+                    pkg.update_category = Some(pkg.detect_update_category());
+                    packages_with_updates.push(pkg);
                 }
             } else {
                 // Skip packages that fail to fetch - might be yanked or renamed
@@ -589,6 +593,7 @@ impl PackageBackend for CargoBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
         }
@@ -605,7 +610,6 @@ impl PackageBackend for CargoBackend {
 
         for (pkg, info_opt) in packages.iter_mut().take(10).zip(enrichments.into_iter()) {
             if let Some(info) = info_opt {
-                // Update description if it was empty or truncated
                 if pkg.description.is_empty() || pkg.description.len() < info.description.len() {
                     pkg.description = info.description.clone();
                 }
@@ -616,9 +620,42 @@ impl PackageBackend for CargoBackend {
 
         Ok(packages)
     }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Cargo
+    }
+
+    async fn get_package_commands(&self, name: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let output = Command::new("cargo")
+            .args(["install", "--list"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to list cargo packages")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut commands = Vec::new();
+        let mut current_crate: Option<&str> = None;
+
+        for line in stdout.lines() {
+            if !line.starts_with("    ") {
+                let crate_name = line.split_whitespace().next().unwrap_or("");
+                current_crate = Some(crate_name);
+            } else if let Some(crate_name) = current_crate {
+                if crate_name == name {
+                    let bin_name = line.trim().trim_end_matches(':');
+                    if let Ok(path) = which::which(bin_name) {
+                        commands.push((bin_name.to_string(), path));
+                    }
+                }
+            }
+        }
+
+        Ok(commands)
+    }
 }
 
-/// Format download count for display
 fn format_downloads(count: u64) -> String {
     if count >= 1_000_000 {
         format!("{:.1}M", count as f64 / 1_000_000.0)

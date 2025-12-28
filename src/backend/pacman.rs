@@ -82,6 +82,7 @@ impl PackageBackend for PacmanBackend {
             maintainer: None,
             dependencies: Vec::new(),
             install_date: None,
+            update_category: None,
             enrichment: None,
         };
 
@@ -105,6 +106,7 @@ impl PackageBackend for PacmanBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        update_category: None,
                         enrichment: None,
                     };
                 }
@@ -188,6 +190,7 @@ impl PackageBackend for PacmanBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -233,7 +236,6 @@ impl PackageBackend for PacmanBackend {
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
-        // pacman -Ss query
         let output = Command::new("pacman")
             .args(["-Ss", query])
             .stdout(Stdio::piped())
@@ -246,9 +248,6 @@ impl PackageBackend for PacmanBackend {
         let mut packages = Vec::new();
 
         let lines: Vec<&str> = stdout.lines().collect();
-        // Output format:
-        // repo/name version [installed]
-        //     Description
 
         let mut i = 0;
         while i < lines.len() {
@@ -279,6 +278,7 @@ impl PackageBackend for PacmanBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        update_category: None,
                         enrichment: None,
                     });
                     i += 2;
@@ -289,5 +289,131 @@ impl PackageBackend for PacmanBackend {
         }
 
         Ok(packages)
+    }
+
+    async fn get_cache_size(&self) -> Result<u64> {
+        let cache_path = std::path::Path::new("/var/cache/pacman/pkg");
+        if !cache_path.exists() {
+            return Ok(0);
+        }
+
+        let output = Command::new("du")
+            .args(["-sb", "/var/cache/pacman/pkg"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get pacman cache size")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let size = stdout
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        Ok(size)
+    }
+
+    async fn get_orphaned_packages(&self) -> Result<Vec<Package>> {
+        let output = Command::new("pacman")
+            .args(["-Qtdq"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to list pacman orphaned packages")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+
+        for line in stdout.lines() {
+            let name = line.trim();
+            if !name.is_empty() {
+                packages.push(Package {
+                    name: name.to_string(),
+                    version: String::new(),
+                    available_version: None,
+                    description: format!("Orphaned package: {}", name),
+                    source: PackageSource::Pacman,
+                    status: PackageStatus::Installed,
+                    size: None,
+                    homepage: None,
+                    license: None,
+                    maintainer: None,
+                    dependencies: Vec::new(),
+                    install_date: None,
+                    update_category: None,
+                    enrichment: None,
+                });
+            }
+        }
+
+        Ok(packages)
+    }
+
+    async fn cleanup_cache(&self) -> Result<u64> {
+        let before = self.get_cache_size().await.unwrap_or(0);
+
+        if which::which("paccache").is_ok() {
+            run_pkexec(
+                "paccache",
+                &["-rk1"],
+                "Failed to clean pacman cache with paccache",
+                Suggest {
+                    command: "sudo paccache -rk1".to_string(),
+                },
+            )
+            .await?;
+        } else {
+            run_pkexec(
+                "pacman",
+                &["-Sc", "--noconfirm"],
+                "Failed to clean pacman cache",
+                Suggest {
+                    command: "sudo pacman -Sc --noconfirm".to_string(),
+                },
+            )
+            .await?;
+        }
+
+        let after = self.get_cache_size().await.unwrap_or(0);
+        Ok(before.saturating_sub(after))
+    }
+
+    async fn get_reverse_dependencies(&self, name: &str) -> Result<Vec<String>> {
+        let output = Command::new("pacman")
+            .args(["-Qi", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get package info")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut deps = Vec::new();
+
+        for line in stdout.lines() {
+            if let Some((key, value)) = line.split_once(':') {
+                if key.trim() == "Required By" {
+                    let value = value.trim();
+                    if value != "None" {
+                        for dep in value.split_whitespace() {
+                            let dep = dep.trim();
+                            if !dep.is_empty() && dep != name {
+                                deps.push(dep.to_string());
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        Ok(deps)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Pacman
     }
 }

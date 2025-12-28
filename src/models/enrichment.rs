@@ -1,22 +1,22 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
+use parking_lot::RwLock;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::RwLock;
 use std::time::{Duration, SystemTime};
 
 use super::{Package, PackageEnrichment, PackageSource};
 
-/// Cache entry with TTL
 #[derive(Clone, Serialize, Deserialize)]
 struct CacheEntry {
     enrichment: PackageEnrichment,
     fetched_at: u64,
 }
 
-/// Enrichment cache (persisted to disk)
-static ENRICHMENT_CACHE: RwLock<Option<HashMap<String, CacheEntry>>> = RwLock::new(None);
+static ENRICHMENT_CACHE: Lazy<RwLock<Option<HashMap<String, CacheEntry>>>> =
+    Lazy::new(|| RwLock::new(None));
 
 /// Cache TTL: 7 days
 const CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
@@ -40,7 +40,6 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Load cache from disk
 pub fn load_cache() {
     let path = cache_path();
     if !path.exists() {
@@ -51,15 +50,12 @@ pub fn load_cache() {
         Ok(content) => {
             if let Ok(cache) = serde_json::from_str::<HashMap<String, CacheEntry>>(&content) {
                 let now = now_secs();
-                // Filter out expired entries
                 let valid: HashMap<_, _> = cache
                     .into_iter()
                     .filter(|(_, v)| now - v.fetched_at < CACHE_TTL_SECS)
                     .collect();
 
-                if let Ok(mut c) = ENRICHMENT_CACHE.write() {
-                    *c = Some(valid);
-                }
+                *ENRICHMENT_CACHE.write() = Some(valid);
                 tracing::debug!("Loaded enrichment cache");
             }
         }
@@ -67,12 +63,8 @@ pub fn load_cache() {
     }
 }
 
-/// Save cache to disk
-fn save_cache() {
-    let cache = match ENRICHMENT_CACHE.read() {
-        Ok(c) => c.clone(),
-        Err(_) => return,
-    };
+fn save_cache_to_disk() {
+    let cache = ENRICHMENT_CACHE.read().clone();
 
     if let Some(ref map) = cache {
         let path = cache_path();
@@ -82,28 +74,26 @@ fn save_cache() {
     }
 }
 
-/// Get cached enrichment for a package
-pub fn get_cached(package: &Package) -> Option<PackageEnrichment> {
+fn get_cached(package: &Package) -> Option<PackageEnrichment> {
     let key = format!("{}:{}", package.source, package.name);
     let now = now_secs();
 
-    if let Ok(cache) = ENRICHMENT_CACHE.read() {
-        if let Some(ref map) = *cache {
-            if let Some(entry) = map.get(&key) {
-                if now - entry.fetched_at < CACHE_TTL_SECS {
-                    return Some(entry.enrichment.clone());
-                }
+    let cache = ENRICHMENT_CACHE.read();
+    if let Some(ref map) = *cache {
+        if let Some(entry) = map.get(&key) {
+            if now - entry.fetched_at < CACHE_TTL_SECS {
+                return Some(entry.enrichment.clone());
             }
         }
     }
     None
 }
 
-/// Store enrichment in cache
 fn cache_enrichment(package: &Package, enrichment: &PackageEnrichment) {
     let key = format!("{}:{}", package.source, package.name);
 
-    if let Ok(mut cache) = ENRICHMENT_CACHE.write() {
+    {
+        let mut cache = ENRICHMENT_CACHE.write();
         let map = cache.get_or_insert_with(HashMap::new);
         map.insert(
             key,
@@ -114,18 +104,14 @@ fn cache_enrichment(package: &Package, enrichment: &PackageEnrichment) {
         );
     }
 
-    // Save asynchronously
-    std::thread::spawn(save_cache);
+    std::thread::spawn(save_cache_to_disk);
 }
 
-/// Fetch enrichment data for a package
 pub async fn fetch_enrichment(package: &Package) -> Option<PackageEnrichment> {
-    // Check cache first
     if let Some(cached) = get_cached(package) {
         return Some(cached);
     }
 
-    // Fetch from appropriate source
     let enrichment = match package.source {
         PackageSource::Flatpak => fetch_flathub(&package.name).await,
         PackageSource::Cargo => fetch_crates_io(&package.name).await,
@@ -136,7 +122,6 @@ pub async fn fetch_enrichment(package: &Package) -> Option<PackageEnrichment> {
         _ => None,
     };
 
-    // Cache the result
     if let Some(ref e) = enrichment {
         cache_enrichment(package, e);
     }
@@ -145,12 +130,12 @@ pub async fn fetch_enrichment(package: &Package) -> Option<PackageEnrichment> {
 }
 
 // ============================================================================
-// Flathub API (for Flatpak packages)
+// Flatpak API (for Flatpak packages)
 // ============================================================================
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
-struct FlathubApp {
+struct FlatpakApp {
     #[serde(rename = "appId")]
     app_id: Option<String>,
     name: Option<String>,
@@ -160,39 +145,50 @@ struct FlathubApp {
     icon: Option<String>,
     #[serde(rename = "installs_last_month")]
     installs: Option<u64>,
-    categories: Option<Vec<FlathubCategory>>,
-    screenshots: Option<Vec<FlathubScreenshot>>,
-    urls: Option<FlathubUrls>,
+    categories: Option<Vec<FlatpakCategory>>,
+    screenshots: Option<Vec<FlatpakScreenshot>>,
+    urls: Option<FlatpakUrls>,
 }
 
 #[derive(Deserialize)]
-struct FlathubCategory {
+struct FlatpakCategory {
     name: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct FlathubScreenshot {
+struct FlatpakScreenshot {
     #[serde(rename = "imgDesktopUrl")]
     img_desktop_url: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
-struct FlathubUrls {
+struct FlatpakUrls {
     homepage: Option<String>,
     bugtracker: Option<String>,
 }
 
 async fn fetch_flathub(app_id: &str) -> Option<PackageEnrichment> {
-    let client = http_client().ok()?;
+    let client = http_client()
+        .context("Failed to create HTTP client for Flatpak")
+        .ok()?;
     let url = format!("https://flathub.org/api/v2/appstream/{}", app_id);
 
-    let resp = client.get(&url).send().await.ok()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to fetch Flatpak metadata")
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }
 
-    let app: FlathubApp = resp.json().await.ok()?;
+    let app: FlatpakApp = resp
+        .json()
+        .await
+        .context("Failed to parse Flatpak app data")
+        .ok()?;
 
     let icon_url = app.icon.map(|i| {
         if i.starts_with("http") {
@@ -257,15 +253,26 @@ struct CratesIoCrate {
 }
 
 async fn fetch_crates_io(name: &str) -> Option<PackageEnrichment> {
-    let client = http_client().ok()?;
+    let client = http_client()
+        .context("Failed to create HTTP client for crates.io")
+        .ok()?;
     let url = format!("https://crates.io/api/v1/crates/{}", name);
 
-    let resp = client.get(&url).send().await.ok()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to fetch crates.io metadata")
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }
 
-    let data: CratesIoResponse = resp.json().await.ok()?;
+    let data: CratesIoResponse = resp
+        .json()
+        .await
+        .context("Failed to parse crates.io response")
+        .ok()?;
     let c = data.krate;
 
     Some(PackageEnrichment {
@@ -302,15 +309,26 @@ struct PyPIInfo {
 }
 
 async fn fetch_pypi(name: &str) -> Option<PackageEnrichment> {
-    let client = http_client().ok()?;
+    let client = http_client()
+        .context("Failed to create HTTP client for PyPI")
+        .ok()?;
     let url = format!("https://pypi.org/pypi/{}/json", name);
 
-    let resp = client.get(&url).send().await.ok()?;
+    let resp = client.get(&url).send().await;
+    if let Err(ref e) = resp {
+        tracing::debug!("Failed to fetch PyPI metadata: {}", e);
+        return None;
+    }
+    let resp = resp.unwrap();
     if !resp.status().is_success() {
         return None;
     }
 
-    let data: PyPIResponse = resp.json().await.ok()?;
+    let data: PyPIResponse = resp
+        .json()
+        .await
+        .context("Failed to parse PyPI response")
+        .ok()?;
     let info = data.info;
 
     // Extract repository from project_urls
@@ -379,26 +397,37 @@ enum NpmAuthor {
 }
 
 async fn fetch_npmjs(name: &str) -> Option<PackageEnrichment> {
-    let client = http_client().ok()?;
+    let client = http_client()
+        .context("Failed to create HTTP client for npmjs")
+        .ok()?;
     let url = format!("https://registry.npmjs.org/{}", name);
 
-    let resp = client.get(&url).send().await.ok()?;
+    let resp = client.get(&url).send().await;
+    if let Err(ref e) = resp {
+        tracing::debug!("Failed to fetch npmjs registry metadata: {}", e);
+        return None;
+    }
+    let resp = resp.unwrap();
     if !resp.status().is_success() {
         return None;
     }
 
-    let data: NpmResponse = resp.json().await.ok()?;
-
-    let repository = match data.repository {
-        Some(NpmRepository::String(s)) => Some(s),
-        Some(NpmRepository::Object { url }) => url,
-        None => data.homepage,
-    };
+    let data: NpmResponse = resp
+        .json()
+        .await
+        .context("Failed to parse npmjs registry response")
+        .ok()?;
 
     let developer = match data.author {
         Some(NpmAuthor::String(s)) => Some(s),
         Some(NpmAuthor::Object { name }) => name,
         None => None,
+    };
+
+    let repository = match data.repository {
+        Some(NpmRepository::String(s)) => Some(s),
+        Some(NpmRepository::Object { url }) => url,
+        None => data.homepage.clone(),
     };
 
     Some(PackageEnrichment {
@@ -448,21 +477,30 @@ struct SnapCategory {
 }
 
 async fn fetch_snapcraft(name: &str) -> Option<PackageEnrichment> {
-    let client = http_client().ok()?;
+    let client = http_client()
+        .context("Failed to create HTTP client for Snapcraft")
+        .ok()?;
     let url = format!("https://api.snapcraft.io/v2/snaps/info/{}", name);
 
     let resp = client
         .get(&url)
         .header("Snap-Device-Series", "16")
         .send()
-        .await
-        .ok()?;
-
+        .await;
+    if let Err(ref e) = resp {
+        tracing::debug!("Failed to fetch snap metadata: {}", e);
+        return None;
+    }
+    let resp = resp.unwrap();
     if !resp.status().is_success() {
         return None;
     }
 
-    let data: SnapResponse = resp.json().await.ok()?;
+    let data: SnapResponse = resp
+        .json()
+        .await
+        .context("Failed to parse snap response")
+        .ok()?;
     let snap = data.snap;
 
     let icon_url = snap.media.as_ref().and_then(|m| {
@@ -487,12 +525,14 @@ async fn fetch_snapcraft(name: &str) -> Option<PackageEnrichment> {
         .filter_map(|c| c.name)
         .collect();
 
+    let developer = snap.publisher.and_then(|p| p.display_name);
+
     Some(PackageEnrichment {
         icon_url,
         screenshots,
         categories,
         summary: snap.summary.or(snap.description),
-        developer: snap.publisher.and_then(|p| p.display_name),
+        developer,
         repository: snap.website,
         ..Default::default()
     })
@@ -530,22 +570,37 @@ struct PubDevScore {
 }
 
 async fn fetch_pub_dev(name: &str) -> Option<PackageEnrichment> {
-    let client = http_client().ok()?;
+    let client = http_client()
+        .context("Failed to create HTTP client for pub.dev")
+        .ok()?;
 
     // Fetch package info
     let url = format!("https://pub.dev/api/packages/{}", name);
-    let resp = client.get(&url).send().await.ok()?;
+    let resp = client.get(&url).send().await;
+    if let Err(ref e) = resp {
+        tracing::debug!("Failed to fetch pub.dev package info: {}", e);
+        return None;
+    }
+    let resp = resp.unwrap();
     if !resp.status().is_success() {
         return None;
     }
 
-    let data: PubDevResponse = resp.json().await.ok()?;
+    let data: PubDevResponse = resp
+        .json()
+        .await
+        .context("Failed to fetch pub.dev package metadata")
+        .ok()?;
     let pubspec = data.latest.and_then(|v| v.pubspec)?;
 
     // Fetch score
     let score_url = format!("https://pub.dev/api/packages/{}/score", name);
     let score: Option<PubDevScore> = match client.get(&score_url).send().await {
-        Ok(r) => r.json().await.ok(),
+        Ok(r) => r
+            .json()
+            .await
+            .context("Failed to parse pub.dev score response")
+            .ok(),
         Err(_) => None,
     };
 

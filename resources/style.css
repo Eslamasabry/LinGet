@@ -169,8 +169,24 @@
     opacity: 0.35;
 }
 
+.provider-row.provider-active-filter {
+    background-color: alpha(@accent_bg_color, 0.15);
+    border-left: 3px solid @accent_color;
+}
+
+.provider-row.provider-active-filter .provider-title {
+    color: @accent_color;
+}
+
 .provider-title {
     font-weight: 700;
+}
+
+.filter-indicator {
+    background-color: alpha(@accent_bg_color, 0.1);
+    border-radius: 8px;
+    padding: 8px 12px;
+    border: 1px solid alpha(@accent_color, 0.2);
 }
 
 /* Keep the Sources header actions visually small and aligned */
@@ -247,7 +263,7 @@
 
 .skeleton-block {
     background-color: alpha(@view_fg_color, 0.06);
-    border-radius: 10px;
+    border-radius: 8px;
 }
 
 .pkg-row:focus-visible {
@@ -266,11 +282,25 @@
 }
 
 .pkg-row .row-action {
-    opacity: 0.15;
-    transition: opacity 150ms ease;
+    opacity: 0;
+    transition: all 150ms ease;
     min-width: 36px;
     min-height: 36px;
     margin-left: 6px;
+    border-radius: 999px;
+}
+
+.pkg-row .row-action.suggested-action {
+    opacity: 0.7;
+    background-color: alpha(@accent_bg_color, 0.1);
+    color: @accent_color;
+}
+
+.pkg-row .row-action.suggested-action:hover {
+    opacity: 1;
+    background-color: @accent_bg_color;
+    color: @accent_fg_color;
+    transform: scale(1.05);
 }
 
 .pkg-row .row-spinner,
@@ -297,7 +327,19 @@
 
 .pkg-row:hover .row-action,
 .pkg-row:focus-within .row-action {
-    opacity: 1.0;
+    opacity: 0.8;
+}
+
+.pkg-row:hover .row-action:hover {
+    opacity: 1;
+    background-color: alpha(@view_fg_color, 0.1);
+    transform: scale(1.05);
+}
+
+.pkg-row:hover .row-action.suggested-action {
+    opacity: 1;
+    background-color: @accent_bg_color;
+    color: @accent_fg_color;
 }
 
 .update-dot {
@@ -334,9 +376,22 @@
     transition: opacity 140ms ease;
 }
 
-.pkg-row:hover .row-chevron,
 .pkg-row:focus-within .row-chevron {
     opacity: 0.35;
+}
+
+@keyframes loading-pulse {
+    0% { opacity: 0.4; transform: scale(0.9); }
+    50% { opacity: 1.0; transform: scale(1.1); }
+    100% { opacity: 0.4; transform: scale(0.9); }
+}
+
+.source-dot.loading {
+    animation: loading-pulse 1.2s infinite ease-in-out;
+}
+
+.icon-frame.card {
+    transition: all 300ms ease;
 }
 
 /* View toolbars */
@@ -394,8 +449,34 @@ button:focus-visible {
     font-weight: 500;
 }
 
+.chip-warning {
+    background-color: alpha(@warning_color, 0.15);
+    color: @warning_color;
+}
+
+.chip-success {
+    background-color: alpha(@success_color, 0.15);
+    color: @success_color;
+}
+
+.chip-danger {
+    background-color: alpha(@error_color, 0.15);
+    color: @error_color;
+}
+
+.warning-banner {
+    background-color: alpha(@warning_color, 0.08);
+    border: 1px solid alpha(@warning_color, 0.3);
+    border-radius: 12px;
+    padding: 12px 16px;
+}
+
+.warning-banner .warning-icon {
+    color: @warning_color;
+}
+
 .icon-frame {
-    border-radius: 14px;
+    border-radius: 12px;
     background-color: alpha(@view_fg_color, 0.03);
     border: 1px solid alpha(@borders, 0.2);
     padding: 6px;
@@ -409,6 +490,68 @@ button:focus-visible {
 .search-entry-large {
     border-radius: 8px;
     padding: 4px;
+}
+
+/* Recent Searches Popover */
+.recent-searches-popover {
+    padding: 0;
+    min-width: 320px;
+}
+
+.recent-searches-popover contents {
+    padding: 0;
+    border-radius: 12px;
+}
+
+.recent-searches-list {
+    background: transparent;
+    border: none;
+    margin: 4px 8px 8px 8px;
+}
+
+.recent-searches-list > row {
+    border-radius: 8px;
+    margin: 2px 0;
+    padding: 4px 8px;
+    min-height: 40px;
+    transition: background-color 150ms ease;
+}
+
+.recent-searches-list > row:hover {
+    background-color: alpha(@view_fg_color, 0.06);
+}
+
+.recent-searches-list > row:active {
+    background-color: alpha(@view_fg_color, 0.1);
+}
+
+/* Sort Popover */
+.sort-popover {
+    padding: 0;
+    min-width: 160px;
+}
+
+.sort-popover contents {
+    padding: 0;
+}
+
+.sort-option-btn {
+    border-radius: 6px;
+    padding: 8px 12px;
+}
+
+.sort-option-btn:hover {
+    background-color: alpha(@view_fg_color, 0.06);
+}
+
+.sort-option-btn:active {
+    background-color: alpha(@view_fg_color, 0.1);
+}
+
+.sort-option-btn.active {
+    background-color: alpha(@accent_bg_color, 0.15);
+    color: @accent_color;
+    font-weight: 600;
 }
 
 /* Typography & Titles */
@@ -475,9 +618,67 @@ spinner {
     box-shadow: 0 4px 24px rgba(0,0,0,0.2);
 }
 
+/* Batch Progress Mini Bar (in TaskHub rows) */
+.batch-progress-mini {
+    min-height: 4px;
+    border-radius: 2px;
+}
+
+.batch-progress-mini trough {
+    min-height: 4px;
+    background-color: alpha(@view_fg_color, 0.1);
+    border-radius: 2px;
+}
+
+.batch-progress-mini progress {
+    min-height: 4px;
+    background-color: @accent_bg_color;
+    border-radius: 2px;
+}
+
+/* ETA Label in Progress Overlay */
+.progress-eta {
+    font-variant-numeric: tabular-nums;
+    transition: opacity 200ms ease;
+}
+
+/* Step counter styling */
+.numeric {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
 /* Status Page Success */
 .success-status {
     color: @success_color;
+}
+
+/* Toast Icon Colors */
+toast image.success {
+    color: @success_color;
+}
+
+toast image.error {
+    color: @error_color;
+}
+
+toast image.warning {
+    color: @warning_color;
+}
+
+toast.success-toast {
+    background: linear-gradient(135deg, alpha(@success_color, 0.15), alpha(@success_color, 0.05));
+    border: 1px solid alpha(@success_color, 0.3);
+}
+
+toast.error-toast {
+    background: linear-gradient(135deg, alpha(@error_color, 0.15), alpha(@error_color, 0.05));
+    border: 1px solid alpha(@error_color, 0.3);
+}
+
+toast.success-toast label,
+toast.error-toast label {
+    font-weight: 600;
 }
 
 /* Action Bar */
@@ -493,11 +694,6 @@ spinner {
 
 .destructive-action {
     font-weight: 600;
-}
-
-/* App Icon */
-.app-icon {
-    /* -gtk-icon-effect: highlight; not supported in GTK4 */
 }
 
 /* Favorite Button */
@@ -570,6 +766,21 @@ carouselindicatordots {
 .details-panel {
     border-left: 1px solid alpha(@borders, 0.5);
     min-width: 400px;
+}
+
+.details-panel scrolledwindow > viewport > * {
+    animation: details-content-enter 250ms cubic-bezier(0.4, 0, 0.2, 1) backwards;
+}
+
+@keyframes details-content-enter {
+    from {
+        opacity: 0;
+        transform: translateX(12px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
 }
 
 .details-panel headerbar {
@@ -647,6 +858,29 @@ carouselindicatordots {
    Keyframes for micro-interactions and transitions
    ========================================================================== */
 
+/* Row Enter Animation - staggered slide up */
+@keyframes row-enter {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes card-enter {
+    from {
+        opacity: 0;
+        transform: scale(0.95) translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
 /* Fade In */
 @keyframes fade-in {
     from { opacity: 0; }
@@ -687,9 +921,49 @@ carouselindicatordots {
 
 /* Pulse (for success states) */
 @keyframes pulse-success {
-    0% { background-color: alpha(@success_color, 0); }
-    50% { background-color: alpha(@success_color, 0.15); }
-    100% { background-color: alpha(@success_color, 0); }
+    0% { 
+        background-color: alpha(@success_color, 0); 
+        transform: scale(1);
+    }
+    25% { 
+        background-color: alpha(@success_color, 0.2); 
+        transform: scale(1.01);
+    }
+    50% { 
+        background-color: alpha(@success_color, 0.15); 
+        transform: scale(1);
+    }
+    100% { 
+        background-color: alpha(@success_color, 0); 
+        transform: scale(1);
+    }
+}
+
+@keyframes success-checkmark {
+    0% {
+        transform: scale(0) rotate(-45deg);
+        opacity: 0;
+    }
+    50% {
+        transform: scale(1.2) rotate(0deg);
+        opacity: 1;
+    }
+    100% {
+        transform: scale(1) rotate(0deg);
+        opacity: 1;
+    }
+}
+
+@keyframes success-ring {
+    0% {
+        box-shadow: 0 0 0 0 alpha(@success_color, 0.4);
+    }
+    70% {
+        box-shadow: 0 0 0 10px alpha(@success_color, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 alpha(@success_color, 0);
+    }
 }
 
 /* Shimmer (for skeleton loading) */
@@ -725,6 +999,40 @@ carouselindicatordots {
     animation: pulse-success 600ms ease-out;
 }
 
+.animate-row-enter {
+    animation: row-enter 180ms cubic-bezier(0.4, 0, 0.2, 1) backwards;
+}
+
+listbox.animate-stagger > row:nth-child(1) { animation-delay: 0ms; }
+listbox.animate-stagger > row:nth-child(2) { animation-delay: 20ms; }
+listbox.animate-stagger > row:nth-child(3) { animation-delay: 40ms; }
+listbox.animate-stagger > row:nth-child(4) { animation-delay: 60ms; }
+listbox.animate-stagger > row:nth-child(5) { animation-delay: 80ms; }
+listbox.animate-stagger > row:nth-child(6) { animation-delay: 100ms; }
+listbox.animate-stagger > row:nth-child(7) { animation-delay: 120ms; }
+listbox.animate-stagger > row:nth-child(8) { animation-delay: 140ms; }
+listbox.animate-stagger > row:nth-child(9) { animation-delay: 160ms; }
+listbox.animate-stagger > row:nth-child(10) { animation-delay: 180ms; }
+listbox.animate-stagger > row:nth-child(n+11) { animation-delay: 200ms; }
+
+listbox.animate-stagger > row {
+    animation: row-enter 180ms cubic-bezier(0.4, 0, 0.2, 1) backwards;
+}
+
+flowbox.animate-stagger > flowboxchild:nth-child(1) { animation-delay: 0ms; }
+flowbox.animate-stagger > flowboxchild:nth-child(2) { animation-delay: 25ms; }
+flowbox.animate-stagger > flowboxchild:nth-child(3) { animation-delay: 50ms; }
+flowbox.animate-stagger > flowboxchild:nth-child(4) { animation-delay: 75ms; }
+flowbox.animate-stagger > flowboxchild:nth-child(5) { animation-delay: 100ms; }
+flowbox.animate-stagger > flowboxchild:nth-child(6) { animation-delay: 125ms; }
+flowbox.animate-stagger > flowboxchild:nth-child(7) { animation-delay: 150ms; }
+flowbox.animate-stagger > flowboxchild:nth-child(8) { animation-delay: 175ms; }
+flowbox.animate-stagger > flowboxchild:nth-child(n+9) { animation-delay: 200ms; }
+
+flowbox.animate-stagger > flowboxchild {
+    animation: card-enter 250ms cubic-bezier(0.4, 0, 0.2, 1) backwards;
+}
+
 /* Skeleton shimmer effect */
 .skeleton-shimmer {
     background: linear-gradient(
@@ -747,9 +1055,23 @@ button:active:not(:disabled) {
     transform: scale(0.98);
 }
 
-/* Row highlight on operation complete */
-.row-success-flash {
-    animation: pulse-success 800ms ease-out;
+.row-success-flash .row-action {
+    animation: success-ring 600ms ease-out;
+}
+
+.operation-success-icon {
+    color: @success_color;
+    animation: success-checkmark 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.operation-complete {
+    border-left: 3px solid @success_color;
+    background-color: alpha(@success_color, 0.05);
+}
+
+.operation-failed {
+    border-left: 3px solid @error_color;
+    background-color: alpha(@error_color, 0.05);
 }
 
 /* ==========================================================================
@@ -855,9 +1177,798 @@ button:active:not(:disabled) {
     font-variant-numeric: tabular-nums;
 }
 
-
-
 *:focus-visible {
     outline: 2px solid @accent_color;
     outline-offset: 2px;
+}
+
+.pkg-card {
+    background-color: alpha(@card_bg_color, 0.8);
+    border: 1px solid alpha(@borders, 0.4);
+    border-radius: 16px;
+    transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 2px 8px alpha(black, 0.05);
+}
+
+.package-grid > flowboxchild {
+    padding: 0;
+    margin: 0;
+}
+
+.pkg-card:hover {
+    transform: translateY(-4px);
+    background-color: @card_bg_color;
+    box-shadow: 0 8px 24px alpha(black, 0.1);
+    border-color: alpha(@accent_color, 0.3);
+}
+
+.pkg-card.selected {
+    background-color: alpha(@accent_bg_color, 0.1);
+    border: 2px solid @accent_color;
+    box-shadow: 0 0 0 4px alpha(@accent_color, 0.1);
+}
+
+.pkg-card.status-update {
+    border-top: 3px solid @accent_color;
+}
+
+.pkg-card.status-installed {
+    border-top: 3px solid @success_color;
+}
+
+.pkg-card.compact-card {
+    border-radius: 10px;
+}
+
+.pkg-card.compact-card .card-icon-frame {
+    border-radius: 14px;
+    padding: 8px;
+}
+
+.pkg-card.compact-card .card-title {
+    font-size: 10pt;
+}
+
+.pkg-card.compact-card .card-source {
+    font-size: 7pt;
+}
+
+.card-icon-frame {
+    border-radius: 16px;
+    background-color: alpha(@view_fg_color, 0.04);
+    border: 1px solid alpha(@borders, 0.1);
+    padding: 12px;
+    transition: transform 200ms ease;
+}
+
+.pkg-card:hover .card-icon-frame {
+    transform: scale(1.05);
+    background-color: alpha(@view_fg_color, 0.06);
+}
+
+.card-title {
+    font-weight: 700;
+    font-size: 12pt;
+    color: @view_fg_color;
+}
+
+.card-source {
+    font-size: 8pt;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    opacity: 0.8;
+}
+
+.favorite-btn-small {
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    opacity: 0.3;
+}
+
+.pkg-card:hover .favorite-btn-small {
+    opacity: 0.8;
+}
+
+.favorite-btn-small:checked {
+    color: @yellow_4;
+    opacity: 1.0;
+}
+
+.status-badge {
+    font-size: 7pt;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.status-badge-update {
+    background-color: alpha(@accent_bg_color, 0.9);
+    color: @accent_fg_color;
+}
+
+.status-badge-installed {
+    background-color: alpha(@success_color, 0.15);
+    color: @success_color;
+}
+
+.card-description {
+    font-size: 9pt;
+    line-height: 1.4;
+    opacity: 0.7;
+    margin-top: 8px;
+}
+
+.card-action-btn {
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+    opacity: 0;
+    transform: scale(0.8);
+    transition: all 150ms ease;
+}
+
+.pkg-card:hover .card-action-btn {
+    opacity: 1.0;
+    transform: scale(1);
+}
+
+.hero-banner {
+    background: linear-gradient(135deg, @accent_bg_color 0%, @accent_color 100%);
+    border-radius: 16px;
+    padding: 40px;
+    color: @accent_fg_color;
+    box-shadow: 0 12px 48px alpha(@accent_bg_color, 0.3);
+    margin-bottom: 32px;
+}
+
+.hero-title {
+    font-size: 28pt;
+    font-weight: 800;
+    letter-spacing: -1.5px;
+    line-height: 1.1;
+}
+
+.hero-subtitle {
+    font-size: 13pt;
+    opacity: 0.95;
+    font-weight: 500;
+}
+
+.hero-badge {
+    background-color: alpha(white, 0.2);
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 9pt;
+}
+
+.task-hub-fab {
+    background: linear-gradient(145deg, 
+        alpha(@accent_bg_color, 1) 0%, 
+        @accent_color 60%,
+        @purple_3 100%);
+    color: @accent_fg_color;
+    box-shadow: 0 4px 12px alpha(@accent_bg_color, 0.4),
+                0 8px 24px alpha(black, 0.2),
+                inset 0 1px 1px alpha(white, 0.25),
+                inset 0 -1px 1px alpha(black, 0.1);
+    min-width: 56px;
+    min-height: 56px;
+    padding: 0;
+    transition: all 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    border: none;
+    border-radius: 16px;
+}
+
+.task-hub-fab image {
+    transition: transform 250ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.task-hub-fab:hover {
+    transform: scale(1.1) translateY(-4px);
+    box-shadow: 0 8px 24px alpha(@accent_bg_color, 0.5),
+                0 16px 40px alpha(black, 0.25),
+                inset 0 1px 1px alpha(white, 0.3);
+    background: linear-gradient(145deg, 
+        @accent_color 0%, 
+        @purple_3 50%,
+        @purple_4 100%);
+}
+
+.task-hub-fab:hover image {
+    transform: rotate(15deg) scale(1.1);
+}
+
+.task-hub-fab:active {
+    transform: scale(0.92);
+    box-shadow: 0 2px 8px alpha(@accent_bg_color, 0.4),
+                0 4px 12px alpha(black, 0.15),
+                inset 0 2px 4px alpha(black, 0.1);
+    transition: all 60ms ease-out;
+}
+
+.task-hub-fab:focus-visible {
+    outline: 3px solid alpha(@accent_color, 0.6);
+    outline-offset: 4px;
+}
+
+.task-hub-fab.has-activity {
+    box-shadow: 0 4px 16px alpha(@accent_bg_color, 0.5),
+                0 8px 24px alpha(black, 0.2),
+                0 0 0 3px alpha(@accent_color, 0.15),
+                0 0 0 6px alpha(@accent_color, 0.08);
+}
+
+.task-hub-badge {
+    background: @error_bg_color;
+    color: @error_fg_color;
+    margin-bottom: 42px;
+    margin-right: 2px;
+    box-shadow: 0 2px 8px alpha(@error_bg_color, 0.4),
+                0 4px 12px alpha(black, 0.2);
+    font-size: 11px;
+    font-weight: 700;
+    min-width: 22px;
+    min-height: 22px;
+    padding: 0 6px;
+    border-radius: 11px;
+    border: 2px solid @window_bg_color;
+}
+
+.task-hub-spinner {
+    color: @accent_fg_color;
+    opacity: 0.9;
+}
+
+.task-hub-popover-container {
+    padding: 0;
+    border-radius: 20px;
+    box-shadow: 0 12px 40px alpha(black, 0.25),
+                0 24px 64px alpha(black, 0.15),
+                0 0 0 1px alpha(@borders, 0.1);
+    border: 1px solid alpha(@borders, 0.2);
+    background: @popover_bg_color;
+}
+
+/* ==========================================================================
+   IMMERSIVE DETAILS OVERLAY
+   Centered modal sheet for package details
+   ========================================================================== */
+
+.details-backdrop {
+    background-color: alpha(black, 0.5);
+}
+
+.details-sheet {
+    background-color: @window_bg_color;
+    border-radius: 16px;
+    box-shadow: 0 24px 80px alpha(black, 0.35),
+                0 8px 32px alpha(black, 0.2);
+    border: 1px solid alpha(@borders, 0.3);
+    min-width: 480px;
+    min-height: 400px;
+    animation: sheet-slide-up 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.details-sheet .details-panel {
+    border: none;
+    border-radius: 16px;
+    min-width: unset;
+}
+
+.details-sheet headerbar {
+    border-radius: 16px 16px 0 0;
+}
+
+@keyframes sheet-slide-up {
+    from {
+        opacity: 0;
+        transform: translateY(24px) scale(0.96);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes backdrop-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.details-backdrop.visible {
+    animation: backdrop-fade-in 200ms ease-out;
+}
+
+/* ==========================================================================
+   EMPTY STATES POLISH
+   Enhanced styling for status pages
+   ========================================================================== */
+
+.empty-state-container statuspage {
+    padding: 48px 24px;
+}
+
+statuspage .icon {
+    opacity: 0.4;
+    margin-bottom: 16px;
+}
+
+statuspage .title {
+    font-size: 18pt;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+statuspage .description {
+    opacity: 0.7;
+}
+
+statuspage.success-status .icon {
+    color: @success_color;
+    opacity: 0.8;
+}
+
+.empty-state {
+    padding: 32px 24px;
+}
+
+.empty-state .icon {
+    opacity: 0.5;
+    margin-bottom: 24px;
+    transition: transform 300ms ease, opacity 200ms ease;
+}
+
+.empty-state:hover .icon {
+    opacity: 0.65;
+    transform: scale(1.05);
+}
+
+.empty-state .title {
+    font-size: 20pt;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    margin-bottom: 12px;
+}
+
+.empty-state .description {
+    opacity: 0.75;
+    font-size: 11pt;
+    line-height: 1.5;
+}
+
+.empty-state .success-icon {
+    color: @success_color;
+    opacity: 0.9;
+    animation: success-bounce 600ms ease-out;
+}
+
+@keyframes success-bounce {
+    0% { transform: scale(0.8); opacity: 0; }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); opacity: 0.9; }
+}
+
+.empty-state .heading {
+    font-weight: 700;
+    font-size: 10pt;
+    margin-bottom: 4px;
+}
+
+/* ==========================================================================
+   SKELETON CARDS POLISH
+   Enhanced skeleton animations for grid view
+   ========================================================================== */
+
+.skeleton-card {
+    opacity: 0.6;
+}
+
+.skeleton-card .card-icon-frame {
+    border-radius: 16px;
+}
+
+.skeleton-grid flowboxchild {
+    animation: fade-in 200ms ease-out backwards;
+}
+
+.skeleton-grid flowboxchild:nth-child(1) { animation-delay: 0ms; }
+.skeleton-grid flowboxchild:nth-child(2) { animation-delay: 50ms; }
+.skeleton-grid flowboxchild:nth-child(3) { animation-delay: 100ms; }
+.skeleton-grid flowboxchild:nth-child(4) { animation-delay: 150ms; }
+.skeleton-grid flowboxchild:nth-child(5) { animation-delay: 200ms; }
+.skeleton-grid flowboxchild:nth-child(6) { animation-delay: 250ms; }
+.skeleton-grid flowboxchild:nth-child(7) { animation-delay: 300ms; }
+.skeleton-grid flowboxchild:nth-child(8) { animation-delay: 350ms; }
+.skeleton-grid flowboxchild:nth-child(9) { animation-delay: 400ms; }
+.skeleton-grid flowboxchild:nth-child(10) { animation-delay: 450ms; }
+.skeleton-grid flowboxchild:nth-child(11) { animation-delay: 500ms; }
+.skeleton-grid flowboxchild:nth-child(12) { animation-delay: 550ms; }
+
+/* ==========================================================================
+   PACKAGE CARDS STAGGER ANIMATION
+   Cards fade in with stagger when list loads
+   ========================================================================== */
+
+flowbox.package-grid flowboxchild {
+    animation: card-enter 250ms cubic-bezier(0.4, 0, 0.2, 1) backwards;
+}
+
+flowbox.package-grid flowboxchild:nth-child(1) { animation-delay: 0ms; }
+flowbox.package-grid flowboxchild:nth-child(2) { animation-delay: 30ms; }
+flowbox.package-grid flowboxchild:nth-child(3) { animation-delay: 60ms; }
+flowbox.package-grid flowboxchild:nth-child(4) { animation-delay: 90ms; }
+flowbox.package-grid flowboxchild:nth-child(5) { animation-delay: 120ms; }
+flowbox.package-grid flowboxchild:nth-child(6) { animation-delay: 150ms; }
+flowbox.package-grid flowboxchild:nth-child(7) { animation-delay: 180ms; }
+flowbox.package-grid flowboxchild:nth-child(8) { animation-delay: 210ms; }
+flowbox.package-grid flowboxchild:nth-child(9) { animation-delay: 240ms; }
+flowbox.package-grid flowboxchild:nth-child(10) { animation-delay: 270ms; }
+flowbox.package-grid flowboxchild:nth-child(11) { animation-delay: 300ms; }
+flowbox.package-grid flowboxchild:nth-child(12) { animation-delay: 330ms; }
+
+/* ==========================================================================
+   OFFLINE BANNER
+   Warning bar shown when network is unavailable
+   ========================================================================== */
+
+.offline-banner {
+    background-color: alpha(@yellow_4, 0.15);
+    border-bottom: 1px solid alpha(@yellow_4, 0.3);
+    padding: 8px 16px;
+    animation: slide-in-bottom 200ms ease-out;
+}
+
+.offline-banner image {
+    color: @yellow_4;
+    opacity: 0.9;
+}
+
+.offline-banner label {
+    color: @yellow_4;
+    font-weight: 600;
+    font-size: 9pt;
+}
+
+.offline-banner button {
+    color: @yellow_4;
+    font-weight: 600;
+}
+
+/* ==========================================================================
+   UPDATE CATEGORY BADGES
+   Color-coded badges for update type classification
+   ========================================================================== */
+
+.update-category-badge {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 8pt;
+    font-weight: 600;
+}
+
+.update-category-badge image {
+    opacity: 0.9;
+}
+
+.update-security {
+    background-color: alpha(@red_4, 0.15);
+    color: @red_4;
+}
+
+.update-security image {
+    color: @red_4;
+}
+
+.update-bugfix {
+    background-color: alpha(@yellow_4, 0.15);
+    color: @yellow_5;
+}
+
+.update-bugfix image {
+    color: @yellow_4;
+}
+
+.update-feature {
+    background-color: alpha(@purple_3, 0.15);
+    color: @purple_3;
+}
+
+.update-feature image {
+    color: @purple_3;
+}
+
+.update-minor {
+    background-color: alpha(@view_fg_color, 0.08);
+    color: alpha(@view_fg_color, 0.7);
+}
+
+.update-minor image {
+    color: alpha(@view_fg_color, 0.6);
+}
+
+.dependency-chip {
+    background-color: alpha(@blue_3, 0.12);
+    color: @blue_3;
+}
+
+/* Command Palette */
+.command-palette-window {
+    background-color: @window_bg_color;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+.command-palette-entry {
+    font-size: 14pt;
+    border: none;
+    background: transparent;
+    padding: 8px 12px;
+}
+
+.command-palette-entry:focus {
+    outline: none;
+    box-shadow: none;
+}
+
+.command-palette-list {
+    background: transparent;
+}
+
+.command-palette-list row {
+    border-radius: 8px;
+    margin: 2px 0;
+    padding: 4px 8px;
+    transition: background-color 150ms ease;
+}
+
+.command-palette-list row:selected {
+    background-color: alpha(@accent_bg_color, 0.15);
+}
+
+.command-palette-list row:hover:not(:selected) {
+    background-color: alpha(@view_fg_color, 0.05);
+}
+
+.command-palette-list row image {
+    margin-right: 12px;
+    opacity: 0.7;
+}
+
+.command-palette-list row:selected image {
+    opacity: 1;
+    color: @accent_color;
+}
+
+/* ==========================================================================
+   OLED DARK MODE
+   Pure black backgrounds for AMOLED displays
+   Applied via .oled-dark class on window
+   ========================================================================== */
+
+.oled-dark,
+.oled-dark window,
+.oled-dark .sidebar,
+.oled-dark .navigation-sidebar {
+    background-color: #000000;
+}
+
+.oled-dark headerbar {
+    background-color: #000000;
+    box-shadow: none;
+    border-bottom: 1px solid #1a1a1a;
+}
+
+.oled-dark .view,
+.oled-dark scrolledwindow {
+    background-color: #000000;
+}
+
+.oled-dark .boxed-list,
+.oled-dark .boxed-list > row {
+    background-color: #0a0a0a;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .boxed-list > row:hover {
+    background-color: #141414;
+}
+
+.oled-dark .pkg-card {
+    background-color: #0a0a0a;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .pkg-card:hover {
+    background-color: #141414;
+    border-color: #2a2a2a;
+}
+
+.oled-dark popover contents {
+    background-color: #0a0a0a;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .progress-card {
+    background-color: #0a0a0a;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .details-panel {
+    background-color: #000000;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .card-icon-frame {
+    background-color: #0a0a0a;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .sandbox-section {
+    background-color: #0a0a0a;
+    border-color: #1a1a1a;
+}
+
+.oled-dark preferencespage,
+.oled-dark preferencesgroup {
+    background-color: #000000;
+}
+
+.oled-dark .command-palette-window {
+    background-color: #000000;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .command-palette-list row:selected {
+    background-color: alpha(@accent_bg_color, 0.2);
+}
+
+.oled-dark .command-palette-list row:hover:not(:selected) {
+    background-color: #0a0a0a;
+}
+
+.oled-dark .task-hub-popover-container {
+    background-color: #000000;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .task-hub-popover-container .boxed-list,
+.oled-dark .task-hub-popover-container .boxed-list > row {
+    background-color: #000000;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .hero-banner {
+    background: linear-gradient(135deg, alpha(@accent_bg_color, 0.9) 0%, @accent_color 100%);
+    box-shadow: 0 12px 48px alpha(@accent_bg_color, 0.2);
+}
+
+.oled-dark toast {
+    background-color: #0a0a0a;
+    border-color: #1a1a1a;
+}
+
+.oled-dark toast.success-toast {
+    background: linear-gradient(135deg, alpha(@success_color, 0.12), #000000);
+    border: 1px solid alpha(@success_color, 0.25);
+}
+
+.oled-dark toast.error-toast {
+    background: linear-gradient(135deg, alpha(@error_color, 0.12), #000000);
+    border: 1px solid alpha(@error_color, 0.25);
+}
+
+.oled-dark .details-sheet {
+    background-color: #000000;
+    border-color: #1a1a1a;
+}
+
+.oled-dark .details-backdrop {
+    background-color: alpha(black, 0.7);
+}
+
+/* ==========================================================================
+   OLED DYNAMIC STYLES - Now generated by src/ui/appearance.rs
+   These styles are dynamically generated based on AppearanceConfig.
+   Commented out to avoid conflicts with dynamic CSS injection.
+   ========================================================================== */
+
+/* LEGACY OLED STYLES - KEPT FOR REFERENCE
+.oled-dark .boxed-row {
+    background-color: #0a0a0a;
+    border: 2px solid alpha(@accent_color, 0.4);
+    transition: all 200ms ease;
+}
+... (remaining styles now in appearance.rs)
+*/
+
+/* Background colors that are NOT in dynamic CSS - keep these active */
+.oled-dark .boxed-row {
+    background-color: #0a0a0a;
+}
+
+.oled-dark .boxed-row:hover {
+    background-color: #141414;
+}
+
+.oled-dark .boxed-list > row:hover {
+    background-color: #141414;
+}
+
+/* ==========================================================================
+   ACCENT COLOR SWATCHES
+   Color picker buttons in Preferences
+   ========================================================================== */
+
+.accent-swatch {
+    border: 2px solid transparent;
+    transition: all 150ms ease;
+}
+
+.accent-swatch:hover {
+    transform: scale(1.1);
+}
+
+.accent-swatch:checked {
+    border-color: @view_fg_color;
+    box-shadow: 0 0 0 2px alpha(@view_fg_color, 0.3);
+}
+
+.accent-system {
+    background-color: alpha(@view_fg_color, 0.1);
+    color: @view_fg_color;
+}
+
+.accent-system:checked {
+    background-color: alpha(@accent_color, 0.2);
+    border-color: @accent_color;
+}
+
+.accent-blue { background-color: #3584e4; }
+.accent-teal { background-color: #2190a4; }
+.accent-green { background-color: #3a944a; }
+.accent-yellow { background-color: #c88800; }
+.accent-orange { background-color: #e66100; }
+.accent-red { background-color: #e62222; }
+.accent-pink { background-color: #d56199; }
+.accent-purple { background-color: #9141ac; }
+.accent-slate { background-color: #6e7a8a; }
+
+/* ==========================================================================
+   KEYBOARD NAVIGATION FOCUS INDICATOR
+   Vim-style keyboard focus for power users
+   ========================================================================== */
+
+.keyboard-focused {
+    outline: 2px solid @accent_color;
+    outline-offset: -2px;
+    background-color: alpha(@accent_bg_color, 0.08);
+}
+
+.keyboard-focused.pkg-row {
+    background-color: alpha(@accent_bg_color, 0.12);
+    border-left: 3px solid @accent_color;
+}
+
+.keyboard-focused.pkg-card {
+    outline: 2px solid @accent_color;
+    outline-offset: 0px;
+    box-shadow: 0 0 0 4px alpha(@accent_color, 0.15),
+                0 8px 24px alpha(black, 0.1);
+    transform: translateY(-2px);
+}
+
+.oled-dark .keyboard-focused.pkg-row {
+    background-color: alpha(@accent_bg_color, 0.15);
+    box-shadow: inset 0 0 16px alpha(@accent_color, 0.1);
+}
+
+.oled-dark .keyboard-focused.pkg-card {
+    box-shadow: 0 0 0 4px alpha(@accent_color, 0.2),
+                0 8px 32px alpha(@accent_color, 0.15),
+                0 12px 40px alpha(black, 0.2);
 }

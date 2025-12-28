@@ -151,6 +151,7 @@ pub async fn run(
         maintainer: None,
         dependencies: Vec::new(),
         install_date: None,
+        update_category: None,
         enrichment: None,
     };
 

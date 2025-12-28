@@ -49,99 +49,92 @@ pub fn get_package_icon(name: &str, source: PackageSource) -> String {
 fn find_icon(name: &str, source: PackageSource) -> String {
     match source {
         PackageSource::Flatpak => {
-            // Flatpak app IDs are usually the icon name
-            // Try common patterns
             if name.contains('.') {
-                // It's likely an app ID like "com.spotify.Client"
                 return name.to_string();
             }
             source.icon_name().to_string()
         }
         PackageSource::Snap => {
-            // Try to find snap icon from desktop files
-            if let Some(icon) = find_snap_icon(name) {
+            if let Some(icon) = try_find_snap_icon(name) {
                 return icon;
             }
             source.icon_name().to_string()
         }
-        PackageSource::Apt => {
-            // Try to find from desktop files
-            if let Some(icon) = find_desktop_icon(name) {
+        _ => {
+            if let Some(icon) = try_common_app_icon(name) {
                 return icon;
             }
             source.icon_name().to_string()
         }
-        _ => source.icon_name().to_string(),
     }
 }
 
-/// Search for icon in snap desktop files
-fn find_snap_icon(name: &str) -> Option<String> {
-    let desktop_dirs = [
-        PathBuf::from("/var/lib/snapd/desktop/applications"),
-        dirs::data_dir()?.join("applications"),
-    ];
-
-    for dir in desktop_dirs {
-        if !dir.exists() {
-            continue;
-        }
-
-        // Try to find a desktop file matching the snap name
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
-                    // Snap desktop files are usually named like "snapname_appname.desktop"
-                    if filename.starts_with(&format!("{}_", name))
-                        || filename.starts_with(&format!("{}.", name))
-                    {
-                        if let Some(icon) = parse_desktop_icon(&path) {
-                            return Some(icon);
-                        }
-                    }
+fn try_find_snap_icon(name: &str) -> Option<String> {
+    let snap_dir = Path::new("/var/lib/snapd/desktop/applications");
+    if let Ok(entries) = std::fs::read_dir(snap_dir) {
+        let prefix = format!("{}_", name);
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let file_name_str = file_name.to_string_lossy();
+            if file_name_str.starts_with(&prefix) && file_name_str.ends_with(".desktop") {
+                if let Some(icon) = parse_desktop_icon(&entry.path()) {
+                    return Some(icon);
                 }
             }
         }
     }
-
     None
 }
 
-/// Search for icon in system desktop files
-fn find_desktop_icon(name: &str) -> Option<String> {
-    let desktop_dirs = [
-        PathBuf::from("/usr/share/applications"),
-        PathBuf::from("/usr/local/share/applications"),
-        dirs::data_dir()?.join("applications"),
+fn try_common_app_icon(name: &str) -> Option<String> {
+    let name_lower = name.to_lowercase();
+
+    let common_icons = [
+        ("firefox", "firefox"),
+        ("chromium", "chromium"),
+        ("chrome", "google-chrome"),
+        ("vlc", "vlc"),
+        ("gimp", "gimp"),
+        ("inkscape", "inkscape"),
+        ("blender", "blender"),
+        ("libreoffice", "libreoffice-startcenter"),
+        ("code", "visual-studio-code"),
+        ("vscode", "visual-studio-code"),
+        ("atom", "atom"),
+        ("sublime", "sublime-text"),
+        ("discord", "discord"),
+        ("slack", "slack"),
+        ("telegram", "telegram"),
+        ("signal", "signal-desktop"),
+        ("spotify", "spotify"),
+        ("steam", "steam"),
+        ("wine", "wine"),
+        ("docker", "docker"),
+        ("nodejs", "nodejs"),
+        ("python", "python"),
+        ("rust", "rust"),
+        ("go", "golang"),
+        ("git", "git"),
+        ("vim", "vim"),
+        ("neovim", "nvim"),
+        ("emacs", "emacs"),
+        ("htop", "htop"),
+        ("obs", "com.obsproject.Studio"),
+        ("kdenlive", "kdenlive"),
+        ("audacity", "audacity"),
+        ("krita", "krita"),
+        ("thunderbird", "thunderbird"),
     ];
 
-    for dir in desktop_dirs {
-        if !dir.exists() {
-            continue;
-        }
-
-        // Try exact match first
-        let desktop_file = dir.join(format!("{}.desktop", name));
-        if desktop_file.exists() {
-            if let Some(icon) = parse_desktop_icon(&desktop_file) {
-                return Some(icon);
-            }
-        }
-
-        // Try with org. prefix (common for GNOME apps)
-        let desktop_file = dir.join(format!("org.gnome.{}.desktop", capitalize(name)));
-        if desktop_file.exists() {
-            if let Some(icon) = parse_desktop_icon(&desktop_file) {
-                return Some(icon);
-            }
+    for (pattern, icon) in common_icons {
+        if name_lower.contains(pattern) {
+            return Some(icon.to_string());
         }
     }
 
     None
 }
 
-/// Parse Icon= line from a desktop file
 fn parse_desktop_icon(path: &Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
 
@@ -155,14 +148,6 @@ fn parse_desktop_icon(path: &Path) -> Option<String> {
     }
 
     None
-}
-
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().chain(chars).collect(),
-    }
 }
 
 /// Initialize the icon cache by scanning desktop files

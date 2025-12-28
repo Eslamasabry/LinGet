@@ -1,6 +1,6 @@
 use crate::backend::PackageManager;
 use crate::cli::{OutputWriter, SourcesAction};
-use crate::models::PackageSource;
+use crate::models::{Config, PackageSource};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -12,18 +12,23 @@ pub async fn run(
 ) -> Result<()> {
     let manager = pm.lock().await;
     let available: Vec<PackageSource> = manager.available_sources().into_iter().collect();
+    let mut config = Config::load();
 
     match action {
         None | Some(SourcesAction::List) => {
-            // Currently all available sources are enabled by default
-            // In future, this could read from config
-            writer.sources(&available, &available);
+            let enabled: Vec<PackageSource> = available
+                .iter()
+                .filter(|s| config.enabled_sources.get(**s))
+                .copied()
+                .collect();
+            writer.sources(&available, &enabled);
         }
         Some(SourcesAction::Enable { source }) => {
             let pkg_source: PackageSource = source.into();
             if available.contains(&pkg_source) {
+                config.enabled_sources.set(pkg_source, true);
+                config.save()?;
                 writer.success(&format!("Source {:?} is now enabled", pkg_source));
-                writer.message("Note: Source preferences are stored in your config file");
             } else {
                 writer.error(&format!(
                     "Source {:?} is not available on this system",
@@ -34,8 +39,9 @@ pub async fn run(
         Some(SourcesAction::Disable { source }) => {
             let pkg_source: PackageSource = source.into();
             if available.contains(&pkg_source) {
+                config.enabled_sources.set(pkg_source, false);
+                config.save()?;
                 writer.success(&format!("Source {:?} is now disabled", pkg_source));
-                writer.message("Note: Source preferences are stored in your config file");
             } else {
                 writer.error(&format!(
                     "Source {:?} is not available on this system",

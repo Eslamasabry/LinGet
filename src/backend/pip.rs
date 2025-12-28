@@ -77,6 +77,7 @@ impl PackageBackend for PipBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -113,6 +114,7 @@ impl PackageBackend for PipBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -292,8 +294,6 @@ impl PackageBackend for PipBackend {
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
-        // pip search is disabled on PyPI, so we use the PyPI JSON API
-        // This only works well for exact package names
         let mut packages = Vec::new();
 
         let client = reqwest::Client::builder()
@@ -301,7 +301,6 @@ impl PackageBackend for PipBackend {
             .build()
             .context("Failed to create HTTP client")?;
 
-        // Try exact package name lookup via PyPI JSON API
         let url = format!("https://pypi.org/pypi/{}/json", query);
         if let Ok(resp) = client.get(&url).send().await {
             if resp.status().is_success() {
@@ -352,6 +351,7 @@ impl PackageBackend for PipBackend {
                             maintainer,
                             dependencies: Vec::new(),
                             install_date: None,
+                            update_category: None,
                             enrichment: None,
                         });
                     }
@@ -359,9 +359,7 @@ impl PackageBackend for PipBackend {
             }
         }
 
-        // If exact match not found, try a few common variations
         if packages.is_empty() {
-            // Try with lowercase
             let query_lower = query.to_lowercase();
             if query_lower != query {
                 let url = format!("https://pypi.org/pypi/{}/json", query_lower);
@@ -398,6 +396,7 @@ impl PackageBackend for PipBackend {
                                     maintainer: None,
                                     dependencies: Vec::new(),
                                     install_date: None,
+                                    update_category: None,
                                     enrichment: None,
                                 });
                             }
@@ -408,5 +407,160 @@ impl PackageBackend for PipBackend {
         }
 
         Ok(packages)
+    }
+
+    async fn get_cache_size(&self) -> Result<u64> {
+        let pip = Self::get_pip_command();
+        let output = Command::new(pip)
+            .args(["cache", "info"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get pip cache info")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut total_size: u64 = 0;
+
+        for line in stdout.lines() {
+            if line.contains("Size:") {
+                if let Some(size_str) = line.split(':').nth(1) {
+                    let size_str = size_str.trim();
+                    total_size = Self::parse_pip_size(size_str);
+                }
+            }
+        }
+
+        Ok(total_size)
+    }
+
+    async fn get_orphaned_packages(&self) -> Result<Vec<Package>> {
+        Ok(Vec::new())
+    }
+
+    async fn cleanup_cache(&self) -> Result<u64> {
+        let before = self.get_cache_size().await.unwrap_or(0);
+
+        let pip = Self::get_pip_command();
+        let output = Command::new(pip)
+            .args(["cache", "purge"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to purge pip cache")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to purge pip cache: {}", stderr);
+        }
+
+        Ok(before)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Pip
+    }
+
+    async fn get_package_commands(&self, name: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let output = Command::new("python3")
+            .args([
+                "-c",
+                "import sys\nimport importlib.metadata\ntry:\n    dist = importlib.metadata.distribution(sys.argv[1])\n    try:\n        eps = dist.entry_points.select(group='console_scripts')\n    except Exception:\n        eps = [e for e in dist.entry_points if getattr(e, 'group', None) == 'console_scripts']\n    for e in eps:\n        print(e.name)\nexcept Exception:\n    pass\n",
+                name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to query python entry points")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut commands = Vec::new();
+        for cmd in stdout.lines().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(path) = which::which(cmd) {
+                commands.push((cmd.to_string(), path));
+            }
+        }
+
+        if !commands.is_empty() {
+            return Ok(commands);
+        }
+
+        let pip = Self::get_pip_command();
+        let output = Command::new(pip)
+            .args(["show", "--files", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get package files")?;
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut location: Option<std::path::PathBuf> = None;
+        let mut in_files_section = false;
+
+        for line in stdout.lines() {
+            if let Some(rest) = line.strip_prefix("Location:") {
+                let loc = rest.trim();
+                if !loc.is_empty() {
+                    location = Some(std::path::PathBuf::from(loc));
+                }
+            }
+
+            if line.starts_with("Files:") {
+                in_files_section = true;
+                continue;
+            }
+
+            if in_files_section && line.starts_with("  ") {
+                let file = line.trim();
+                if let Some(cmd_name) = file.rsplit('/').next() {
+                    if cmd_name.is_empty() {
+                        continue;
+                    }
+
+                    if file.contains("/bin/") || file.starts_with("../../../bin/") {
+                        let path = location
+                            .as_ref()
+                            .map(|loc| loc.join(file))
+                            .unwrap_or_else(|| std::path::PathBuf::from(cmd_name));
+                        commands.push((cmd_name.to_string(), path));
+                    }
+                }
+            } else if in_files_section && !line.starts_with("  ") && !line.is_empty() {
+                break;
+            }
+        }
+
+        Ok(commands)
+    }
+}
+
+impl PipBackend {
+    fn parse_pip_size(s: &str) -> u64 {
+        let s = s.trim();
+        let mut num_end = 0;
+        for (i, c) in s.char_indices() {
+            if c.is_ascii_digit() || c == '.' {
+                num_end = i + c.len_utf8();
+            } else if !c.is_whitespace() {
+                break;
+            }
+        }
+        let num: f64 = s[..num_end].trim().parse().unwrap_or(0.0);
+        let unit = s[num_end..].trim().to_lowercase();
+        let multiplier: u64 = match unit.as_str() {
+            "b" | "bytes" => 1,
+            "kb" | "kib" => 1024,
+            "mb" | "mib" => 1024 * 1024,
+            "gb" | "gib" => 1024 * 1024 * 1024,
+            _ => 1,
+        };
+        (num * multiplier as f64) as u64
     }
 }

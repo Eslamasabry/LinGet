@@ -11,7 +11,7 @@ pub enum TrayAction {
     Quit,
 }
 
-/// Shared state for the tray icon
+#[allow(dead_code)]
 pub struct TrayState {
     pub updates_count: AtomicU32,
     pub window_visible: AtomicBool,
@@ -19,10 +19,12 @@ pub struct TrayState {
 }
 
 impl TrayState {
+    #[allow(dead_code)]
     pub fn set_updates_count(&self, count: u32) {
         self.updates_count.store(count, Ordering::SeqCst);
     }
 
+    #[allow(dead_code)]
     pub fn set_window_visible(&self, visible: bool) {
         self.window_visible.store(visible, Ordering::SeqCst);
     }
@@ -115,7 +117,7 @@ impl Tray for LinGetTray {
     }
 }
 
-/// Handle for interacting with the running tray service
+#[allow(dead_code)]
 pub struct TrayHandle {
     pub state: Arc<TrayState>,
     pub action_receiver: std::sync::mpsc::Receiver<TrayAction>,

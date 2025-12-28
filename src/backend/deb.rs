@@ -102,6 +102,7 @@ impl PackageBackend for DebBackend {
                                     maintainer: None,
                                     dependencies: Vec::new(),
                                     install_date: None,
+                                    update_category: None,
                                     enrichment: None,
                                 });
                             }
@@ -181,7 +182,10 @@ impl PackageBackend for DebBackend {
     }
 
     async fn search(&self, _query: &str) -> Result<Vec<Package>> {
-        // Can't search local .deb files
-        Ok(Vec::new())
+        anyhow::bail!("Search is not supported for local .deb files")
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Deb
     }
 }

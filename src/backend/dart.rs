@@ -110,6 +110,7 @@ impl PackageBackend for DartBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
         }
@@ -159,6 +160,7 @@ impl PackageBackend for DartBackend {
                                     maintainer: None,
                                     dependencies: Vec::new(),
                                     install_date: None,
+                                    update_category: None,
                                     enrichment: None,
                                 });
                             }
@@ -266,6 +268,7 @@ impl PackageBackend for DartBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
 
@@ -275,5 +278,29 @@ impl PackageBackend for DartBackend {
         }
 
         Ok(packages)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Dart
+    }
+
+    async fn get_package_commands(&self, name: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let mut commands = Vec::new();
+        let pub_cache_bin = dirs::home_dir().unwrap_or_default().join(".pub-cache/bin");
+
+        if pub_cache_bin.exists() {
+            if let Ok(entries) = std::fs::read_dir(&pub_cache_bin) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(cmd_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if cmd_name == name || cmd_name.starts_with(&format!("{}_", name)) {
+                            commands.push((cmd_name.to_string(), path));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(commands)
     }
 }

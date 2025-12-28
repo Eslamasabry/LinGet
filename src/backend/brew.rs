@@ -58,6 +58,7 @@ impl PackageBackend for BrewBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
         }
@@ -117,6 +118,7 @@ impl PackageBackend for BrewBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -191,6 +193,7 @@ impl PackageBackend for BrewBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
             if packages.len() >= 50 {
@@ -199,5 +202,9 @@ impl PackageBackend for BrewBackend {
         }
 
         Ok(packages)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Brew
     }
 }

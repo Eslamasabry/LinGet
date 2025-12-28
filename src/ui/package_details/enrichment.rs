@@ -1,11 +1,16 @@
 use crate::models::PackageEnrichment;
-use gdk_pixbuf::prelude::*;
-use gdk_pixbuf::PixbufLoader;
-use gtk4::prelude::*;
-use gtk4::{self as gtk, glib};
-use libadwaita as adw;
+use crate::ui::package_details::{DetailsPanelInput, DetailsPanelModel};
 
-pub fn build_section(enrichment: &PackageEnrichment) -> gtk::Box {
+use gdk_pixbuf::Pixbuf;
+use gtk4::prelude::*;
+use gtk4::{self as gtk, gio, glib};
+use libadwaita as adw;
+use relm4::prelude::*;
+
+pub fn build_section(
+    enrichment: &PackageEnrichment,
+    sender: ComponentSender<DetailsPanelModel>,
+) -> gtk::Box {
     let section = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
@@ -142,19 +147,42 @@ pub fn build_section(enrichment: &PackageEnrichment) -> gtk::Box {
         carousel.add_css_class("card");
 
         for url in enrichment.screenshots.iter().take(5) {
-            let image = gtk::Picture::builder().height_request(200).build();
+            let image = gtk::Picture::builder()
+                .height_request(200)
+                .can_shrink(true)
+                .build();
             image.add_css_class("screenshot");
+            image.set_cursor_from_name(Some("pointer"));
 
             let url = url.clone();
             let image_clone = image.clone();
-            glib::spawn_future_local(async move {
+            let (tx, rx) = async_channel::bounded::<Vec<u8>>(1);
+
+            relm4::spawn(async move {
                 if let Ok(bytes) = load_image_bytes(&url).await {
-                    let loader = PixbufLoader::new();
-                    if loader.write(&bytes).is_ok() && loader.close().is_ok() {
-                        if let Some(pixbuf) = loader.pixbuf() {
-                            let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
-                            image_clone.set_paintable(Some(&texture));
-                        }
+                    let _ = tx.send(bytes).await;
+                }
+            });
+
+            let sender_clone = sender.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(bytes) = rx.recv().await {
+                    let bytes = glib::Bytes::from_owned(bytes);
+                    let stream = gio::MemoryInputStream::from_bytes(&bytes);
+                    if let Ok(pixbuf) =
+                        Pixbuf::from_stream_at_scale_future(&stream, 800, 450, true).await
+                    {
+                        let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
+                        image_clone.set_paintable(Some(&texture));
+
+                        let click = gtk::GestureClick::new();
+                        let texture_clone = texture.clone();
+                        let s_clone = sender_clone.clone();
+                        click.connect_released(move |_, _, _, _| {
+                            s_clone
+                                .input(DetailsPanelInput::PreviewScreenshot(texture_clone.clone()));
+                        });
+                        image_clone.add_controller(click);
                     }
                 }
             });

@@ -55,25 +55,16 @@ fn sanitize_environment() {
 
 fn run_gui(runtime: tokio::runtime::Runtime) {
     tracing::info!(
-        "Starting {} v{} (GUI mode)",
+        "Starting {} v{} (GUI mode with Relm4)",
         app::APP_NAME,
         app::APP_VERSION
     );
 
     sanitize_environment();
 
-    // Keep the runtime alive in a background thread
     let _guard = runtime.enter();
 
-    // Initialize GTK
-    use gtk4::prelude::*;
-    let app = app::build_app();
-
-    // Run the application
-    let exit_code = app.run();
-
-    tracing::info!("Exiting with code: {:?}", exit_code);
-    std::process::exit(exit_code.into());
+    ui::run_relm4_app();
 }
 
 fn run_tui(runtime: tokio::runtime::Runtime) {

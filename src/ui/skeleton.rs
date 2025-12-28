@@ -271,3 +271,186 @@ impl Default for SkeletonDetails {
         Self::new()
     }
 }
+
+pub struct SkeletonCard {
+    pub widget: gtk::Box,
+}
+
+impl SkeletonCard {
+    pub fn new() -> Self {
+        let card = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .width_request(200)
+            .height_request(260)
+            .margin_top(32)
+            .margin_bottom(12)
+            .margin_start(14)
+            .margin_end(14)
+            .build();
+        card.add_css_class("pkg-card");
+        card.add_css_class("skeleton-card");
+
+        let icon_placeholder = gtk::Box::builder()
+            .width_request(80)
+            .height_request(80)
+            .halign(gtk::Align::Center)
+            .build();
+        icon_placeholder.add_css_class("skeleton-block");
+        icon_placeholder.add_css_class("skeleton-shimmer");
+        icon_placeholder.add_css_class("card-icon-frame");
+
+        let title_placeholder = gtk::Box::builder()
+            .width_request(120)
+            .height_request(16)
+            .halign(gtk::Align::Center)
+            .build();
+        title_placeholder.add_css_class("skeleton-block");
+        title_placeholder.add_css_class("skeleton-shimmer");
+
+        let chips_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .build();
+
+        let version_chip = gtk::Box::builder()
+            .width_request(50)
+            .height_request(18)
+            .build();
+        version_chip.add_css_class("skeleton-block");
+        version_chip.add_css_class("skeleton-shimmer");
+
+        let source_chip = gtk::Box::builder()
+            .width_request(45)
+            .height_request(18)
+            .build();
+        source_chip.add_css_class("skeleton-block");
+        source_chip.add_css_class("skeleton-shimmer");
+
+        chips_box.append(&version_chip);
+        chips_box.append(&source_chip);
+
+        let desc_placeholder = gtk::Box::builder()
+            .width_request(160)
+            .height_request(28)
+            .halign(gtk::Align::Center)
+            .build();
+        desc_placeholder.add_css_class("skeleton-block");
+        desc_placeholder.add_css_class("skeleton-shimmer");
+
+        card.append(&icon_placeholder);
+        card.append(&title_placeholder);
+        card.append(&chips_box);
+        card.append(&desc_placeholder);
+
+        Self { widget: card }
+    }
+
+    pub fn new_compact() -> Self {
+        let card = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .width_request(160)
+            .height_request(200)
+            .margin_top(28)
+            .margin_bottom(8)
+            .margin_start(10)
+            .margin_end(10)
+            .build();
+        card.add_css_class("pkg-card");
+        card.add_css_class("compact-card");
+        card.add_css_class("skeleton-card");
+
+        let icon_placeholder = gtk::Box::builder()
+            .width_request(64)
+            .height_request(64)
+            .halign(gtk::Align::Center)
+            .build();
+        icon_placeholder.add_css_class("skeleton-block");
+        icon_placeholder.add_css_class("skeleton-shimmer");
+        icon_placeholder.add_css_class("card-icon-frame");
+
+        let title_placeholder = gtk::Box::builder()
+            .width_request(100)
+            .height_request(14)
+            .halign(gtk::Align::Center)
+            .build();
+        title_placeholder.add_css_class("skeleton-block");
+        title_placeholder.add_css_class("skeleton-shimmer");
+
+        let chip_placeholder = gtk::Box::builder()
+            .width_request(45)
+            .height_request(16)
+            .halign(gtk::Align::Center)
+            .build();
+        chip_placeholder.add_css_class("skeleton-block");
+        chip_placeholder.add_css_class("skeleton-shimmer");
+
+        card.append(&icon_placeholder);
+        card.append(&title_placeholder);
+        card.append(&chip_placeholder);
+
+        Self { widget: card }
+    }
+}
+
+impl Default for SkeletonCard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct SkeletonGrid {
+    pub widget: gtk::FlowBox,
+}
+
+impl SkeletonGrid {
+    pub fn new(count: usize) -> Self {
+        let grid = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .row_spacing(16)
+            .column_spacing(16)
+            .halign(gtk::Align::Fill)
+            .homogeneous(true)
+            .min_children_per_line(2)
+            .max_children_per_line(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .margin_start(8)
+            .margin_end(8)
+            .build();
+        grid.add_css_class("skeleton-grid");
+
+        for _ in 0..count {
+            let card = SkeletonCard::new();
+            grid.insert(&card.widget, -1);
+        }
+
+        Self { widget: grid }
+    }
+
+    pub fn new_compact(count: usize) -> Self {
+        let grid = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .row_spacing(12)
+            .column_spacing(12)
+            .halign(gtk::Align::Fill)
+            .homogeneous(true)
+            .min_children_per_line(3)
+            .max_children_per_line(10)
+            .margin_top(8)
+            .margin_bottom(8)
+            .margin_start(8)
+            .margin_end(8)
+            .build();
+        grid.add_css_class("skeleton-grid");
+
+        for _ in 0..count {
+            let card = SkeletonCard::new_compact();
+            grid.insert(&card.widget, -1);
+        }
+
+        Self { widget: grid }
+    }
+}

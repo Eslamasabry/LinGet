@@ -8,6 +8,7 @@ mod dart;
 mod deb;
 mod dnf;
 mod flatpak;
+pub mod history_tracker;
 mod mamba;
 mod npm;
 mod pacman;
@@ -29,6 +30,8 @@ pub use dart::DartBackend;
 pub use deb::DebBackend;
 pub use dnf::DnfBackend;
 pub use flatpak::FlatpakBackend;
+#[allow(unused_imports)]
+pub use history_tracker::HistoryTracker;
 pub use mamba::MambaBackend;
 pub use npm::NpmBackend;
 pub use pacman::PacmanBackend;
@@ -166,6 +169,7 @@ impl PackageManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_enabled_sources(&mut self, enabled_sources: HashSet<PackageSource>) {
         // Only enable sources that have an available backend.
         self.enabled_sources = enabled_sources
@@ -180,6 +184,10 @@ impl PackageManager {
 
     pub fn available_sources(&self) -> HashSet<PackageSource> {
         self.backends.keys().copied().collect()
+    }
+
+    pub fn get_backend(&self, source: PackageSource) -> Option<&dyn PackageBackend> {
+        self.backends.get(&source).map(|b| b.as_ref())
     }
 
     fn validate_package_name(name: &str) -> Result<()> {
@@ -400,6 +408,7 @@ impl PackageManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn downgrade_to(&self, package: &Package, version: &str) -> Result<()> {
         Self::validate_package_name(&package.name)?;
         if !self.enabled_sources.contains(&package.source) {
@@ -437,6 +446,7 @@ impl PackageManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn list_repositories(&self, source: PackageSource) -> Result<Vec<Repository>> {
         if let Some(backend) = self.backends.get(&source) {
             backend.list_repositories().await
@@ -467,6 +477,7 @@ impl PackageManager {
         Ok(all_repos)
     }
 
+    #[allow(dead_code)]
     pub async fn add_repository(
         &self,
         source: PackageSource,
@@ -480,6 +491,7 @@ impl PackageManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn remove_repository(&self, source: PackageSource, name: &str) -> Result<()> {
         if let Some(backend) = self.backends.get(&source) {
             backend.remove_repository(name).await
@@ -537,6 +549,29 @@ impl PackageManager {
         Ok(all_results)
     }
 
+    pub async fn get_package_commands(
+        &self,
+        name: &str,
+        source: PackageSource,
+    ) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let Some(backend) = self.backends.get(&source) else {
+            tracing::info!(package = %name, source = ?source, "Backend not available for get_package_commands");
+            return Ok(Vec::new());
+        };
+
+        tracing::info!(package = %name, source = ?source, "Calling backend.get_package_commands");
+        let result = backend.get_package_commands(name).await;
+        tracing::info!(
+            package = %name,
+            source = ?source,
+            success = result.is_ok(),
+            command_count = result.as_ref().map(|c| c.len()).unwrap_or(0),
+            "Backend returned package commands"
+        );
+
+        result
+    }
+
     // =========================================================================
     // Flatpak-specific methods for sandbox management
     // =========================================================================
@@ -579,6 +614,25 @@ impl PackageManager {
 
         let backend = FlatpakBackend::new();
         backend.list_runtimes().await
+    }
+
+    pub async fn check_all_lock_status(&self) -> Vec<(PackageSource, LockStatus)> {
+        use futures::future::join_all;
+
+        let futures: Vec<_> = self
+            .backends
+            .iter()
+            .map(|(source, backend)| {
+                let source = *source;
+                async move { (source, backend.check_lock_status().await) }
+            })
+            .collect();
+
+        let results = join_all(futures).await;
+        results
+            .into_iter()
+            .filter(|(_, status)| status.is_locked)
+            .collect()
     }
 }
 

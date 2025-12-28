@@ -89,6 +89,7 @@ impl PackageBackend for PipxBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
         }
@@ -138,6 +139,7 @@ impl PackageBackend for PipxBackend {
                                     maintainer: None,
                                     dependencies: Vec::new(),
                                     install_date: None,
+                                    update_category: None,
                                     enrichment: None,
                                 });
                             }
@@ -207,8 +209,92 @@ impl PackageBackend for PipxBackend {
         }
     }
 
-    async fn search(&self, _query: &str) -> Result<Vec<Package>> {
-        // pipx doesn't have a search command.
-        Ok(Vec::new())
+    async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .context("Failed to create HTTP client")?;
+
+        let url = format!("https://pypi.org/pypi/{}/json", query);
+        let resp = client.get(&url).send().await;
+
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                if let Ok(json) = r.json::<serde_json::Value>().await {
+                    if let Some(info) = json.get("info") {
+                        let name = info
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(query)
+                            .to_string();
+                        let version = info
+                            .get("version")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let description = info
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let homepage = info
+                            .get("home_page")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| info.get("project_url").and_then(|v| v.as_str()))
+                            .map(|s| s.to_string());
+
+                        return Ok(vec![Package {
+                            name,
+                            version,
+                            available_version: None,
+                            description,
+                            source: PackageSource::Pipx,
+                            status: PackageStatus::NotInstalled,
+                            size: None,
+                            homepage,
+                            license: info
+                                .get("license")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            maintainer: info
+                                .get("author")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            dependencies: Vec::new(),
+                            install_date: None,
+                            update_category: None,
+                            enrichment: None,
+                        }]);
+                    }
+                }
+                Ok(Vec::new())
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Pipx
+    }
+
+    async fn get_package_commands(&self, name: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let mut commands = Vec::new();
+        let pipx_bin = dirs::home_dir().unwrap_or_default().join(".local/bin");
+
+        if pipx_bin.exists() {
+            if let Ok(entries) = std::fs::read_dir(&pipx_bin) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(cmd_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if cmd_name == name || cmd_name.starts_with(&format!("{}-", name)) {
+                            commands.push((cmd_name.to_string(), path));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(commands)
     }
 }

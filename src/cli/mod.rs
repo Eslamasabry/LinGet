@@ -157,6 +157,18 @@ pub enum Commands {
 
     /// Launch graphical user interface (default when no command given)
     Gui,
+
+    /// Manage ignored packages (excluded from update checks)
+    Ignore {
+        #[command(subcommand)]
+        action: IgnoreAction,
+    },
+
+    /// Backup and restore package lists
+    Backup {
+        #[command(subcommand)]
+        action: BackupAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -172,6 +184,46 @@ pub enum SourcesAction {
     Disable {
         /// Source to disable
         source: SourceArg,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum IgnoreAction {
+    /// List ignored packages
+    List,
+    /// Add a package to the ignore list
+    Add {
+        /// Package name
+        package: String,
+        /// Package source (optional, for disambiguation)
+        #[arg(short, long)]
+        source: Option<SourceArg>,
+    },
+    /// Remove a package from the ignore list
+    Remove {
+        /// Package name
+        package: String,
+        /// Package source (optional, for disambiguation)
+        #[arg(short, long)]
+        source: Option<SourceArg>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BackupAction {
+    /// Create a backup of installed packages
+    Create {
+        /// Output file path (default: linget-backup.json)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Restore packages from a backup file
+    Restore {
+        /// Backup file path
+        file: String,
+        /// Skip confirmation prompts
+        #[arg(short, long)]
+        yes: bool,
     },
 }
 
@@ -241,6 +293,8 @@ impl std::fmt::Display for SourceArg {
 
 /// Run the CLI application
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
+    crate::models::load_cache();
+
     let pm = Arc::new(Mutex::new(PackageManager::new()));
     let writer = OutputWriter::new(cli.format, cli.verbose, cli.quiet);
 
@@ -304,8 +358,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Runtimes => commands::permissions::list_runtimes(pm, &writer).await,
         Commands::Tui => tui::run().await,
         Commands::Gui => {
-            // This is handled in main.rs - should not reach here
             unreachable!("GUI command should be handled in main.rs")
         }
+        Commands::Ignore { action } => commands::ignore::run(action, &writer).await,
+        Commands::Backup { action } => commands::backup::run(pm, action, &writer).await,
     }
 }

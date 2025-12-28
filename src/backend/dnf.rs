@@ -6,6 +6,15 @@ use async_trait::async_trait;
 use std::process::Stdio;
 use tokio::process::Command;
 
+fn extract_package_name_from_nevra(nevra: &str) -> String {
+    let parts: Vec<&str> = nevra.rsplitn(3, '-').collect();
+    if parts.len() >= 3 {
+        parts[2].to_string()
+    } else {
+        nevra.split('-').next().unwrap_or(nevra).to_string()
+    }
+}
+
 pub struct DnfBackend;
 
 impl DnfBackend {
@@ -64,6 +73,7 @@ impl PackageBackend for DnfBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -119,6 +129,7 @@ impl PackageBackend for DnfBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -213,6 +224,7 @@ impl PackageBackend for DnfBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -404,8 +416,6 @@ impl PackageBackend for DnfBackend {
     }
 
     async fn remove_repository(&self, name: &str) -> Result<()> {
-        // Disable the repository using config-manager
-        // This is safer than deleting the repo file
         run_pkexec(
             "dnf",
             &["config-manager", "--set-disabled", name],
@@ -415,6 +425,191 @@ impl PackageBackend for DnfBackend {
             },
         )
         .await
+    }
+
+    async fn get_cache_size(&self) -> Result<u64> {
+        let cache_path = std::path::Path::new("/var/cache/dnf");
+        if !cache_path.exists() {
+            return Ok(0);
+        }
+
+        let output = Command::new("du")
+            .args(["-sb", "/var/cache/dnf"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get dnf cache size")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let size = stdout
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        Ok(size)
+    }
+
+    async fn get_orphaned_packages(&self) -> Result<Vec<Package>> {
+        let output = Command::new("dnf")
+            .args(["autoremove", "--assumeno"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to list dnf orphaned packages")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+        let mut in_remove_section = false;
+
+        for line in stdout.lines() {
+            if line.contains("Removing:") || line.contains("Dependencies resolved") {
+                in_remove_section = true;
+                continue;
+            }
+
+            if in_remove_section && line.trim().is_empty() {
+                continue;
+            }
+
+            if in_remove_section
+                && (line.starts_with("Transaction Summary") || line.starts_with("Is this ok"))
+            {
+                break;
+            }
+
+            if in_remove_section {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 && !parts[0].starts_with('=') {
+                    let name = parts[0].to_string();
+                    if name.chars().next().is_some_and(|c| c.is_alphabetic()) {
+                        packages.push(Package {
+                            name: name.clone(),
+                            version: String::new(),
+                            available_version: None,
+                            description: format!("Unused dependency: {}", name),
+                            source: PackageSource::Dnf,
+                            status: PackageStatus::Installed,
+                            size: None,
+                            homepage: None,
+                            license: None,
+                            maintainer: None,
+                            dependencies: Vec::new(),
+                            install_date: None,
+                            update_category: None,
+                            enrichment: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(packages)
+    }
+
+    async fn cleanup_cache(&self) -> Result<u64> {
+        let before = self.get_cache_size().await.unwrap_or(0);
+
+        run_pkexec(
+            "dnf",
+            &["clean", "all"],
+            "Failed to clean dnf cache",
+            Suggest {
+                command: "sudo dnf clean all".to_string(),
+            },
+        )
+        .await?;
+
+        let after = self.get_cache_size().await.unwrap_or(0);
+        Ok(before.saturating_sub(after))
+    }
+
+    async fn get_reverse_dependencies(&self, name: &str) -> Result<Vec<String>> {
+        let output = Command::new("dnf")
+            .args(["repoquery", "--installed", "--whatrequires", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get reverse dependencies")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut deps = Vec::new();
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let dep_name = extract_package_name_from_nevra(line);
+            if !dep_name.is_empty() && dep_name != name && !deps.contains(&dep_name) {
+                deps.push(dep_name);
+            }
+        }
+
+        Ok(deps)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Dnf
+    }
+
+    async fn check_lock_status(&self) -> super::LockStatus {
+        use std::path::PathBuf;
+
+        let lock_paths = [
+            "/var/run/dnf.pid",
+            "/var/lib/rpm/.rpm.lock",
+            "/var/cache/dnf/metadata_lock.pid",
+        ];
+
+        let mut status = super::LockStatus::default();
+
+        if std::path::Path::new("/var/run/dnf.pid").exists() {
+            if let Ok(pid_content) = std::fs::read_to_string("/var/run/dnf.pid") {
+                let pid = pid_content.trim();
+                let proc_path = format!("/proc/{}", pid);
+                if std::path::Path::new(&proc_path).exists() {
+                    status.is_locked = true;
+                    status.lock_files.push(PathBuf::from("/var/run/dnf.pid"));
+
+                    if let Ok(output) = Command::new("ps")
+                        .args(["-p", pid, "-o", "comm="])
+                        .stdout(Stdio::piped())
+                        .output()
+                        .await
+                    {
+                        let comm = String::from_utf8_lossy(&output.stdout);
+                        if !comm.trim().is_empty() {
+                            status.lock_holder = Some(comm.trim().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        for lock_path in &lock_paths[1..] {
+            let path = std::path::Path::new(lock_path);
+            if path.exists() {
+                if let Ok(output) = Command::new("fuser")
+                    .arg(lock_path)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .output()
+                    .await
+                {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if !stdout.trim().is_empty() {
+                        status.is_locked = true;
+                        status.lock_files.push(PathBuf::from(lock_path));
+                    }
+                }
+            }
+        }
+
+        status
     }
 }
 

@@ -115,6 +115,7 @@ impl PackageBackend for AppImageBackend {
                             maintainer: None,
                             dependencies: Vec::new(),
                             install_date: None,
+                            update_category: None,
                             enrichment: None,
                         });
                     }
@@ -159,7 +160,38 @@ impl PackageBackend for AppImageBackend {
     }
 
     async fn search(&self, _query: &str) -> Result<Vec<Package>> {
-        // Can't search AppImages - they're local files
-        Ok(Vec::new())
+        anyhow::bail!("Search is not supported for local AppImage files")
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::AppImage
+    }
+
+    async fn get_package_commands(&self, name: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let mut commands = Vec::new();
+        let appimage_dirs = [
+            dirs::home_dir().unwrap_or_default().join("Applications"),
+            dirs::home_dir().unwrap_or_default().join(".local/bin"),
+            std::path::PathBuf::from("/opt"),
+        ];
+
+        for dir in &appimage_dirs {
+            if dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                            if file_name.to_lowercase().contains(&name.to_lowercase())
+                                && file_name.to_lowercase().ends_with(".appimage")
+                            {
+                                commands.push((file_name.to_string(), path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(commands)
     }
 }

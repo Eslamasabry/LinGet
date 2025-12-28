@@ -69,7 +69,7 @@ impl PackageSource {
         PackageSource::AppImage,
     ];
 
-    /// Install hint shown when provider is not detected
+    #[allow(dead_code)]
     pub fn install_hint(&self) -> Option<&'static str> {
         match self {
             PackageSource::Apt => None, // APT is always available on Debian/Ubuntu
@@ -94,26 +94,25 @@ impl PackageSource {
 
     pub fn icon_name(&self) -> &'static str {
         match self {
-            PackageSource::Apt => "package-x-generic-symbolic",
+            PackageSource::Apt => "system-software-install-symbolic",
             PackageSource::Dnf => "system-software-install-symbolic",
-            PackageSource::Pacman => "package-x-generic-symbolic",
+            PackageSource::Pacman => "system-software-install-symbolic",
             PackageSource::Zypper => "system-software-install-symbolic",
-            PackageSource::Flatpak => "system-software-install-symbolic",
-            PackageSource::Snap => "snap-symbolic",
-            PackageSource::Npm => "text-x-script-symbolic",
-            PackageSource::Pip => "text-x-python-symbolic",
-            PackageSource::Pipx => "text-x-python-symbolic",
-            PackageSource::Cargo => "applications-development-symbolic",
-            PackageSource::Brew => "application-x-executable-symbolic",
-            PackageSource::Aur => "package-x-generic-symbolic",
-            PackageSource::Conda => "text-x-python-symbolic",
-            PackageSource::Mamba => "text-x-python-symbolic",
-            PackageSource::Dart => "applications-development-symbolic",
+            PackageSource::Flatpak => "application-x-flatpak-symbolic",
+            PackageSource::Snap => "io.snapcraft.Store",
+            PackageSource::Npm => "folder-script-symbolic",
+            PackageSource::Pip => "folder-script-symbolic",
+            PackageSource::Pipx => "folder-script-symbolic",
+            PackageSource::Cargo => "folder-script-symbolic",
+            PackageSource::Brew => "utilities-terminal-symbolic",
+            PackageSource::Aur => "system-software-install-symbolic",
+            PackageSource::Conda => "folder-script-symbolic",
+            PackageSource::Mamba => "folder-script-symbolic",
+            PackageSource::Dart => "folder-script-symbolic",
             PackageSource::Deb => "application-x-deb-symbolic",
             PackageSource::AppImage => "application-x-executable-symbolic",
         }
     }
-
     pub fn color_class(&self) -> &'static str {
         match self {
             PackageSource::Apt => "source-apt",
@@ -172,7 +171,7 @@ impl PackageSource {
         }
     }
 
-    /// Parse from string (case-insensitive)
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "apt" => Some(PackageSource::Apt),
@@ -196,7 +195,7 @@ impl PackageSource {
         }
     }
 
-    /// Convert to lowercase string for config storage
+    #[allow(dead_code)]
     pub fn as_config_str(self) -> &'static str {
         match self {
             PackageSource::Apt => "apt",
@@ -231,6 +230,54 @@ pub enum PackageStatus {
     Updating,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum UpdateCategory {
+    Security,
+    Bugfix,
+    Feature,
+    #[default]
+    Minor,
+}
+
+impl UpdateCategory {
+    pub fn icon_name(&self) -> &'static str {
+        match self {
+            UpdateCategory::Security => "security-high-symbolic",
+            UpdateCategory::Bugfix => "bug-symbolic",
+            UpdateCategory::Feature => "starred-symbolic",
+            UpdateCategory::Minor => "software-update-available-symbolic",
+        }
+    }
+
+    pub fn css_class(&self) -> &'static str {
+        match self {
+            UpdateCategory::Security => "update-security",
+            UpdateCategory::Bugfix => "update-bugfix",
+            UpdateCategory::Feature => "update-feature",
+            UpdateCategory::Minor => "update-minor",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            UpdateCategory::Security => "Security",
+            UpdateCategory::Bugfix => "Bugfix",
+            UpdateCategory::Feature => "Feature",
+            UpdateCategory::Minor => "Minor",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn priority(&self) -> u8 {
+        match self {
+            UpdateCategory::Security => 0,
+            UpdateCategory::Bugfix => 1,
+            UpdateCategory::Feature => 2,
+            UpdateCategory::Minor => 3,
+        }
+    }
+}
+
 impl fmt::Display for PackageStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -259,7 +306,8 @@ pub struct Package {
     pub maintainer: Option<String>,
     pub dependencies: Vec<String>,
     pub install_date: Option<String>,
-    // Enrichment fields (populated asynchronously)
+    #[serde(default)]
+    pub update_category: Option<UpdateCategory>,
     #[serde(default)]
     pub enrichment: Option<PackageEnrichment>,
 }
@@ -292,6 +340,40 @@ pub struct PackageEnrichment {
 impl Package {
     pub fn has_update(&self) -> bool {
         self.status == PackageStatus::UpdateAvailable
+    }
+
+    pub fn detect_update_category(&self) -> UpdateCategory {
+        let name_lower = self.name.to_lowercase();
+
+        if name_lower.contains("security")
+            || name_lower.contains("cve")
+            || name_lower.contains("ssl")
+            || name_lower.contains("openssl")
+            || name_lower.contains("gnutls")
+            || name_lower.contains("gpg")
+            || name_lower.contains("gnupg")
+            || name_lower.contains("crypto")
+            || name_lower.contains("firewall")
+            || name_lower.contains("apparmor")
+            || name_lower.contains("selinux")
+        {
+            return UpdateCategory::Security;
+        }
+
+        if let (Some(current), Some(available)) = (
+            semver::Version::parse(&self.version).ok(),
+            self.available_version
+                .as_ref()
+                .and_then(|v| semver::Version::parse(v).ok()),
+        ) {
+            if available.major > current.major || available.minor > current.minor {
+                return UpdateCategory::Feature;
+            } else if available.patch > current.patch {
+                return UpdateCategory::Bugfix;
+            }
+        }
+
+        UpdateCategory::Minor
     }
 
     pub fn display_version(&self) -> String {

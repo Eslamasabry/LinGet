@@ -74,6 +74,7 @@ impl PackageBackend for CondaBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
         }
@@ -142,6 +143,7 @@ impl PackageBackend for CondaBackend {
                                 maintainer: None,
                                 dependencies: Vec::new(),
                                 install_date: None,
+                                update_category: None,
                                 enrichment: None,
                             });
                         }
@@ -209,8 +211,65 @@ impl PackageBackend for CondaBackend {
         }
     }
 
-    async fn search(&self, _query: &str) -> Result<Vec<Package>> {
-        // Conda search is often slow and returns large results; leave Discover to other sources.
-        Ok(Vec::new())
+    async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        let output = Command::new("conda")
+            .args(["search", "--json", query])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to search conda packages")?;
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
+
+        let mut packages = Vec::new();
+
+        if let Some(obj) = json.as_object() {
+            for (name, versions) in obj {
+                if let Some(arr) = versions.as_array() {
+                    if let Some(latest) = arr.last() {
+                        let version = latest
+                            .get("version")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let channel = latest
+                            .get("channel")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        packages.push(Package {
+                            name: name.clone(),
+                            version,
+                            available_version: None,
+                            description: channel,
+                            source: PackageSource::Conda,
+                            status: PackageStatus::NotInstalled,
+                            size: None,
+                            homepage: None,
+                            license: None,
+                            maintainer: None,
+                            dependencies: Vec::new(),
+                            install_date: None,
+                            update_category: None,
+                            enrichment: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(packages)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Conda
     }
 }

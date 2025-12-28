@@ -7,7 +7,6 @@ use libadwaita::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Build the sandbox permissions section for Flatpak packages
 pub fn build_sandbox_section(pm: Arc<Mutex<PackageManager>>, app_id: String) -> gtk::Box {
     let section = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -16,7 +15,6 @@ pub fn build_sandbox_section(pm: Arc<Mutex<PackageManager>>, app_id: String) -> 
         .build();
     section.add_css_class("sandbox-section");
 
-    // Loading state
     let loading_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
@@ -32,30 +30,36 @@ pub fn build_sandbox_section(pm: Arc<Mutex<PackageManager>>, app_id: String) -> 
     loading_box.append(&loading_label);
     section.append(&loading_box);
 
-    // Fetch metadata asynchronously
+    let (tx, rx) = async_channel::bounded::<Result<FlatpakMetadata, String>>(1);
     let section_clone = section.clone();
+
+    relm4::spawn(async move {
+        let result = {
+            let manager = pm.lock().await;
+            manager.get_flatpak_metadata(&app_id).await
+        };
+        let _ = tx.send(result.map_err(|e| e.to_string())).await;
+    });
+
     glib::spawn_future_local(async move {
-        let manager = pm.lock().await;
-        let metadata_result = manager.get_flatpak_metadata(&app_id).await;
-        drop(manager);
-
-        // Clear loading state
-        while let Some(child) = section_clone.first_child() {
-            section_clone.remove(&child);
-        }
-
-        match metadata_result {
-            Ok(metadata) => {
-                build_sandbox_content(&section_clone, &metadata);
+        if let Ok(result) = rx.recv().await {
+            while let Some(child) = section_clone.first_child() {
+                section_clone.remove(&child);
             }
-            Err(e) => {
-                let error_label = gtk::Label::builder()
-                    .label(format!("Could not load sandbox info: {}", e))
-                    .wrap(true)
-                    .xalign(0.0)
-                    .build();
-                error_label.add_css_class("dim-label");
-                section_clone.append(&error_label);
+
+            match result {
+                Ok(metadata) => {
+                    build_sandbox_content(&section_clone, &metadata);
+                }
+                Err(e) => {
+                    let error_label = gtk::Label::builder()
+                        .label(format!("Could not load sandbox info: {}", e))
+                        .wrap(true)
+                        .xalign(0.0)
+                        .build();
+                    error_label.add_css_class("dim-label");
+                    section_clone.append(&error_label);
+                }
             }
         }
     });

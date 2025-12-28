@@ -1,5 +1,7 @@
+pub mod backup;
 pub mod check;
 pub mod completions;
+pub mod ignore;
 pub mod info;
 pub mod install;
 pub mod list;

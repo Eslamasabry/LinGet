@@ -6,6 +6,15 @@ use async_trait::async_trait;
 use std::process::Stdio;
 use tokio::process::Command;
 
+fn extract_rpm_package_name(nevra: &str) -> String {
+    let parts: Vec<&str> = nevra.rsplitn(3, '-').collect();
+    if parts.len() >= 3 {
+        parts[2].to_string()
+    } else {
+        nevra.split('-').next().unwrap_or(nevra).to_string()
+    }
+}
+
 pub struct ZypperBackend;
 
 impl ZypperBackend {
@@ -63,6 +72,7 @@ impl PackageBackend for ZypperBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
         }
@@ -111,6 +121,7 @@ impl PackageBackend for ZypperBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
         }
@@ -195,6 +206,7 @@ impl PackageBackend for ZypperBackend {
                 maintainer: None,
                 dependencies: Vec::new(),
                 install_date: None,
+                update_category: None,
                 enrichment: None,
             });
 
@@ -204,5 +216,35 @@ impl PackageBackend for ZypperBackend {
         }
 
         Ok(packages)
+    }
+
+    async fn get_reverse_dependencies(&self, name: &str) -> Result<Vec<String>> {
+        let output = Command::new("rpm")
+            .args(["-q", "--whatrequires", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get reverse dependencies")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut deps = Vec::new();
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.contains("no package requires") {
+                continue;
+            }
+            let dep_name = extract_rpm_package_name(line);
+            if !dep_name.is_empty() && dep_name != name && !deps.contains(&dep_name) {
+                deps.push(dep_name);
+            }
+        }
+
+        Ok(deps)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Zypper
     }
 }

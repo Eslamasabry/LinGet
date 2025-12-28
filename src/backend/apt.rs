@@ -196,7 +196,7 @@ impl AptBackend {
         Ok(details)
     }
 
-    /// Refresh the APT package cache (apt update)
+    #[allow(dead_code)]
     pub async fn refresh_cache(&self) -> Result<()> {
         run_pkexec(
             "apt",
@@ -273,6 +273,7 @@ impl PackageBackend for AptBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -307,7 +308,7 @@ impl PackageBackend for AptBackend {
                         .map(|s| s.trim_end_matches(']').to_string())
                         .unwrap_or_default();
 
-                    packages.push(Package {
+                    let mut pkg = Package {
                         name: name.to_string(),
                         version: old_version,
                         available_version: Some(new_version),
@@ -320,8 +321,11 @@ impl PackageBackend for AptBackend {
                         maintainer: None,
                         dependencies: Vec::new(),
                         install_date: None,
+                        update_category: None,
                         enrichment: None,
-                    });
+                    };
+                    pkg.update_category = Some(pkg.detect_update_category());
+                    packages.push(pkg);
                 }
             }
         }
@@ -459,6 +463,7 @@ impl PackageBackend for AptBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -585,6 +590,204 @@ impl PackageBackend for AptBackend {
                 )
             }
         }
+    }
+
+    async fn get_cache_size(&self) -> Result<u64> {
+        let cache_dir = Path::new("/var/cache/apt/archives");
+        if !cache_dir.exists() {
+            return Ok(0);
+        }
+
+        let output = Command::new("du")
+            .args(["-sb", "/var/cache/apt/archives"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get cache size")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let size = stdout
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        Ok(size)
+    }
+
+    async fn get_orphaned_packages(&self) -> Result<Vec<Package>> {
+        let output = Command::new("apt")
+            .args(["autoremove", "--dry-run"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to check orphaned packages")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+        let mut in_remove_section = false;
+
+        for line in stdout.lines() {
+            if line.contains("The following packages will be REMOVED:") {
+                in_remove_section = true;
+                continue;
+            }
+            if in_remove_section {
+                if line.trim().is_empty() || line.starts_with("0 ") {
+                    break;
+                }
+                for pkg_name in line.split_whitespace() {
+                    let pkg_name = pkg_name.trim();
+                    if !pkg_name.is_empty() && !pkg_name.starts_with('(') {
+                        packages.push(Package {
+                            name: pkg_name.to_string(),
+                            version: String::new(),
+                            available_version: None,
+                            description: "Orphaned package (no longer needed)".to_string(),
+                            source: PackageSource::Apt,
+                            status: PackageStatus::Installed,
+                            size: None,
+                            homepage: None,
+                            license: None,
+                            maintainer: None,
+                            dependencies: Vec::new(),
+                            install_date: None,
+                            update_category: None,
+                            enrichment: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(packages)
+    }
+
+    async fn cleanup_cache(&self) -> Result<u64> {
+        let before = self.get_cache_size().await.unwrap_or(0);
+
+        run_pkexec(
+            "apt",
+            &["clean"],
+            "Failed to clean APT cache",
+            Suggest {
+                command: "sudo apt clean".to_string(),
+            },
+        )
+        .await?;
+
+        let after = self.get_cache_size().await.unwrap_or(0);
+        Ok(before.saturating_sub(after))
+    }
+
+    async fn get_reverse_dependencies(&self, name: &str) -> Result<Vec<String>> {
+        let output = Command::new("apt-cache")
+            .args(["rdepends", "--installed", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get reverse dependencies")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut deps = Vec::new();
+
+        for line in stdout.lines().skip(2) {
+            let dep = line.trim().trim_start_matches('|').trim();
+            if !dep.is_empty() && dep != name {
+                deps.push(dep.to_string());
+            }
+        }
+
+        Ok(deps)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Apt
+    }
+
+    async fn get_package_commands(&self, name: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let output = Command::new("dpkg")
+            .args(["-L", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to list package files")?;
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut commands = Vec::new();
+
+        for line in stdout.lines() {
+            let path = std::path::Path::new(line.trim());
+            if path.starts_with("/usr/bin")
+                || path.starts_with("/usr/sbin")
+                || path.starts_with("/bin")
+                || path.starts_with("/sbin")
+            {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if !name.is_empty() {
+                        commands.push((name.to_string(), path.to_path_buf()));
+                    }
+                }
+            }
+        }
+
+        Ok(commands)
+    }
+
+    async fn check_lock_status(&self) -> super::LockStatus {
+        use std::path::PathBuf;
+
+        let lock_paths = [
+            "/var/lib/dpkg/lock-frontend",
+            "/var/lib/dpkg/lock",
+            "/var/lib/apt/lists/lock",
+            "/var/cache/apt/archives/lock",
+        ];
+
+        let mut status = super::LockStatus::default();
+
+        for lock_path in &lock_paths {
+            let path = Path::new(lock_path);
+            if path.exists() {
+                if let Ok(output) = Command::new("fuser")
+                    .arg(lock_path)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .output()
+                    .await
+                {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if !stdout.trim().is_empty() {
+                        status.is_locked = true;
+                        status.lock_files.push(PathBuf::from(lock_path));
+
+                        if let Some(pid) = stdout.split_whitespace().next() {
+                            if let Ok(comm_output) = Command::new("ps")
+                                .args(["-p", pid, "-o", "comm="])
+                                .stdout(Stdio::piped())
+                                .output()
+                                .await
+                            {
+                                let comm = String::from_utf8_lossy(&comm_output.stdout);
+                                if !comm.trim().is_empty() {
+                                    status.lock_holder = Some(comm.trim().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        status
     }
 }
 

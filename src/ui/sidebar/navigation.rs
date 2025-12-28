@@ -9,24 +9,27 @@ pub enum NavItem {
     Library,
     Updates,
     Favorites,
+    Health,
 }
 
 impl NavItem {
     pub fn icon_name(&self) -> &'static str {
         match self {
-            NavItem::Discover => "system-search-symbolic",
+            NavItem::Discover => "go-home-symbolic",
             NavItem::Library => "view-grid-symbolic",
             NavItem::Updates => "software-update-available-symbolic",
             NavItem::Favorites => "starred-symbolic",
+            NavItem::Health => "heart-symbolic",
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
-            NavItem::Discover => "Discover",
+            NavItem::Discover => "Home",
             NavItem::Library => "Library",
             NavItem::Updates => "Updates",
             NavItem::Favorites => "Favorites",
+            NavItem::Health => "Health",
         }
     }
 
@@ -36,6 +39,7 @@ impl NavItem {
             NavItem::Library => "all",
             NavItem::Updates => "updates",
             NavItem::Favorites => "favorites",
+            NavItem::Health => "health",
         }
     }
 }
@@ -46,10 +50,12 @@ pub struct NavigationSection {
     pub all_count_label: gtk::Label,
     pub update_count_label: gtk::Label,
     pub favorites_count_label: gtk::Label,
+    pub health_score_label: gtk::Label,
     discover_row: gtk::ListBoxRow,
     library_row: gtk::ListBoxRow,
     updates_row: gtk::ListBoxRow,
     favorites_row: gtk::ListBoxRow,
+    health_row: gtk::ListBoxRow,
 }
 
 impl NavigationSection {
@@ -100,6 +106,14 @@ impl NavigationSection {
         let favorites_row = create_nav_row(NavItem::Favorites, Some(&favorites_count_label));
         nav_list.append(&favorites_row);
 
+        let health_score_label = gtk::Label::builder()
+            .label("")
+            .css_classes(vec!["caption"])
+            .visible(false)
+            .build();
+        let health_row = create_nav_row(NavItem::Health, Some(&health_score_label));
+        nav_list.append(&health_row);
+
         nav_list.select_row(Some(&library_row));
         widget.append(&nav_list);
 
@@ -109,10 +123,12 @@ impl NavigationSection {
             all_count_label,
             update_count_label,
             favorites_count_label,
+            health_score_label,
             discover_row,
             library_row,
             updates_row,
             favorites_row,
+            health_row,
         }
     }
 
@@ -122,6 +138,7 @@ impl NavigationSection {
             1 => Some(NavItem::Library),
             2 => Some(NavItem::Updates),
             3 => Some(NavItem::Favorites),
+            4 => Some(NavItem::Health),
             _ => None,
         }
     }
@@ -132,6 +149,7 @@ impl NavigationSection {
             NavItem::Library => &self.library_row,
             NavItem::Updates => &self.updates_row,
             NavItem::Favorites => &self.favorites_row,
+            NavItem::Health => &self.health_row,
         };
         self.nav_list.select_row(Some(row));
     }
@@ -148,11 +166,26 @@ impl NavigationSection {
                     1 => NavItem::Library,
                     2 => NavItem::Updates,
                     3 => NavItem::Favorites,
+                    4 => NavItem::Health,
                     _ => return,
                 };
                 callback(item);
             }
         });
+    }
+
+    pub fn set_health_score(&self, score: u8) {
+        self.health_score_label.set_label(&format!("{}%", score));
+        self.health_score_label.set_visible(true);
+        self.health_score_label.remove_css_class("success");
+        self.health_score_label.remove_css_class("warning");
+        self.health_score_label.remove_css_class("error");
+        let color_class = match score {
+            80..=100 => "success",
+            50..=79 => "warning",
+            _ => "error",
+        };
+        self.health_score_label.add_css_class(color_class);
     }
 
     pub fn set_library_count(&self, count: usize) {

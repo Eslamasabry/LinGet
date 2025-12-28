@@ -278,6 +278,7 @@ impl FlatpakBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -364,6 +365,7 @@ impl PackageBackend for FlatpakBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -396,7 +398,7 @@ impl PackageBackend for FlatpakBackend {
                 let new_version = parts[1].to_string();
                 let name = parts[2].to_string();
 
-                packages.push(Package {
+                let mut pkg = Package {
                     name: app_id,
                     version: String::new(),
                     available_version: Some(new_version),
@@ -409,8 +411,11 @@ impl PackageBackend for FlatpakBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
-                });
+                };
+                pkg.update_category = Some(pkg.detect_update_category());
+                packages.push(pkg);
             }
         }
 
@@ -553,12 +558,248 @@ impl PackageBackend for FlatpakBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
         }
 
         Ok(packages)
+    }
+
+    async fn available_downgrade_versions(&self, name: &str) -> Result<Vec<String>> {
+        let remote_origin = self.get_app_origin(name).await?;
+        let app_ref = self.get_app_ref(name).await?;
+        let commit_hashes = self.get_commit_history(&remote_origin, &app_ref).await?;
+
+        let skip_current_version = 1;
+        let previous_versions: Vec<String> = commit_hashes
+            .into_iter()
+            .skip(skip_current_version)
+            .take(10)
+            .collect();
+
+        Ok(previous_versions)
+    }
+
+    async fn downgrade_to(&self, name: &str, commit_hash: &str) -> Result<()> {
+        let status = Command::new("flatpak")
+            .args(["update", "-y", &format!("--commit={}", commit_hash), name])
+            .status()
+            .await
+            .context("Failed to downgrade flatpak")?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("Failed to downgrade {} to commit {}", name, commit_hash)
+        }
+    }
+
+    async fn get_cache_size(&self) -> Result<u64> {
+        let output = Command::new("flatpak")
+            .args(["list", "--unused", "--columns=size"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get unused flatpak size")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut total: u64 = 0;
+
+        for line in stdout.lines() {
+            if let Some(size) = parse_human_size(line.trim()) {
+                total += size;
+            }
+        }
+
+        Ok(total)
+    }
+
+    async fn get_orphaned_packages(&self) -> Result<Vec<Package>> {
+        let output = Command::new("flatpak")
+            .args([
+                "list",
+                "--unused",
+                "--columns=application,version,name,size",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to list unused flatpaks")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut packages = Vec::new();
+
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if !parts.is_empty() && !parts[0].is_empty() {
+                let size = parts.get(3).and_then(|s| parse_human_size(s));
+                packages.push(Package {
+                    name: parts[0].to_string(),
+                    version: parts.get(1).unwrap_or(&"").to_string(),
+                    available_version: None,
+                    description: format!("{} (unused runtime)", parts.get(2).unwrap_or(&"Unused")),
+                    source: PackageSource::Flatpak,
+                    status: PackageStatus::Installed,
+                    size,
+                    homepage: None,
+                    license: None,
+                    maintainer: None,
+                    dependencies: Vec::new(),
+                    install_date: None,
+                    update_category: None,
+                    enrichment: None,
+                });
+            }
+        }
+
+        Ok(packages)
+    }
+
+    async fn cleanup_cache(&self) -> Result<u64> {
+        let before = self.get_cache_size().await.unwrap_or(0);
+
+        let status = Command::new("flatpak")
+            .args(["uninstall", "-y", "--unused"])
+            .status()
+            .await
+            .context("Failed to remove unused flatpaks")?;
+
+        if !status.success() {
+            anyhow::bail!("Failed to clean up unused Flatpak runtimes");
+        }
+
+        Ok(before)
+    }
+
+    async fn get_reverse_dependencies(&self, name: &str) -> Result<Vec<String>> {
+        let output = Command::new("flatpak")
+            .args(["list", "--app", "--columns=application,runtime"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to list flatpak apps")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut deps = Vec::new();
+
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 2 {
+                let app_id = parts[0].trim();
+                let runtime = parts[1].trim();
+                if runtime.contains(name) && app_id != name {
+                    deps.push(app_id.to_string());
+                }
+            }
+        }
+
+        Ok(deps)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Flatpak
+    }
+
+    async fn get_package_commands(&self, name: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let mut commands = Vec::new();
+
+        if let Ok(flatpak_path) = which::which("flatpak") {
+            commands.push((format!("flatpak run {}", name), flatpak_path));
+        }
+
+        let export_dirs = [
+            std::path::PathBuf::from("/var/lib/flatpak/exports/bin"),
+            dirs::home_dir()
+                .unwrap_or_default()
+                .join(".local/share/flatpak/exports/bin"),
+        ];
+
+        for dir in &export_dirs {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(cmd_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if (cmd_name.contains(name) || cmd_name == name)
+                            && !commands.iter().any(|(n, _)| n == cmd_name)
+                        {
+                            commands.push((cmd_name.to_string(), path));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(commands)
+    }
+}
+
+impl FlatpakBackend {
+    async fn get_app_origin(&self, name: &str) -> Result<String> {
+        let output = Command::new("flatpak")
+            .args(["info", "--show-origin", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get flatpak app info")?;
+
+        if !output.status.success() {
+            anyhow::bail!("App {} not found", name);
+        }
+
+        let origin = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if origin.is_empty() {
+            anyhow::bail!("Could not determine remote for {}", name);
+        }
+
+        Ok(origin)
+    }
+
+    async fn get_app_ref(&self, name: &str) -> Result<String> {
+        let output = Command::new("flatpak")
+            .args(["info", "--show-ref", name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get flatpak ref")?;
+
+        let app_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if app_ref.is_empty() {
+            anyhow::bail!("Could not determine ref for {}", name);
+        }
+
+        Ok(app_ref)
+    }
+
+    async fn get_commit_history(&self, remote: &str, app_ref: &str) -> Result<Vec<String>> {
+        let output = Command::new("flatpak")
+            .args(["remote-info", "--log", remote, app_ref])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to get flatpak commit log")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut commits = Vec::new();
+
+        for line in stdout.lines() {
+            if let Some(commit) = line.trim().strip_prefix("Commit:") {
+                let full_hash = commit.trim();
+                if !full_hash.is_empty() {
+                    let short_hash = &full_hash[..full_hash.len().min(12)];
+                    commits.push(short_hash.to_string());
+                }
+            }
+        }
+
+        Ok(commits)
     }
 }
 

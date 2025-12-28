@@ -158,6 +158,7 @@ impl PackageBackend for SnapBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -204,6 +205,7 @@ impl PackageBackend for SnapBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
@@ -343,11 +345,147 @@ impl PackageBackend for SnapBackend {
                     maintainer: None,
                     dependencies: Vec::new(),
                     install_date: None,
+                    update_category: None,
                     enrichment: None,
                 });
             }
         }
 
         Ok(packages)
+    }
+
+    async fn get_cache_size(&self) -> Result<u64> {
+        let disabled_revisions = self.list_disabled_revisions().await?;
+        let mut total_size: u64 = 0;
+
+        for (name, revision) in &disabled_revisions {
+            if let Ok(size) = self.get_revision_size(name, revision).await {
+                total_size += size;
+            }
+        }
+
+        Ok(total_size)
+    }
+
+    async fn get_orphaned_packages(&self) -> Result<Vec<Package>> {
+        let disabled_revisions = self.list_disabled_revisions().await?;
+        let mut packages = Vec::new();
+
+        for (name, revision) in disabled_revisions {
+            let size = self.get_revision_size(&name, &revision).await.ok();
+
+            packages.push(Package {
+                name: name.clone(),
+                version: String::new(),
+                available_version: None,
+                description: format!("Old revision {} (disabled)", revision),
+                source: PackageSource::Snap,
+                status: PackageStatus::Installed,
+                size,
+                homepage: None,
+                license: None,
+                maintainer: None,
+                dependencies: Vec::new(),
+                install_date: None,
+                update_category: None,
+                enrichment: None,
+            });
+        }
+
+        Ok(packages)
+    }
+
+    async fn cleanup_cache(&self) -> Result<u64> {
+        let before = self.get_cache_size().await.unwrap_or(0);
+        let disabled_revisions = self.list_disabled_revisions().await?;
+
+        if disabled_revisions.is_empty() {
+            return Ok(0);
+        }
+
+        let mut removed_any = false;
+
+        for (name, revision) in &disabled_revisions {
+            let (ok, _stderr) = self
+                .run_pkexec_snap(
+                    &["remove", name, "--revision", revision],
+                    &format!("Failed to remove snap revision {} {}", name, revision),
+                )
+                .await?;
+
+            if ok {
+                removed_any = true;
+            }
+        }
+
+        if !removed_any {
+            return Ok(0);
+        }
+
+        Ok(before)
+    }
+
+    fn source(&self) -> PackageSource {
+        PackageSource::Snap
+    }
+
+    async fn get_package_commands(&self, name: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+        let mut commands = Vec::new();
+        let snap_bin = std::path::PathBuf::from("/snap/bin");
+
+        if snap_bin.exists() {
+            if let Ok(entries) = std::fs::read_dir(&snap_bin) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(cmd_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if cmd_name == name || cmd_name.starts_with(&format!("{}.", name)) {
+                            commands.push((cmd_name.to_string(), path));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(commands)
+    }
+}
+
+impl SnapBackend {
+    async fn list_disabled_revisions(&self) -> Result<Vec<(String, String)>> {
+        let output = Command::new("snap")
+            .args(["list", "--all"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to list snap revisions")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut revisions = Vec::new();
+
+        for line in stdout.lines().skip(1) {
+            if line.contains("disabled") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    revisions.push((parts[0].to_string(), parts[2].to_string()));
+                }
+            }
+        }
+
+        Ok(revisions)
+    }
+
+    async fn get_revision_size(&self, name: &str, revision: &str) -> Result<u64> {
+        let snap_path = format!("/var/lib/snapd/snaps/{}_{}.snap", name, revision);
+        let path = std::path::Path::new(&snap_path);
+
+        if path.exists() {
+            let metadata = tokio::fs::metadata(path)
+                .await
+                .context("Failed to get snap file metadata")?;
+            Ok(metadata.len())
+        } else {
+            Ok(0)
+        }
     }
 }

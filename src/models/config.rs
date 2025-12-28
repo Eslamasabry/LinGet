@@ -1,7 +1,10 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use super::appearance::AppearanceConfig;
+use super::scheduler::SchedulerState;
 use super::PackageSource;
 
 /// Application configuration
@@ -46,6 +49,9 @@ pub struct Config {
     #[serde(default = "default_ui_show_icons")]
     pub ui_show_icons: bool,
 
+    #[serde(default)]
+    pub layout_mode: LayoutMode,
+
     /// Last selected source filter (persisted across sessions)
     #[serde(default)]
     pub last_source_filter: Option<String>,
@@ -54,6 +60,9 @@ pub struct Config {
     #[serde(default)]
     pub favorite_packages: Vec<String>,
 
+    #[serde(default)]
+    pub collections: HashMap<String, Vec<String>>,
+
     /// Whether onboarding has been completed
     #[serde(default)]
     pub onboarding_completed: bool,
@@ -61,6 +70,124 @@ pub struct Config {
     /// Recent search queries (last 5)
     #[serde(default)]
     pub recent_searches: Vec<String>,
+
+    /// Dismissed recommendation package names (user chose to ignore these suggestions)
+    #[serde(default)]
+    pub dismissed_recommendations: Vec<String>,
+
+    /// Enable vim-style keyboard navigation (j/k, g+h/l/u/s, etc.)
+    #[serde(default)]
+    pub vim_mode: bool,
+
+    #[serde(default)]
+    pub color_scheme: ColorScheme,
+
+    #[serde(default)]
+    pub accent_color: AccentColor,
+
+    #[serde(default)]
+    pub appearance: AppearanceConfig,
+
+    #[serde(default)]
+    pub scheduler: SchedulerState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum LayoutMode {
+    Grid,
+    #[default]
+    List,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ColorScheme {
+    System,
+    Light,
+    Dark,
+    #[default]
+    OledDark,
+}
+
+impl ColorScheme {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ColorScheme::System => "System",
+            ColorScheme::Light => "Light",
+            ColorScheme::Dark => "Dark",
+            ColorScheme::OledDark => "OLED Dark",
+        }
+    }
+
+    pub fn all() -> &'static [ColorScheme] {
+        &[
+            ColorScheme::System,
+            ColorScheme::Light,
+            ColorScheme::Dark,
+            ColorScheme::OledDark,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum AccentColor {
+    #[default]
+    System,
+    Blue,
+    Teal,
+    Green,
+    Yellow,
+    Orange,
+    Red,
+    Pink,
+    Purple,
+    Slate,
+}
+
+impl AccentColor {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            AccentColor::System => "System Default",
+            AccentColor::Blue => "Blue",
+            AccentColor::Teal => "Teal",
+            AccentColor::Green => "Green",
+            AccentColor::Yellow => "Yellow",
+            AccentColor::Orange => "Orange",
+            AccentColor::Red => "Red",
+            AccentColor::Pink => "Pink",
+            AccentColor::Purple => "Purple",
+            AccentColor::Slate => "Slate",
+        }
+    }
+
+    pub fn css_color(&self) -> Option<&'static str> {
+        match self {
+            AccentColor::System => None,
+            AccentColor::Blue => Some("#3584e4"),
+            AccentColor::Teal => Some("#2190a4"),
+            AccentColor::Green => Some("#3a944a"),
+            AccentColor::Yellow => Some("#c88800"),
+            AccentColor::Orange => Some("#e66100"),
+            AccentColor::Red => Some("#e62222"),
+            AccentColor::Pink => Some("#d56199"),
+            AccentColor::Purple => Some("#9141ac"),
+            AccentColor::Slate => Some("#6e7a8a"),
+        }
+    }
+
+    pub fn all() -> &'static [AccentColor] {
+        &[
+            AccentColor::System,
+            AccentColor::Blue,
+            AccentColor::Teal,
+            AccentColor::Green,
+            AccentColor::Yellow,
+            AccentColor::Orange,
+            AccentColor::Red,
+            AccentColor::Pink,
+            AccentColor::Purple,
+            AccentColor::Slate,
+        ]
+    }
 }
 
 fn default_ui_show_icons() -> bool {
@@ -114,6 +241,72 @@ impl Default for EnabledSources {
 }
 
 impl EnabledSources {
+    pub fn set(&mut self, source: PackageSource, enabled: bool) {
+        match source {
+            PackageSource::Apt => self.apt = enabled,
+            PackageSource::Dnf => self.dnf = enabled,
+            PackageSource::Pacman => self.pacman = enabled,
+            PackageSource::Zypper => self.zypper = enabled,
+            PackageSource::Flatpak => self.flatpak = enabled,
+            PackageSource::Snap => self.snap = enabled,
+            PackageSource::Npm => self.npm = enabled,
+            PackageSource::Pip => self.pip = enabled,
+            PackageSource::Pipx => self.pipx = enabled,
+            PackageSource::Cargo => self.cargo = enabled,
+            PackageSource::Brew => self.brew = enabled,
+            PackageSource::Aur => self.aur = enabled,
+            PackageSource::Conda => self.conda = enabled,
+            PackageSource::Mamba => self.mamba = enabled,
+            PackageSource::Dart => self.dart = enabled,
+            PackageSource::Deb => self.deb = enabled,
+            PackageSource::AppImage => self.appimage = enabled,
+        }
+    }
+
+    pub fn get(&self, source: PackageSource) -> bool {
+        match source {
+            PackageSource::Apt => self.apt,
+            PackageSource::Dnf => self.dnf,
+            PackageSource::Pacman => self.pacman,
+            PackageSource::Zypper => self.zypper,
+            PackageSource::Flatpak => self.flatpak,
+            PackageSource::Snap => self.snap,
+            PackageSource::Npm => self.npm,
+            PackageSource::Pip => self.pip,
+            PackageSource::Pipx => self.pipx,
+            PackageSource::Cargo => self.cargo,
+            PackageSource::Brew => self.brew,
+            PackageSource::Aur => self.aur,
+            PackageSource::Conda => self.conda,
+            PackageSource::Mamba => self.mamba,
+            PackageSource::Dart => self.dart,
+            PackageSource::Deb => self.deb,
+            PackageSource::AppImage => self.appimage,
+        }
+    }
+
+    pub fn from_sources(sources: &HashSet<PackageSource>) -> Self {
+        Self {
+            apt: sources.contains(&PackageSource::Apt),
+            dnf: sources.contains(&PackageSource::Dnf),
+            pacman: sources.contains(&PackageSource::Pacman),
+            zypper: sources.contains(&PackageSource::Zypper),
+            flatpak: sources.contains(&PackageSource::Flatpak),
+            snap: sources.contains(&PackageSource::Snap),
+            npm: sources.contains(&PackageSource::Npm),
+            pip: sources.contains(&PackageSource::Pip),
+            pipx: sources.contains(&PackageSource::Pipx),
+            cargo: sources.contains(&PackageSource::Cargo),
+            brew: sources.contains(&PackageSource::Brew),
+            aur: sources.contains(&PackageSource::Aur),
+            conda: sources.contains(&PackageSource::Conda),
+            mamba: sources.contains(&PackageSource::Mamba),
+            dart: sources.contains(&PackageSource::Dart),
+            deb: sources.contains(&PackageSource::Deb),
+            appimage: sources.contains(&PackageSource::AppImage),
+        }
+    }
+
     pub fn to_sources(&self) -> HashSet<PackageSource> {
         let mut sources = HashSet::new();
         if self.apt {
@@ -186,10 +379,18 @@ impl Default for Config {
             ignored_packages: Vec::new(),
             ui_compact: false,
             ui_show_icons: default_ui_show_icons(),
+            layout_mode: LayoutMode::default(),
             last_source_filter: None,
             favorite_packages: Vec::new(),
+            collections: HashMap::new(),
             onboarding_completed: false,
             recent_searches: Vec::new(),
+            dismissed_recommendations: Vec::new(),
+            vim_mode: false,
+            color_scheme: ColorScheme::default(),
+            accent_color: AccentColor::default(),
+            appearance: AppearanceConfig::default(),
+            scheduler: SchedulerState::default(),
         }
     }
 }
@@ -221,10 +422,10 @@ impl Config {
 
     pub fn save(&self) -> anyhow::Result<()> {
         let dir = Self::config_dir();
-        std::fs::create_dir_all(&dir)?;
+        std::fs::create_dir_all(&dir).context("Failed to create config directory")?;
 
-        let content = toml::to_string_pretty(self)?;
-        std::fs::write(Self::config_path(), content)?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
+        std::fs::write(Self::config_path(), content).context("Failed to write config file")?;
         Ok(())
     }
 }
