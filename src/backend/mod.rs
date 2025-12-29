@@ -17,6 +17,7 @@ mod pipx;
 mod pkexec;
 mod providers;
 mod snap;
+pub mod streaming;
 mod traits;
 mod zypper;
 

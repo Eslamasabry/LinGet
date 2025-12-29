@@ -26,7 +26,7 @@ Wire package operations to emit real-time logs to the Task Hub via `AppendTaskLo
 ### Phase 3: Log Emission Helper
 - [x] 3.1 Create `AppMsg::AppendLog { task_id, line }` message
 - [x] 3.2 Handle AppendLog in update() to forward to TaskHub
-- [ ] 3.3 Create helper function for streaming command output
+- [x] 3.3 Create streaming module with `run_streaming()` and `strip_ansi()` helpers
 
 ### Phase 4: Backend Integration
 - [ ] 4.1 Update one backend (apt) to emit logs during operations
@@ -40,7 +40,7 @@ Wire package operations to emit real-time logs to the Task Hub via `AppendTaskLo
 
 ---
 
-## Current Step: 3.3 - Create streaming helper
+## Current Step: 4.1 - Backend integration
 
 ## Architecture Notes
 Flow: ExecutePackageAction → spawn async → OperationStarted(task_id) → BeginTask
