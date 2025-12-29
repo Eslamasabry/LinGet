@@ -1,3 +1,4 @@
+use super::streaming::{run_streaming, StreamLine};
 use super::PackageBackend;
 use crate::models::{
     FlatpakMetadata, FlatpakPermission, FlatpakRuntime, InstallationType, Package, PackageSource,
@@ -7,6 +8,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::process::Stdio;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 /// Parse human-readable size strings like "1.2 GB", "500 MB", "100 kB"
 fn parse_human_size(s: &str) -> Option<u64> {
@@ -436,6 +438,27 @@ impl PackageBackend for FlatpakBackend {
         }
     }
 
+    async fn install_streaming(
+        &self,
+        name: &str,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        match log_sender {
+            Some(sender) => {
+                let output = run_streaming("flatpak", &["install", "-y", name], sender)
+                    .await
+                    .with_context(|| format!("Failed to install flatpak {}", name))?;
+
+                if output.success {
+                    Ok(())
+                } else {
+                    anyhow::bail!("Failed to install flatpak {}", name)
+                }
+            }
+            None => self.install(name).await,
+        }
+    }
+
     async fn remove(&self, name: &str) -> Result<()> {
         let status = Command::new("flatpak")
             .args(["uninstall", "-y", name])
@@ -450,6 +473,27 @@ impl PackageBackend for FlatpakBackend {
         }
     }
 
+    async fn remove_streaming(
+        &self,
+        name: &str,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        match log_sender {
+            Some(sender) => {
+                let output = run_streaming("flatpak", &["uninstall", "-y", name], sender)
+                    .await
+                    .with_context(|| format!("Failed to remove flatpak {}", name))?;
+
+                if output.success {
+                    Ok(())
+                } else {
+                    anyhow::bail!("Failed to remove flatpak {}", name)
+                }
+            }
+            None => self.remove(name).await,
+        }
+    }
+
     async fn update(&self, name: &str) -> Result<()> {
         let status = Command::new("flatpak")
             .args(["update", "-y", name])
@@ -461,6 +505,27 @@ impl PackageBackend for FlatpakBackend {
             Ok(())
         } else {
             anyhow::bail!("Failed to update flatpak {}", name)
+        }
+    }
+
+    async fn update_streaming(
+        &self,
+        name: &str,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        match log_sender {
+            Some(sender) => {
+                let output = run_streaming("flatpak", &["update", "-y", name], sender)
+                    .await
+                    .with_context(|| format!("Failed to update flatpak {}", name))?;
+
+                if output.success {
+                    Ok(())
+                } else {
+                    anyhow::bail!("Failed to update flatpak {}", name)
+                }
+            }
+            None => self.update(name).await,
         }
     }
 

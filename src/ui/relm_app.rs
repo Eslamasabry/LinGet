@@ -2035,14 +2035,10 @@ impl SimpleComponent for AppModel {
                     });
 
                     relm4::spawn(async move {
-                        let result = if pkg.source == PackageSource::Apt {
-                            let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
-
+                        let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
+                        let result = {
                             let manager = pm.lock().await;
                             manager.remove_streaming(&pkg, Some(log_tx)).await
-                        } else {
-                            let manager = pm.lock().await;
-                            manager.remove(&pkg).await
                         };
 
                         match result {
@@ -2088,14 +2084,10 @@ impl SimpleComponent for AppModel {
                     });
 
                     relm4::spawn(async move {
-                        let result = if pkg.source == PackageSource::Apt {
-                            let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
-
+                        let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
+                        let result = {
                             let manager = pm.lock().await;
                             manager.update_streaming(&pkg, Some(log_tx)).await
-                        } else {
-                            let manager = pm.lock().await;
-                            manager.update(&pkg).await
                         };
 
                         match result {
@@ -2140,14 +2132,10 @@ impl SimpleComponent for AppModel {
                     });
 
                     relm4::spawn(async move {
-                        let result = if pkg.source == PackageSource::Apt {
-                            let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
-
+                        let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
+                        let result = {
                             let manager = pm.lock().await;
                             manager.install_streaming(&pkg, Some(log_tx)).await
-                        } else {
-                            let manager = pm.lock().await;
-                            manager.install(&pkg).await
                         };
 
                         match result {
