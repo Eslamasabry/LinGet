@@ -100,6 +100,8 @@ impl BatchProgress {
     }
 }
 
+const MAX_LOG_LINES: usize = 5;
+
 #[derive(Clone, Debug)]
 pub struct TaskEntry {
     pub id: usize,
@@ -110,6 +112,7 @@ pub struct TaskEntry {
     pub command: Option<String>,
     pub retry_spec: Option<RetrySpec>,
     pub batch_progress: Option<BatchProgress>,
+    pub log_lines: Vec<String>,
 }
 
 impl TaskEntry {
@@ -152,6 +155,10 @@ pub enum TaskHubInput {
         task_id: usize,
         current_step: usize,
         current_item: Option<String>,
+    },
+    AppendTaskLog {
+        task_id: usize,
+        line: String,
     },
     FinishTask {
         task_id: usize,
@@ -397,6 +404,7 @@ impl SimpleComponent for TaskHubModel {
                     command: None,
                     retry_spec,
                     batch_progress: None,
+                    log_lines: Vec::new(),
                 };
                 self.tasks.insert(0, task);
             }
@@ -418,6 +426,7 @@ impl SimpleComponent for TaskHubModel {
                     command: None,
                     retry_spec,
                     batch_progress: Some(BatchProgress::new(total_steps)),
+                    log_lines: Vec::new(),
                 };
                 self.tasks.insert(0, task);
             }
@@ -443,6 +452,15 @@ impl SimpleComponent for TaskHubModel {
                                 current_step, progress.total_steps, item_str, eta_str
                             )
                         };
+                    }
+                }
+            }
+
+            TaskHubInput::AppendTaskLog { task_id, line } => {
+                if let Some(task) = self.tasks.iter_mut().find(|t| t.id == task_id) {
+                    task.log_lines.push(line);
+                    if task.log_lines.len() > MAX_LOG_LINES {
+                        task.log_lines.remove(0);
                     }
                 }
             }
@@ -484,6 +502,7 @@ impl SimpleComponent for TaskHubModel {
                     command,
                     retry_spec: None,
                     batch_progress: None,
+                    log_lines: Vec::new(),
                 };
                 self.tasks.insert(0, task);
 
@@ -642,6 +661,50 @@ impl TaskHubModel {
         }
 
         row.add_suffix(&suffix);
+
+        if matches!(task.status, TaskStatus::Active) && !task.log_lines.is_empty() {
+            let expander = adw::ExpanderRow::builder()
+                .title(&task.title)
+                .subtitle(task.subtitle())
+                .css_classes(vec!["cmd-row"])
+                .show_enable_switch(false)
+                .build();
+
+            let exp_icon = gtk::Image::from_icon_name(task.icon_name());
+            exp_icon.add_css_class("dim-label");
+            expander.add_prefix(&exp_icon);
+            expander.add_suffix(&suffix);
+
+            let log_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .margin_start(12)
+                .margin_end(12)
+                .margin_top(4)
+                .margin_bottom(8)
+                .build();
+
+            for line in &task.log_lines {
+                let log_label = gtk::Label::builder()
+                    .label(line)
+                    .xalign(0.0)
+                    .wrap(true)
+                    .css_classes(vec!["caption", "monospace", "dim-label"])
+                    .build();
+                log_box.append(&log_label);
+            }
+
+            let log_row = adw::ActionRow::builder()
+                .activatable(false)
+                .selectable(false)
+                .build();
+            log_row.set_child(Some(&log_box));
+            expander.add_row(&log_row);
+
+            let wrapper = gtk::ListBoxRow::new();
+            wrapper.set_child(Some(&expander));
+            return wrapper;
+        }
 
         let wrapper = gtk::ListBoxRow::new();
         wrapper.set_child(Some(&row));

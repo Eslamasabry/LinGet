@@ -2851,6 +2851,37 @@ impl SimpleComponent for AppModel {
                     self.history_data.search_query = query;
                     sender.input(AppMsg::LoadHistory);
                 }
+                HistoryViewAction::ToggleSelectionMode => {
+                    self.history_data.selection_mode = !self.history_data.selection_mode;
+                    if !self.history_data.selection_mode {
+                        self.history_data.selected_entries.clear();
+                    }
+                }
+                HistoryViewAction::SelectEntry(entry_id, selected) => {
+                    if selected {
+                        self.history_data.selected_entries.insert(entry_id);
+                    } else {
+                        self.history_data.selected_entries.remove(&entry_id);
+                    }
+                }
+                HistoryViewAction::SelectAll => {
+                    for entry in &self.history_data.entries {
+                        if entry.is_reversible() {
+                            self.history_data.selected_entries.insert(entry.id.clone());
+                        }
+                    }
+                }
+                HistoryViewAction::DeselectAll => {
+                    self.history_data.selected_entries.clear();
+                }
+                HistoryViewAction::BulkUndo(entry_ids) => {
+                    self.history_data.selection_mode = false;
+                    self.history_data.selected_entries.clear();
+
+                    for entry_id in entry_ids {
+                        sender.input(AppMsg::HistoryAction(HistoryViewAction::Undo(entry_id)));
+                    }
+                }
                 HistoryViewAction::Export => {
                     let tracker = self.history_tracker.clone();
                     let sender = sender.clone();
@@ -3841,11 +3872,8 @@ impl SimpleComponent for AppModel {
                     if let Some(task) = task_opt {
                         {
                             let mut config = self.config.borrow_mut();
-                            if let Some(t) = config
-                                .scheduler
-                                .tasks
-                                .iter_mut()
-                                .find(|t| t.id == task_id)
+                            if let Some(t) =
+                                config.scheduler.tasks.iter_mut().find(|t| t.id == task_id)
                             {
                                 t.completed = false;
                                 t.error = None;

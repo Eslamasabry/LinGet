@@ -14,6 +14,8 @@ pub struct HistoryViewData {
     pub filter: HistoryFilter,
     pub search_query: String,
     pub is_loading: bool,
+    pub selection_mode: bool,
+    pub selected_entries: std::collections::HashSet<String>,
 }
 
 impl Default for HistoryViewData {
@@ -23,6 +25,8 @@ impl Default for HistoryViewData {
             filter: HistoryFilter::All,
             search_query: String::new(),
             is_loading: false,
+            selection_mode: false,
+            selected_entries: std::collections::HashSet::new(),
         }
     }
 }
@@ -30,10 +34,15 @@ impl Default for HistoryViewData {
 #[derive(Debug, Clone)]
 pub enum HistoryViewAction {
     Undo(String),
+    BulkUndo(Vec<String>),
     Export,
     Refresh,
     FilterChanged(HistoryFilter),
     Search(String),
+    ToggleSelectionMode,
+    SelectEntry(String, bool),
+    SelectAll,
+    DeselectAll,
 }
 
 pub fn build_history_view<F>(data: &HistoryViewData, on_action: F) -> gtk::Box
@@ -45,7 +54,13 @@ where
         .spacing(0)
         .build();
 
-    let header = build_header(&data.filter, &data.search_query, on_action.clone());
+    let header = build_header(
+        &data.filter,
+        &data.search_query,
+        data.selection_mode,
+        data.selected_entries.len(),
+        on_action.clone(),
+    );
     container.append(&header);
 
     let scrolled = gtk::ScrolledWindow::builder()
@@ -67,15 +82,32 @@ where
         let empty = build_empty_state();
         scrolled.set_child(Some(&empty));
     } else {
-        let timeline = build_timeline(&data.entries, on_action);
+        let timeline = build_timeline(
+            &data.entries,
+            data.selection_mode,
+            &data.selected_entries,
+            on_action.clone(),
+        );
         scrolled.set_child(Some(&timeline));
     }
 
     container.append(&scrolled);
+
+    if data.selection_mode && !data.selected_entries.is_empty() {
+        let action_bar = build_selection_action_bar(&data.selected_entries, on_action);
+        container.append(&action_bar);
+    }
+
     container
 }
 
-fn build_header<F>(current_filter: &HistoryFilter, search_query: &str, on_action: F) -> gtk::Box
+fn build_header<F>(
+    current_filter: &HistoryFilter,
+    search_query: &str,
+    selection_mode: bool,
+    selected_count: usize,
+    on_action: F,
+) -> gtk::Box
 where
     F: Fn(HistoryViewAction) + Clone + 'static,
 {
@@ -87,6 +119,46 @@ where
         .margin_start(24)
         .margin_end(24)
         .build();
+
+    if selection_mode {
+        let select_all_btn = gtk::Button::builder().label("Select All").build();
+        select_all_btn.add_css_class("flat");
+
+        let on_action_select_all = on_action.clone();
+        select_all_btn.connect_clicked(move |_| {
+            on_action_select_all(HistoryViewAction::SelectAll);
+        });
+        header.append(&select_all_btn);
+
+        let count_label = gtk::Label::builder()
+            .label(format!("{} selected", selected_count))
+            .hexpand(true)
+            .build();
+        count_label.add_css_class("dim-label");
+        header.append(&count_label);
+
+        if selected_count > 0 {
+            let deselect_btn = gtk::Button::builder().label("Deselect All").build();
+            deselect_btn.add_css_class("flat");
+
+            let on_action_deselect = on_action.clone();
+            deselect_btn.connect_clicked(move |_| {
+                on_action_deselect(HistoryViewAction::DeselectAll);
+            });
+            header.append(&deselect_btn);
+        }
+
+        let cancel_btn = gtk::Button::builder().label("Cancel").build();
+        cancel_btn.add_css_class("flat");
+
+        let on_action_cancel = on_action.clone();
+        cancel_btn.connect_clicked(move |_| {
+            on_action_cancel(HistoryViewAction::ToggleSelectionMode);
+        });
+        header.append(&cancel_btn);
+
+        return header;
+    }
 
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text("Search history...")
@@ -135,6 +207,19 @@ where
     });
 
     header.append(&filter_dropdown);
+
+    let select_btn = gtk::Button::builder()
+        .icon_name("selection-mode-symbolic")
+        .tooltip_text("Select multiple entries")
+        .build();
+    select_btn.add_css_class("flat");
+
+    let on_action_select = on_action.clone();
+    select_btn.connect_clicked(move |_| {
+        on_action_select(HistoryViewAction::ToggleSelectionMode);
+    });
+
+    header.append(&select_btn);
 
     let export_btn = gtk::Button::builder()
         .icon_name("document-save-symbolic")
@@ -198,7 +283,12 @@ fn build_empty_state() -> gtk::Box {
     container
 }
 
-fn build_timeline<F>(entries: &[HistoryEntry], on_action: F) -> gtk::Box
+fn build_timeline<F>(
+    entries: &[HistoryEntry],
+    selection_mode: bool,
+    selected_entries: &std::collections::HashSet<String>,
+    on_action: F,
+) -> gtk::Box
 where
     F: Fn(HistoryViewAction) + Clone + 'static,
 {
@@ -230,7 +320,8 @@ where
 
         if let Some(day_entries) = grouped.get(&date) {
             for entry in day_entries {
-                let row = build_history_row(entry, on_action.clone());
+                let is_selected = selected_entries.contains(&entry.id);
+                let row = build_history_row(entry, selection_mode, is_selected, on_action.clone());
                 group.add(&row);
             }
         }
@@ -241,7 +332,12 @@ where
     container
 }
 
-fn build_history_row<F>(entry: &HistoryEntry, on_action: F) -> adw::ActionRow
+fn build_history_row<F>(
+    entry: &HistoryEntry,
+    selection_mode: bool,
+    is_selected: bool,
+    on_action: F,
+) -> adw::ActionRow
 where
     F: Fn(HistoryViewAction) + Clone + 'static,
 {
@@ -257,6 +353,23 @@ where
         .title(&entry.package_name)
         .subtitle(&subtitle)
         .build();
+
+    if selection_mode {
+        let check = gtk::CheckButton::builder()
+            .active(is_selected)
+            .valign(gtk::Align::Center)
+            .build();
+
+        let entry_id = entry.id.clone();
+        let on_action_check = on_action.clone();
+        check.connect_toggled(move |btn| {
+            on_action_check(HistoryViewAction::SelectEntry(
+                entry_id.clone(),
+                btn.is_active(),
+            ));
+        });
+        row.add_prefix(&check);
+    }
 
     let icon = gtk::Image::builder()
         .icon_name(entry.operation.icon())
@@ -289,7 +402,7 @@ where
     source_label.add_css_class("dim-label");
     row.add_suffix(&source_label);
 
-    if entry.is_reversible() {
+    if !selection_mode && entry.is_reversible() {
         let undo_btn = gtk::Button::builder()
             .label(entry.operation.undo_label())
             .valign(gtk::Align::Center)
@@ -310,6 +423,42 @@ where
     }
 
     row
+}
+
+fn build_selection_action_bar<F>(
+    selected_entries: &std::collections::HashSet<String>,
+    on_action: F,
+) -> gtk::Box
+where
+    F: Fn(HistoryViewAction) + Clone + 'static,
+{
+    let bar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(12)
+        .halign(gtk::Align::Center)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(24)
+        .margin_end(24)
+        .build();
+    bar.add_css_class("selection-action-bar");
+
+    let count_label = gtk::Label::builder()
+        .label(format!("{} entries selected", selected_entries.len()))
+        .build();
+    bar.append(&count_label);
+
+    let undo_btn = gtk::Button::builder().label("Undo Selected").build();
+    undo_btn.add_css_class("suggested-action");
+    undo_btn.add_css_class("pill");
+
+    let selected_vec: Vec<String> = selected_entries.iter().cloned().collect();
+    undo_btn.connect_clicked(move |_| {
+        on_action(HistoryViewAction::BulkUndo(selected_vec.clone()));
+    });
+    bar.append(&undo_btn);
+
+    bar
 }
 
 fn group_by_date(entries: &[HistoryEntry]) -> HashMap<NaiveDate, Vec<&HistoryEntry>> {
