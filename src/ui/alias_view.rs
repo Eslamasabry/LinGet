@@ -483,27 +483,66 @@ fn get_source_icon(source: PackageSource) -> &'static str {
     }
 }
 
-fn build_command_row<F>(cmd: &crate::models::alias::CommandInfo, on_action: F) -> adw::ActionRow
+fn build_command_row<F>(cmd: &crate::models::alias::CommandInfo, on_action: F) -> gtk::Widget
 where
     F: Fn(AliasViewAction) + Clone + 'static,
 {
-    let cmd_row = adw::ActionRow::builder()
+    if cmd.subcommands.is_empty() {
+        let cmd_row = adw::ActionRow::builder()
+            .title(&cmd.name)
+            .subtitle(cmd.path.to_string_lossy())
+            .build();
+
+        let copy_btn = gtk::Button::builder()
+            .icon_name("edit-copy-symbolic")
+            .tooltip_text("Copy command")
+            .valign(gtk::Align::Center)
+            .build();
+        copy_btn.add_css_class("flat");
+        copy_btn.add_css_class("circular");
+
+        let cmd_name = cmd.name.clone();
+        let on_action_copy = on_action.clone();
+        copy_btn.connect_clicked(move |_| {
+            on_action_copy(AliasViewAction::CopyCommand(cmd_name.clone()));
+        });
+
+        let create_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Create alias for this command")
+            .valign(gtk::Align::Center)
+            .build();
+        create_btn.add_css_class("flat");
+        create_btn.add_css_class("circular");
+
+        let cmd_name = cmd.name.clone();
+        let on_action_create = on_action.clone();
+        create_btn.connect_clicked(move |btn| {
+            show_add_alias_dialog_with_command(btn, &cmd_name, on_action_create.clone());
+        });
+
+        cmd_row.add_suffix(&copy_btn);
+        cmd_row.add_suffix(&create_btn);
+        return cmd_row.upcast();
+    }
+
+    let expander = adw::ExpanderRow::builder()
         .title(&cmd.name)
-        .subtitle(cmd.path.to_string_lossy())
+        .subtitle(format!("{} • {} subcommands", cmd.path.to_string_lossy(), cmd.subcommands.len()))
         .build();
 
     let copy_btn = gtk::Button::builder()
         .icon_name("edit-copy-symbolic")
-        .tooltip_text("Copy command path")
+        .tooltip_text("Copy command")
         .valign(gtk::Align::Center)
         .build();
     copy_btn.add_css_class("flat");
     copy_btn.add_css_class("circular");
 
-    let path_str = cmd.path.to_string_lossy().to_string();
+    let cmd_name = cmd.name.clone();
     let on_action_copy = on_action.clone();
     copy_btn.connect_clicked(move |_| {
-        on_action_copy(AliasViewAction::CopyCommand(path_str.clone()));
+        on_action_copy(AliasViewAction::CopyCommand(cmd_name.clone()));
     });
 
     let create_btn = gtk::Button::builder()
@@ -520,9 +559,64 @@ where
         show_add_alias_dialog_with_command(btn, &cmd_name, on_action_create.clone());
     });
 
-    cmd_row.add_suffix(&copy_btn);
-    cmd_row.add_suffix(&create_btn);
-    cmd_row
+    expander.add_suffix(&copy_btn);
+    expander.add_suffix(&create_btn);
+
+    for subcmd in &cmd.subcommands {
+        let subcmd_row = build_subcommand_row(subcmd, on_action.clone());
+        expander.add_row(&subcmd_row);
+    }
+
+    expander.upcast()
+}
+
+fn build_subcommand_row<F>(subcmd: &crate::models::alias::SubcommandInfo, on_action: F) -> adw::ActionRow
+where
+    F: Fn(AliasViewAction) + Clone + 'static,
+{
+    let description = subcmd.description.as_deref().unwrap_or("");
+    let row = adw::ActionRow::builder()
+        .title(&subcmd.full_command)
+        .subtitle(description)
+        .build();
+
+    let icon = gtk::Image::builder()
+        .icon_name("go-next-symbolic")
+        .build();
+    icon.add_css_class("dim-label");
+    row.add_prefix(&icon);
+
+    let copy_btn = gtk::Button::builder()
+        .icon_name("edit-copy-symbolic")
+        .tooltip_text("Copy command")
+        .valign(gtk::Align::Center)
+        .build();
+    copy_btn.add_css_class("flat");
+    copy_btn.add_css_class("circular");
+
+    let full_cmd = subcmd.full_command.clone();
+    let on_action_copy = on_action.clone();
+    copy_btn.connect_clicked(move |_| {
+        on_action_copy(AliasViewAction::CopyCommand(full_cmd.clone()));
+    });
+
+    let create_btn = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("Create alias for this command")
+        .valign(gtk::Align::Center)
+        .build();
+    create_btn.add_css_class("flat");
+    create_btn.add_css_class("circular");
+
+    let full_cmd = subcmd.full_command.clone();
+    let on_action_create = on_action.clone();
+    create_btn.connect_clicked(move |btn| {
+        show_add_alias_dialog_with_command(btn, &full_cmd, on_action_create.clone());
+    });
+
+    row.add_suffix(&copy_btn);
+    row.add_suffix(&create_btn);
+    row
 }
 
 fn show_add_alias_dialog<F>(parent: &impl IsA<gtk::Widget>, on_action: F)

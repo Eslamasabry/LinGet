@@ -7,6 +7,17 @@ use std::path::PathBuf;
 
 use super::PackageSource;
 
+/// A subcommand or common flag combination for a command
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubcommandInfo {
+    /// The subcommand name (e.g., "install", "update", "-y")
+    pub name: String,
+    /// Full command string (e.g., "pip install", "cargo build --release")
+    pub full_command: String,
+    /// Optional description
+    pub description: Option<String>,
+}
+
 /// Information about a command/executable provided by a package
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandInfo {
@@ -16,6 +27,8 @@ pub struct CommandInfo {
     pub path: PathBuf,
     /// Optional description of what the command does
     pub description: Option<String>,
+    /// Subcommands discovered from --help
+    pub subcommands: Vec<SubcommandInfo>,
 }
 
 /// A package and the commands it provides
@@ -520,6 +533,126 @@ fn is_executable(path: &std::path::Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_path: &std::path::Path) -> bool {
     true
+}
+
+pub fn discover_subcommands(command_name: &str) -> Vec<SubcommandInfo> {
+    let output = std::process::Command::new(command_name)
+        .arg("--help")
+        .output();
+
+    let help_text = match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            format!("{}{}", stdout, stderr)
+        }
+        Err(_) => return Vec::new(),
+    };
+
+    parse_subcommands_from_help(command_name, &help_text)
+}
+
+fn parse_subcommands_from_help(command_name: &str, help_text: &str) -> Vec<SubcommandInfo> {
+    let mut subcommands = Vec::new();
+    let mut in_commands_section = false;
+    let mut in_options_section = false;
+
+    for line in help_text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+
+        if lower.contains("commands:") || lower.contains("subcommands:") || lower == "commands" {
+            in_commands_section = true;
+            in_options_section = false;
+            continue;
+        }
+
+        if lower.contains("options:") || lower.contains("flags:") || lower == "options" {
+            in_commands_section = false;
+            in_options_section = true;
+            continue;
+        }
+
+        if trimmed.is_empty() || lower.starts_with("usage:") {
+            if in_commands_section && subcommands.len() > 1 {
+                in_commands_section = false;
+            }
+            continue;
+        }
+
+        if in_commands_section {
+            if let Some(subcmd) = parse_command_line(command_name, trimmed) {
+                subcommands.push(subcmd);
+            }
+        } else if in_options_section {
+            if let Some(opt) = parse_option_line(command_name, trimmed) {
+                subcommands.push(opt);
+            }
+        }
+    }
+
+    subcommands.truncate(15);
+    subcommands
+}
+
+fn parse_command_line(base_cmd: &str, line: &str) -> Option<SubcommandInfo> {
+    let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let name = parts[0].trim();
+    if name.is_empty() || name.starts_with('-') || name.len() > 30 {
+        return None;
+    }
+
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return None;
+    }
+
+    let description = parts.get(1).map(|s| s.trim().to_string());
+
+    Some(SubcommandInfo {
+        name: name.to_string(),
+        full_command: format!("{} {}", base_cmd, name),
+        description,
+    })
+}
+
+fn parse_option_line(base_cmd: &str, line: &str) -> Option<SubcommandInfo> {
+    if !line.starts_with('-') {
+        return None;
+    }
+
+    let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut opt = parts[0].trim().to_string();
+    
+    if opt.ends_with(',') {
+        opt = opt.trim_end_matches(',').to_string();
+    }
+
+    if opt.len() < 2 || opt.len() > 30 {
+        return None;
+    }
+
+    let common_flags = ["-h", "--help", "-v", "--version", "-y", "--yes", "-q", "--quiet", 
+                        "-f", "--force", "-r", "--recursive", "-a", "--all", "-n", "--dry-run"];
+    
+    if !common_flags.contains(&opt.as_str()) && !opt.starts_with("--") {
+        return None;
+    }
+
+    let description = parts.get(1).map(|s| s.trim().to_string());
+
+    Some(SubcommandInfo {
+        name: opt.clone(),
+        full_command: format!("{} {}", base_cmd, opt),
+        description,
+    })
 }
 
 #[derive(Debug, Clone, Default)]

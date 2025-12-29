@@ -3351,10 +3351,14 @@ impl SimpleComponent for AppModel {
 
                     let cmds: Vec<CommandInfo> = commands
                         .into_iter()
-                        .map(|(name, path)| CommandInfo {
-                            name,
-                            path,
-                            description: None,
+                        .map(|(name, path)| {
+                            let subcommands = crate::models::alias::discover_subcommands(&name);
+                            CommandInfo {
+                                name,
+                                path,
+                                description: None,
+                                subcommands,
+                            }
                         })
                         .collect();
 
