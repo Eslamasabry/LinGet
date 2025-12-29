@@ -38,15 +38,17 @@ pub use npm::NpmBackend;
 pub use pacman::PacmanBackend;
 pub use pip::PipBackend;
 pub use pipx::PipxBackend;
-pub use pkexec::{run_pkexec, Suggest, SUGGEST_PREFIX};
+pub use pkexec::{run_pkexec, run_pkexec_with_logs, Suggest, SUGGEST_PREFIX};
 pub use providers::{detect_available_providers, detect_providers, ProviderStatus};
 pub use snap::SnapBackend;
 pub use traits::*;
 pub use zypper::ZypperBackend;
 
+use crate::backend::streaming::StreamLine;
 use crate::models::{FlatpakMetadata, FlatpakPermission, Package, PackageSource, Repository};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, instrument, warn};
 
 /// Manager that coordinates all package backends
@@ -339,6 +341,36 @@ impl PackageManager {
     }
 
     #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
+    pub async fn install_streaming(
+        &self,
+        package: &Package,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        Self::validate_package_name(&package.name)?;
+        if !self.enabled_sources.contains(&package.source) {
+            warn!(source = ?package.source, "Attempted to install from disabled source");
+            anyhow::bail!("{} source is disabled. Enable it in settings to install packages from this source.", package.source);
+        }
+
+        if let Some(backend) = self.backends.get(&package.source) {
+            info!(package = %package.name, source = ?package.source, "Installing package");
+            match backend.install_streaming(&package.name, log_sender).await {
+                Ok(()) => {
+                    info!(package = %package.name, source = ?package.source, "Package installed successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to install package");
+                    Err(e)
+                }
+            }
+        } else {
+            error!(source = ?package.source, "No backend available for source");
+            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
+        }
+    }
+
+    #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
     pub async fn remove(&self, package: &Package) -> Result<()> {
         Self::validate_package_name(&package.name)?;
         if !self.enabled_sources.contains(&package.source) {
@@ -368,6 +400,39 @@ impl PackageManager {
     }
 
     #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
+    pub async fn remove_streaming(
+        &self,
+        package: &Package,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        Self::validate_package_name(&package.name)?;
+        if !self.enabled_sources.contains(&package.source) {
+            warn!(source = ?package.source, "Attempted to remove from disabled source");
+            anyhow::bail!(
+                "{} source is disabled. Enable it in settings to manage packages from this source.",
+                package.source
+            );
+        }
+
+        if let Some(backend) = self.backends.get(&package.source) {
+            info!(package = %package.name, source = ?package.source, "Removing package");
+            match backend.remove_streaming(&package.name, log_sender).await {
+                Ok(()) => {
+                    info!(package = %package.name, source = ?package.source, "Package removed successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to remove package");
+                    Err(e)
+                }
+            }
+        } else {
+            error!(source = ?package.source, "No backend available for source");
+            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
+        }
+    }
+
+    #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
     pub async fn update(&self, package: &Package) -> Result<()> {
         Self::validate_package_name(&package.name)?;
         if !self.enabled_sources.contains(&package.source) {
@@ -381,6 +446,39 @@ impl PackageManager {
         if let Some(backend) = self.backends.get(&package.source) {
             info!(package = %package.name, source = ?package.source, "Updating package");
             match backend.update(&package.name).await {
+                Ok(()) => {
+                    info!(package = %package.name, source = ?package.source, "Package updated successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to update package");
+                    Err(e)
+                }
+            }
+        } else {
+            error!(source = ?package.source, "No backend available for source");
+            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
+        }
+    }
+
+    #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
+    pub async fn update_streaming(
+        &self,
+        package: &Package,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        Self::validate_package_name(&package.name)?;
+        if !self.enabled_sources.contains(&package.source) {
+            warn!(source = ?package.source, "Attempted to update from disabled source");
+            anyhow::bail!(
+                "{} source is disabled. Enable it in settings to manage packages from this source.",
+                package.source
+            );
+        }
+
+        if let Some(backend) = self.backends.get(&package.source) {
+            info!(package = %package.name, source = ?package.source, "Updating package");
+            match backend.update_streaming(&package.name, log_sender).await {
                 Ok(()) => {
                     info!(package = %package.name, source = ?package.source, "Package updated successfully");
                     Ok(())

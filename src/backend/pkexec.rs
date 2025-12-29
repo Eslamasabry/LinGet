@@ -1,6 +1,9 @@
+use super::streaming::{run_streaming, StreamLine};
 use anyhow::{Context, Result};
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::process::Command;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
 pub const SUGGEST_PREFIX: &str = "LINGET_SUGGEST:";
@@ -169,6 +172,148 @@ pub async fn run_pkexec(
         AuthErrorKind::Unknown => {
             if !stderr.is_empty() {
                 // Truncate very long stderr messages
+                let stderr_display = if stderr.len() > 500 {
+                    format!("{}...", &stderr[..500])
+                } else {
+                    stderr.clone()
+                };
+                msg.push_str(&format!(": {}", stderr_display));
+            } else if let Some(code) = exit_code {
+                msg.push_str(&format!(" (exit code {})", code));
+            }
+        }
+    }
+
+    anyhow::bail!("{}\n\n{} {}\n", msg, SUGGEST_PREFIX, suggest.command);
+}
+
+pub async fn run_pkexec_with_logs(
+    program: &str,
+    args: &[&str],
+    context_msg: &str,
+    suggest: Suggest,
+    log_sender: mpsc::Sender<StreamLine>,
+) -> Result<()> {
+    let full_command = format!("pkexec {} {}", program, args.join(" "));
+    debug!(
+        command = %full_command,
+        operation = %context_msg,
+        "Executing privileged command"
+    );
+
+    let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    full_args.push(program);
+    full_args.extend_from_slice(args);
+
+    let (internal_tx, mut internal_rx) = mpsc::channel::<StreamLine>(200);
+    let stderr_acc = Arc::new(Mutex::new(String::new()));
+    let stderr_acc_clone = stderr_acc.clone();
+
+    let forward_task = tokio::spawn(async move {
+        while let Some(line) = internal_rx.recv().await {
+            if let StreamLine::Stderr(ref s) = line {
+                let mut guard = stderr_acc_clone.lock().await;
+                if !guard.is_empty() {
+                    guard.push('\n');
+                }
+                guard.push_str(s);
+            }
+
+            let _ = log_sender.send(line).await;
+        }
+    });
+
+    let output = match run_streaming("pkexec", &full_args, internal_tx).await {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = forward_task.await;
+
+            if let Some(io_err) = e.root_cause().downcast_ref::<std::io::Error>() {
+                if io_err.kind() == std::io::ErrorKind::NotFound {
+                    error!(
+                        error = %io_err,
+                        "pkexec not found - polkit may not be installed"
+                    );
+                    anyhow::bail!(
+                        "{}. pkexec is not installed. Install polkit to enable privilege escalation.\n\n{} {}\n",
+                        context_msg,
+                        SUGGEST_PREFIX,
+                        suggest.command
+                    );
+                }
+            }
+
+            return Err(e).with_context(|| context_msg.to_string());
+        }
+    };
+
+    let _ = forward_task.await;
+
+    if output.success {
+        info!(
+            command = %program,
+            operation = %context_msg,
+            "Privileged command completed successfully"
+        );
+        return Ok(());
+    }
+
+    let stderr = stderr_acc.lock().await.trim().to_string();
+    let exit_code = output.exit_code;
+    let auth_error = detect_auth_error(&stderr, exit_code);
+
+    match auth_error {
+        AuthErrorKind::Cancelled => {
+            info!(
+                command = %program,
+                operation = %context_msg,
+                "User cancelled authorization dialog"
+            );
+        }
+        AuthErrorKind::Denied => {
+            warn!(
+                command = %program,
+                operation = %context_msg,
+                exit_code = ?exit_code,
+                "Authorization denied"
+            );
+        }
+        AuthErrorKind::NoAgent => {
+            error!(
+                command = %program,
+                operation = %context_msg,
+                "No polkit agent available - cannot prompt for authorization"
+            );
+        }
+        AuthErrorKind::Unknown => {
+            error!(
+                command = %program,
+                operation = %context_msg,
+                exit_code = ?exit_code,
+                stderr = %stderr,
+                "Privileged command failed"
+            );
+        }
+    }
+
+    let mut msg = context_msg.to_string();
+
+    match auth_error {
+        AuthErrorKind::Cancelled => {
+            msg.push_str("\n\nAuthorization was cancelled.");
+        }
+        AuthErrorKind::Denied => {
+            msg.push_str(
+                "\n\nAuthorization was denied. Please try again with the correct password.",
+            );
+        }
+        AuthErrorKind::NoAgent => {
+            msg.push_str(
+                "\n\nNo authentication agent is available. Make sure a polkit agent is running.",
+            );
+        }
+        AuthErrorKind::Unknown => {
+            if !stderr.is_empty() {
                 let stderr_display = if stderr.len() > 500 {
                     format!("{}...", &stderr[..500])
                 } else {

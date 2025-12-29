@@ -1,5 +1,6 @@
+use super::streaming::StreamLine;
 use super::PackageBackend;
-use super::{run_pkexec, Suggest};
+use super::{run_pkexec, run_pkexec_with_logs, Suggest};
 use crate::models::{Package, PackageSource, PackageStatus, Repository};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -7,6 +8,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 pub struct AptBackend;
 
@@ -345,6 +347,28 @@ impl PackageBackend for AptBackend {
         .await
     }
 
+    async fn install_streaming(
+        &self,
+        name: &str,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        match log_sender {
+            Some(sender) => {
+                run_pkexec_with_logs(
+                    "apt",
+                    &["install", "-y", "--", name],
+                    &format!("Failed to install package {}", name),
+                    Suggest {
+                        command: format!("sudo apt install -y -- {}", name),
+                    },
+                    sender,
+                )
+                .await
+            }
+            None => self.install(name).await,
+        }
+    }
+
     async fn remove(&self, name: &str) -> Result<()> {
         run_pkexec(
             "apt",
@@ -357,6 +381,28 @@ impl PackageBackend for AptBackend {
         .await
     }
 
+    async fn remove_streaming(
+        &self,
+        name: &str,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        match log_sender {
+            Some(sender) => {
+                run_pkexec_with_logs(
+                    "apt",
+                    &["remove", "-y", "--", name],
+                    &format!("Failed to remove package {}", name),
+                    Suggest {
+                        command: format!("sudo apt remove -y -- {}", name),
+                    },
+                    sender,
+                )
+                .await
+            }
+            None => self.remove(name).await,
+        }
+    }
+
     async fn update(&self, name: &str) -> Result<()> {
         run_pkexec(
             "apt",
@@ -367,6 +413,28 @@ impl PackageBackend for AptBackend {
             },
         )
         .await
+    }
+
+    async fn update_streaming(
+        &self,
+        name: &str,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        match log_sender {
+            Some(sender) => {
+                run_pkexec_with_logs(
+                    "apt",
+                    &["install", "--only-upgrade", "-y", "--", name],
+                    &format!("Failed to update package {}", name),
+                    Suggest {
+                        command: format!("sudo apt install --only-upgrade -y -- {}", name),
+                    },
+                    sender,
+                )
+                .await
+            }
+            None => self.update(name).await,
+        }
     }
 
     async fn available_downgrade_versions(&self, name: &str) -> Result<Vec<String>> {

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -129,23 +127,6 @@ pub async fn run_streaming(
     );
 
     Ok(StreamResult { exit_code, success })
-}
-
-pub async fn run_pkexec_streaming(
-    program: &str,
-    args: &[&str],
-    line_sender: mpsc::Sender<StreamLine>,
-) -> Result<StreamResult> {
-    debug!(
-        command = %program,
-        args = ?args,
-        "Starting streaming pkexec command"
-    );
-
-    let mut full_args = vec![program];
-    full_args.extend(args);
-
-    run_streaming("pkexec", &full_args, line_sender).await
 }
 
 #[cfg(test)]

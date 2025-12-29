@@ -100,7 +100,7 @@ impl BatchProgress {
     }
 }
 
-const MAX_LOG_LINES: usize = 5;
+const MAX_LOG_LINES: usize = 50;
 
 #[derive(Clone, Debug)]
 pub struct TaskEntry {

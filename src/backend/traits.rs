@@ -1,7 +1,9 @@
+use super::streaming::StreamLine;
 use crate::models::{Package, PackageSource, Repository};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::path::PathBuf;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Default)]
 pub struct LockStatus {
@@ -27,11 +29,35 @@ pub trait PackageBackend: Send + Sync {
     /// Install a package by name
     async fn install(&self, name: &str) -> Result<()>;
 
+    async fn install_streaming(
+        &self,
+        name: &str,
+        _log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        self.install(name).await
+    }
+
     /// Remove a package by name
     async fn remove(&self, name: &str) -> Result<()>;
 
+    async fn remove_streaming(
+        &self,
+        name: &str,
+        _log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        self.remove(name).await
+    }
+
     /// Update a package by name
     async fn update(&self, name: &str) -> Result<()>;
+
+    async fn update_streaming(
+        &self,
+        name: &str,
+        _log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        self.update(name).await
+    }
 
     /// Downgrade/revert a package by name (best-effort; optional per backend)
     async fn downgrade(&self, _name: &str) -> Result<()> {
