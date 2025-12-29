@@ -142,16 +142,23 @@ pub enum AppMsg {
     ToggleFavorite(String),
     UpdateAllPackages,
     OperationStarted {
+        task_id: usize,
         package_name: String,
         op: String,
     },
     OperationCompleted {
+        task_id: usize,
         package_name: String,
         op: String,
     },
     OperationFailed {
+        task_id: usize,
         package_name: String,
         error: String,
+    },
+    AppendLog {
+        task_id: usize,
+        line: String,
     },
     ClosePackageDetails,
     ToggleSource(PackageSource),
@@ -301,6 +308,8 @@ pub struct AppModel {
     pub bulk_op_label: String,
     pub bulk_op_current_item: Option<String>,
     pub operating_package_name: Option<String>,
+    pub next_task_id: usize,
+    pub current_task_id: Option<usize>,
     pub visible_limit: usize,
     pub total_filtered_count: usize,
     pub layout_mode: LayoutMode,
@@ -676,6 +685,8 @@ impl SimpleComponent for AppModel {
             bulk_op_label: String::new(),
             bulk_op_current_item: None,
             operating_package_name: None,
+            next_task_id: 0,
+            current_task_id: None,
             visible_limit: DEFAULT_VISIBLE_LIMIT,
             total_filtered_count: 0,
             layout_mode,
@@ -1988,6 +1999,9 @@ impl SimpleComponent for AppModel {
 
             AppMsg::ExecutePackageAction(pkg) => match pkg.status {
                 PackageStatus::Installed => {
+                    let task_id = self.next_task_id;
+                    self.next_task_id += 1;
+
                     let pm = self.package_manager.clone();
                     let tracker = self.history_tracker.clone();
                     let name = pkg.name.clone();
@@ -1995,6 +2009,7 @@ impl SimpleComponent for AppModel {
                     let pkg_for_history = pkg.clone();
 
                     sender.input(AppMsg::OperationStarted {
+                        task_id,
                         package_name: name.clone(),
                         op: "Removing".to_string(),
                     });
@@ -2013,6 +2028,7 @@ impl SimpleComponent for AppModel {
                                     }
                                 }
                                 sender.input(AppMsg::OperationCompleted {
+                                    task_id,
                                     package_name: name,
                                     op: "Removed".to_string(),
                                 });
@@ -2020,6 +2036,7 @@ impl SimpleComponent for AppModel {
                             }
                             Err(e) => {
                                 sender.input(AppMsg::OperationFailed {
+                                    task_id,
                                     package_name: name,
                                     error: e.to_string(),
                                 });
@@ -2028,6 +2045,9 @@ impl SimpleComponent for AppModel {
                     });
                 }
                 PackageStatus::UpdateAvailable => {
+                    let task_id = self.next_task_id;
+                    self.next_task_id += 1;
+
                     let pm = self.package_manager.clone();
                     let tracker = self.history_tracker.clone();
                     let name = pkg.name.clone();
@@ -2036,6 +2056,7 @@ impl SimpleComponent for AppModel {
                     let pkg_for_history = pkg.clone();
 
                     sender.input(AppMsg::OperationStarted {
+                        task_id,
                         package_name: name.clone(),
                         op: "Updating".to_string(),
                     });
@@ -2054,6 +2075,7 @@ impl SimpleComponent for AppModel {
                                     }
                                 }
                                 sender.input(AppMsg::OperationCompleted {
+                                    task_id,
                                     package_name: name,
                                     op: "Updated".to_string(),
                                 });
@@ -2061,6 +2083,7 @@ impl SimpleComponent for AppModel {
                             }
                             Err(e) => {
                                 sender.input(AppMsg::OperationFailed {
+                                    task_id,
                                     package_name: name,
                                     error: e.to_string(),
                                 });
@@ -2069,6 +2092,9 @@ impl SimpleComponent for AppModel {
                     });
                 }
                 PackageStatus::NotInstalled => {
+                    let task_id = self.next_task_id;
+                    self.next_task_id += 1;
+
                     let pm = self.package_manager.clone();
                     let tracker = self.history_tracker.clone();
                     let name = pkg.name.clone();
@@ -2076,6 +2102,7 @@ impl SimpleComponent for AppModel {
                     let pkg_for_history = pkg.clone();
 
                     sender.input(AppMsg::OperationStarted {
+                        task_id,
                         package_name: name.clone(),
                         op: "Installing".to_string(),
                     });
@@ -2094,6 +2121,7 @@ impl SimpleComponent for AppModel {
                                     }
                                 }
                                 sender.input(AppMsg::OperationCompleted {
+                                    task_id,
                                     package_name: name,
                                     op: "Installed".to_string(),
                                 });
@@ -2101,6 +2129,7 @@ impl SimpleComponent for AppModel {
                             }
                             Err(e) => {
                                 sender.input(AppMsg::OperationFailed {
+                                    task_id,
                                     package_name: name,
                                     error: e.to_string(),
                                 });
@@ -2135,8 +2164,13 @@ impl SimpleComponent for AppModel {
                 }
             }
 
-            AppMsg::OperationStarted { package_name, op } => {
+            AppMsg::OperationStarted {
+                task_id,
+                package_name,
+                op,
+            } => {
                 self.operating_package_name = Some(package_name.clone());
+                self.current_task_id = Some(task_id);
                 if self.bulk_op_total > 0 {
                     self.bulk_op_current_item = Some(package_name.clone());
                 }
@@ -2144,17 +2178,24 @@ impl SimpleComponent for AppModel {
                 self.pending_task_events
                     .borrow_mut()
                     .push(TaskHubInput::BeginTask {
+                        task_id,
                         title: format!("{} {}", op, package_name),
                         details: String::new(),
                         retry_spec: None,
                     });
             }
 
-            AppMsg::OperationCompleted { package_name, op } => {
+            AppMsg::OperationCompleted {
+                task_id,
+                package_name,
+                op,
+            } => {
                 self.operating_package_name = None;
+                self.current_task_id = None;
                 self.pending_task_events
                     .borrow_mut()
-                    .push(TaskHubInput::AddEvent {
+                    .push(TaskHubInput::FinishTask {
+                        task_id,
                         status: TaskStatus::Success,
                         title: format!("{} {}", op, package_name),
                         details: String::new(),
@@ -2175,13 +2216,16 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::OperationFailed {
+                task_id,
                 package_name,
                 error,
             } => {
                 self.operating_package_name = None;
+                self.current_task_id = None;
                 self.pending_task_events
                     .borrow_mut()
-                    .push(TaskHubInput::AddEvent {
+                    .push(TaskHubInput::FinishTask {
+                        task_id,
                         status: TaskStatus::Error,
                         title: format!("Failed: {}", package_name),
                         details: error,
@@ -2196,6 +2240,12 @@ impl SimpleComponent for AppModel {
                         self.bulk_op_current_item = None;
                     }
                 }
+            }
+
+            AppMsg::AppendLog { task_id, line } => {
+                self.pending_task_events
+                    .borrow_mut()
+                    .push(TaskHubInput::AppendTaskLog { task_id, line });
             }
 
             AppMsg::ClosePackageDetails => {
@@ -2553,7 +2603,11 @@ impl SimpleComponent for AppModel {
                         }
                     }
                     CleanupAction::CleanSource(source) => {
+                        let task_id = self.next_task_id;
+                        self.next_task_id += 1;
+
                         sender.input(AppMsg::OperationStarted {
+                            task_id,
                             package_name: format!("{} cache", source),
                             op: "Cleaning".to_string(),
                         });
@@ -2563,20 +2617,33 @@ impl SimpleComponent for AppModel {
                             if let Some(backend) = manager.get_backend(source) {
                                 match backend.cleanup_cache().await {
                                     Ok(freed) => {
-                                        sender.input(AppMsg::CleanupCompleted {
-                                            source: Some(source),
-                                            freed,
+                                        sender.input(AppMsg::OperationCompleted {
+                                            task_id,
+                                            package_name: format!("{} cache", source),
+                                            op: format!(
+                                                "Cleaned (freed {})",
+                                                humansize::format_size(freed, humansize::BINARY)
+                                            ),
                                         });
+                                        sender.input(AppMsg::LoadCleanupStats);
                                     }
                                     Err(e) => {
-                                        sender.input(AppMsg::CleanupFailed(e.to_string()));
+                                        sender.input(AppMsg::OperationFailed {
+                                            task_id,
+                                            package_name: format!("{} cache", source),
+                                            error: e.to_string(),
+                                        });
                                     }
                                 }
                             }
                         });
                     }
                     CleanupAction::RemoveOrphans(source) => {
+                        let task_id = self.next_task_id;
+                        self.next_task_id += 1;
+
                         sender.input(AppMsg::OperationStarted {
+                            task_id,
                             package_name: format!("{} orphans", source),
                             op: "Removing".to_string(),
                         });
@@ -2586,13 +2653,22 @@ impl SimpleComponent for AppModel {
                             if let Some(backend) = manager.get_backend(source) {
                                 match backend.cleanup_cache().await {
                                     Ok(freed) => {
-                                        sender.input(AppMsg::CleanupCompleted {
-                                            source: Some(source),
-                                            freed,
+                                        sender.input(AppMsg::OperationCompleted {
+                                            task_id,
+                                            package_name: format!("{} orphans", source),
+                                            op: format!(
+                                                "Removed (freed {})",
+                                                humansize::format_size(freed, humansize::BINARY)
+                                            ),
                                         });
+                                        sender.input(AppMsg::LoadCleanupStats);
                                     }
                                     Err(e) => {
-                                        sender.input(AppMsg::CleanupFailed(e.to_string()));
+                                        sender.input(AppMsg::OperationFailed {
+                                            task_id,
+                                            package_name: format!("{} orphans", source),
+                                            error: e.to_string(),
+                                        });
                                     }
                                 }
                             }
@@ -3947,12 +4023,16 @@ impl SimpleComponent for AppModel {
                 package,
                 target_version,
             } => {
+                let task_id = self.next_task_id;
+                self.next_task_id += 1;
+
                 let pm = self.package_manager.clone();
                 let tracker = self.history_tracker.clone();
                 let name = package.name.clone();
                 let sender = sender.clone();
 
                 sender.input(AppMsg::OperationStarted {
+                    task_id,
                     package_name: name.clone(),
                     op: format!("Downgrading to {}", target_version),
                 });
@@ -3976,6 +4056,7 @@ impl SimpleComponent for AppModel {
                             }
 
                             sender.input(AppMsg::OperationCompleted {
+                                task_id,
                                 package_name: name.clone(),
                                 op: format!("Downgraded to {}", version_clone),
                             });
@@ -3983,6 +4064,7 @@ impl SimpleComponent for AppModel {
                         }
                         Err(e) => {
                             sender.input(AppMsg::OperationFailed {
+                                task_id,
                                 package_name: name,
                                 error: e.to_string(),
                             });

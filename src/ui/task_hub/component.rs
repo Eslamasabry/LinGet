@@ -142,11 +142,13 @@ pub struct TaskHubInit;
 #[derive(Debug, Clone)]
 pub enum TaskHubInput {
     BeginTask {
+        task_id: usize,
         title: String,
         details: String,
         retry_spec: Option<RetrySpec>,
     },
     BeginBatchTask {
+        task_id: usize,
         title: String,
         total_steps: usize,
         retry_spec: Option<RetrySpec>,
@@ -388,15 +390,13 @@ impl SimpleComponent for TaskHubModel {
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
             TaskHubInput::BeginTask {
+                task_id,
                 title,
                 details,
                 retry_spec,
             } => {
-                let id = self.next_id;
-                self.next_id += 1;
-
                 let task = TaskEntry {
-                    id,
+                    id: task_id,
                     title,
                     details,
                     timestamp: Self::now_stamp(),
@@ -410,15 +410,13 @@ impl SimpleComponent for TaskHubModel {
             }
 
             TaskHubInput::BeginBatchTask {
+                task_id,
                 title,
                 total_steps,
                 retry_spec,
             } => {
-                let id = self.next_id;
-                self.next_id += 1;
-
                 let task = TaskEntry {
-                    id,
+                    id: task_id,
                     title,
                     details: format!("0/{} packages", total_steps),
                     timestamp: Self::now_stamp(),
