@@ -90,7 +90,9 @@ impl PaletteCommand {
     pub fn keywords(&self) -> &[&str] {
         match self {
             PaletteCommand::UpdateAll => &["update", "upgrade", "all", "packages"],
-            PaletteCommand::ScheduleAllUpdates => &["schedule", "later", "defer", "timer", "queue", "all", "updates"],
+            PaletteCommand::ScheduleAllUpdates => &[
+                "schedule", "later", "defer", "timer", "queue", "all", "updates",
+            ],
             PaletteCommand::CleanCaches => &["clean", "cache", "cleanup", "clear", "free", "space"],
             PaletteCommand::GoToHome => &["home", "discover", "browse"],
             PaletteCommand::GoToLibrary => &["library", "installed", "packages", "list"],
@@ -99,7 +101,9 @@ impl PaletteCommand {
             PaletteCommand::GoToHealth => &["health", "status", "score", "issues"],
             PaletteCommand::GoToHistory => &["history", "timeline", "log", "recent"],
             PaletteCommand::GoToFavorites => &["favorites", "starred", "bookmarks"],
-            PaletteCommand::GoToTasks => &["tasks", "scheduled", "queue", "pending", "timer", "alarm"],
+            PaletteCommand::GoToTasks => {
+                &["tasks", "scheduled", "queue", "pending", "timer", "alarm"]
+            }
             PaletteCommand::RefreshPackages => &["refresh", "reload", "sync"],
             PaletteCommand::ToggleSelectionMode => &["select", "selection", "multi", "bulk"],
             PaletteCommand::OpenPreferences => &["preferences", "settings", "config", "options"],

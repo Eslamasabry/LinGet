@@ -13,7 +13,6 @@ use crate::ui::history_view::{
     build_history_view, filter_entries, HistoryViewAction, HistoryViewData,
 };
 use crate::ui::notifications;
-use crate::ui::task_queue_view::{build_task_queue_view, TaskQueueAction, TaskQueueViewData};
 use crate::ui::package_details::{
     DetailsPanelInit, DetailsPanelInput, DetailsPanelModel, DetailsPanelOutput,
 };
@@ -22,6 +21,7 @@ use crate::ui::storage_view::{CleanupAction, CleanupStats};
 use crate::ui::task_hub::{
     PackageOp, RetrySpec, TaskHubInit, TaskHubInput, TaskHubModel, TaskHubOutput, TaskStatus,
 };
+use crate::ui::task_queue_view::{build_task_queue_view, TaskQueueAction, TaskQueueViewData};
 use crate::ui::widgets::{
     ActionPreview, ActionType, CollectionDialogInit, CollectionDialogInput, CollectionDialogModel,
     CollectionDialogOutput, PackageCardModel, PackageRowInit, PackageRowModel, PackageRowOutput,
@@ -260,6 +260,11 @@ pub enum AppMsg {
     TaskQueueAction(TaskQueueAction),
     ScheduleAllUpdates,
     ClearCompletedTasks,
+    CheckPendingNavigation,
+    DowngradePackage {
+        package: Package,
+        target_version: String,
+    },
     Shutdown,
 }
 
@@ -1625,6 +1630,14 @@ impl SimpleComponent for AppModel {
             sender.input(AppMsg::CheckScheduledTasks);
         }
 
+        {
+            let sender_nav = sender.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                sender_nav.input(AppMsg::CheckPendingNavigation);
+                glib::ControlFlow::Continue
+            });
+        }
+
         let network_monitor = gio::NetworkMonitor::default();
         network_monitor.connect_network_changed({
             let sender = sender.clone();
@@ -2839,10 +2852,100 @@ impl SimpleComponent for AppModel {
                     sender.input(AppMsg::LoadHistory);
                 }
                 HistoryViewAction::Export => {
-                    sender.input(AppMsg::ShowToast(
-                        "Export feature coming soon".to_string(),
-                        ToastType::Info,
-                    ));
+                    let tracker = self.history_tracker.clone();
+                    let sender = sender.clone();
+
+                    let app = relm4::main_adw_application();
+                    let window = app.active_window();
+
+                    let dialog = gtk::FileChooserNative::builder()
+                        .title("Export History")
+                        .action(gtk::FileChooserAction::Save)
+                        .modal(true)
+                        .build();
+
+                    if let Some(ref win) = window {
+                        dialog.set_transient_for(Some(win));
+                    }
+
+                    dialog.set_current_name("linget-history.json");
+
+                    let json_filter = gtk::FileFilter::new();
+                    json_filter.set_name(Some("JSON files"));
+                    json_filter.add_pattern("*.json");
+                    dialog.add_filter(&json_filter);
+
+                    let csv_filter = gtk::FileFilter::new();
+                    csv_filter.set_name(Some("CSV files"));
+                    csv_filter.add_pattern("*.csv");
+                    dialog.add_filter(&csv_filter);
+
+                    dialog.connect_response(move |dialog, response| {
+                        if response == gtk::ResponseType::Accept {
+                            if let Some(file) = dialog.file() {
+                                if let Some(path) = file.path() {
+                                    let is_csv = path
+                                        .extension()
+                                        .map(|ext| ext.to_string_lossy().to_lowercase() == "csv")
+                                        .unwrap_or(false);
+
+                                    let tracker = tracker.clone();
+                                    let sender = sender.clone();
+
+                                    glib::spawn_future_local(async move {
+                                        let export_result = {
+                                            let guard = tracker.lock().await;
+                                            if let Some(ref t) = *guard {
+                                                if is_csv {
+                                                    t.export_csv().await
+                                                } else {
+                                                    t.export_json().await
+                                                }
+                                            } else {
+                                                Err(anyhow::anyhow!(
+                                                    "History tracker not initialized"
+                                                ))
+                                            }
+                                        };
+
+                                        match export_result {
+                                            Ok(content) => match std::fs::write(&path, content) {
+                                                Ok(_) => {
+                                                    sender.input(AppMsg::ShowToast(
+                                                        format!(
+                                                            "Exported to {}",
+                                                            path.file_name()
+                                                                .map(|n| {
+                                                                    n.to_string_lossy().to_string()
+                                                                })
+                                                                .unwrap_or_else(|| {
+                                                                    "file".to_string()
+                                                                })
+                                                        ),
+                                                        ToastType::Success,
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    sender.input(AppMsg::ShowToast(
+                                                        format!("Failed to save: {}", e),
+                                                        ToastType::Error,
+                                                    ));
+                                                }
+                                            },
+                                            Err(e) => {
+                                                sender.input(AppMsg::ShowToast(
+                                                    format!("Export failed: {}", e),
+                                                    ToastType::Error,
+                                                ));
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    });
+
+                    dialog.show();
                 }
                 HistoryViewAction::Undo(entry_id) => {
                     let tracker = self.history_tracker.clone();
@@ -2918,11 +3021,33 @@ impl SimpleComponent for AppModel {
                                 }
                             }
                             HistoryOperation::Update | HistoryOperation::ExternalUpdate => {
-                                sender.input(AppMsg::ShowToast(
-                                    "Downgrade not yet supported - please reinstall manually"
-                                        .to_string(),
-                                    ToastType::Warning,
-                                ));
+                                if let Some(old_version) = &entry.version_before {
+                                    if let Some(pkg) = packages.iter().find(|p| {
+                                        p.name == entry.package_name
+                                            && p.source == entry.package_source
+                                    }) {
+                                        sender.input(AppMsg::DowngradePackage {
+                                            package: pkg.clone(),
+                                            target_version: old_version.clone(),
+                                        });
+
+                                        let mut guard = tracker.lock().await;
+                                        if let Some(ref mut t) = *guard {
+                                            t.mark_undone(&entry_id);
+                                            let _ = t.save().await;
+                                        }
+                                    } else {
+                                        sender.input(AppMsg::ShowToast(
+                                            format!("Package {} not found", entry.package_name),
+                                            ToastType::Error,
+                                        ));
+                                    }
+                                } else {
+                                    sender.input(AppMsg::ShowToast(
+                                        "Previous version unknown - cannot downgrade".to_string(),
+                                        ToastType::Warning,
+                                    ));
+                                }
                             }
                             HistoryOperation::Downgrade => {
                                 sender.input(AppMsg::ShowToast(
@@ -3565,6 +3690,9 @@ impl SimpleComponent for AppModel {
                         return;
                     }
 
+                    self.tasks_data.running_task_id = Some(task_id.clone());
+                    *self.pending_tasks_rebuild.borrow_mut() = true;
+
                     let pm = self.package_manager.clone();
                     let config = self.config.clone();
                     let sender = sender.clone();
@@ -3642,6 +3770,7 @@ impl SimpleComponent for AppModel {
 
             AppMsg::ScheduledTaskCompleted { package_name, .. } => {
                 self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
+                self.tasks_data.running_task_id = None;
                 *self.pending_tasks_rebuild.borrow_mut() = true;
 
                 if self.config.borrow().show_notifications {
@@ -3661,6 +3790,7 @@ impl SimpleComponent for AppModel {
                 ..
             } => {
                 self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
+                self.tasks_data.running_task_id = None;
                 *self.pending_tasks_rebuild.borrow_mut() = true;
 
                 if self.config.borrow().show_notifications {
@@ -3696,6 +3826,39 @@ impl SimpleComponent for AppModel {
                 }
                 TaskQueueAction::ClearCompleted => {
                     sender.input(AppMsg::ClearCompletedTasks);
+                }
+                TaskQueueAction::Retry(task_id) => {
+                    let task_opt = {
+                        let config = self.config.borrow();
+                        config
+                            .scheduler
+                            .tasks
+                            .iter()
+                            .find(|t| t.id == task_id)
+                            .cloned()
+                    };
+
+                    if let Some(task) = task_opt {
+                        {
+                            let mut config = self.config.borrow_mut();
+                            if let Some(t) = config
+                                .scheduler
+                                .tasks
+                                .iter_mut()
+                                .find(|t| t.id == task_id)
+                            {
+                                t.completed = false;
+                                t.error = None;
+                                t.scheduled_at = chrono::Utc::now();
+                            }
+                            let _ = config.save();
+                        }
+
+                        self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
+                        *self.pending_tasks_rebuild.borrow_mut() = true;
+
+                        sender.input(AppMsg::ExecuteScheduledTask(task.id));
+                    }
                 }
             },
 
@@ -3750,6 +3913,64 @@ impl SimpleComponent for AppModel {
                     "Cleared completed tasks".to_string(),
                     ToastType::Success,
                 ));
+            }
+
+            AppMsg::DowngradePackage {
+                package,
+                target_version,
+            } => {
+                let pm = self.package_manager.clone();
+                let tracker = self.history_tracker.clone();
+                let name = package.name.clone();
+                let sender = sender.clone();
+
+                sender.input(AppMsg::OperationStarted {
+                    package_name: name.clone(),
+                    op: format!("Downgrading to {}", target_version),
+                });
+
+                let pkg_for_history = package.clone();
+                let version_clone = target_version.clone();
+
+                relm4::spawn(async move {
+                    let result = {
+                        let manager = pm.lock().await;
+                        manager.downgrade_to(&package, &target_version).await
+                    };
+
+                    match result {
+                        Ok(_) => {
+                            {
+                                let mut guard = tracker.lock().await;
+                                if let Some(ref mut t) = *guard {
+                                    t.record_downgrade(&pkg_for_history, &version_clone).await;
+                                }
+                            }
+
+                            sender.input(AppMsg::OperationCompleted {
+                                package_name: name.clone(),
+                                op: format!("Downgraded to {}", version_clone),
+                            });
+                            sender.input(AppMsg::LoadPackages);
+                        }
+                        Err(e) => {
+                            sender.input(AppMsg::OperationFailed {
+                                package_name: name,
+                                error: e.to_string(),
+                            });
+                        }
+                    }
+                });
+            }
+
+            AppMsg::CheckPendingNavigation => {
+                if let Some(nav) = notifications::take_pending_nav() {
+                    let view = match nav {
+                        notifications::NotificationNavRequest::ViewTasks => View::Tasks,
+                        notifications::NotificationNavRequest::ViewUpdates => View::Updates,
+                    };
+                    sender.input(AppMsg::ViewChanged(view));
+                }
             }
 
             AppMsg::Shutdown => {
@@ -3961,7 +4182,9 @@ impl SimpleComponent for AppModel {
                 .collect();
             widgets
                 .selection_bar
-                .emit(SelectionBarInput::SetSelectedPackages(selected_with_updates));
+                .emit(SelectionBarInput::SetSelectedPackages(
+                    selected_with_updates,
+                ));
         } else {
             widgets.selection_bar.emit(SelectionBarInput::Hide);
         }
@@ -4601,6 +4824,18 @@ pub fn run_relm4_app() {
             }
         });
         app.add_action(&quit_action);
+
+        let view_tasks_action = gio::SimpleAction::new("view-tasks", None);
+        view_tasks_action.connect_activate(|_, _| {
+            notifications::set_pending_nav(notifications::NotificationNavRequest::ViewTasks);
+        });
+        app.add_action(&view_tasks_action);
+
+        let view_updates_action = gio::SimpleAction::new("view-updates", None);
+        view_updates_action.connect_activate(|_, _| {
+            notifications::set_pending_nav(notifications::NotificationNavRequest::ViewUpdates);
+        });
+        app.add_action(&view_updates_action);
     });
 
     let app = RelmApp::from_app(app);

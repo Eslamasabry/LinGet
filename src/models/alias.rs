@@ -7,15 +7,18 @@ use std::path::PathBuf;
 
 use super::PackageSource;
 
-/// A subcommand or common flag combination for a command
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubcommandKind {
+    Subcommand,
+    Flag,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubcommandInfo {
-    /// The subcommand name (e.g., "install", "update", "-y")
     pub name: String,
-    /// Full command string (e.g., "pip install", "cargo build --release")
     pub full_command: String,
-    /// Optional description
     pub description: Option<String>,
+    pub kind: SubcommandKind,
 }
 
 /// Information about a command/executable provided by a package
@@ -606,7 +609,10 @@ fn parse_command_line(base_cmd: &str, line: &str) -> Option<SubcommandInfo> {
         return None;
     }
 
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return None;
     }
 
@@ -616,6 +622,7 @@ fn parse_command_line(base_cmd: &str, line: &str) -> Option<SubcommandInfo> {
         name: name.to_string(),
         full_command: format!("{} {}", base_cmd, name),
         description,
+        kind: SubcommandKind::Subcommand,
     })
 }
 
@@ -630,7 +637,7 @@ fn parse_option_line(base_cmd: &str, line: &str) -> Option<SubcommandInfo> {
     }
 
     let mut opt = parts[0].trim().to_string();
-    
+
     if opt.ends_with(',') {
         opt = opt.trim_end_matches(',').to_string();
     }
@@ -639,9 +646,25 @@ fn parse_option_line(base_cmd: &str, line: &str) -> Option<SubcommandInfo> {
         return None;
     }
 
-    let common_flags = ["-h", "--help", "-v", "--version", "-y", "--yes", "-q", "--quiet", 
-                        "-f", "--force", "-r", "--recursive", "-a", "--all", "-n", "--dry-run"];
-    
+    let common_flags = [
+        "-h",
+        "--help",
+        "-v",
+        "--version",
+        "-y",
+        "--yes",
+        "-q",
+        "--quiet",
+        "-f",
+        "--force",
+        "-r",
+        "--recursive",
+        "-a",
+        "--all",
+        "-n",
+        "--dry-run",
+    ];
+
     if !common_flags.contains(&opt.as_str()) && !opt.starts_with("--") {
         return None;
     }
@@ -652,6 +675,7 @@ fn parse_option_line(base_cmd: &str, line: &str) -> Option<SubcommandInfo> {
         name: opt.clone(),
         full_command: format!("{} {}", base_cmd, opt),
         description,
+        kind: SubcommandKind::Flag,
     })
 }
 

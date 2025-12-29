@@ -528,7 +528,11 @@ where
 
     let expander = adw::ExpanderRow::builder()
         .title(&cmd.name)
-        .subtitle(format!("{} • {} subcommands", cmd.path.to_string_lossy(), cmd.subcommands.len()))
+        .subtitle(format!(
+            "{} • {} subcommands",
+            cmd.path.to_string_lossy(),
+            cmd.subcommands.len()
+        ))
         .build();
 
     let copy_btn = gtk::Button::builder()
@@ -570,20 +574,28 @@ where
     expander.upcast()
 }
 
-fn build_subcommand_row<F>(subcmd: &crate::models::alias::SubcommandInfo, on_action: F) -> adw::ActionRow
+fn build_subcommand_row<F>(
+    subcmd: &crate::models::alias::SubcommandInfo,
+    on_action: F,
+) -> adw::ActionRow
 where
     F: Fn(AliasViewAction) + Clone + 'static,
 {
+    use crate::models::alias::SubcommandKind;
+
     let description = subcmd.description.as_deref().unwrap_or("");
     let row = adw::ActionRow::builder()
         .title(&subcmd.full_command)
         .subtitle(description)
         .build();
 
-    let icon = gtk::Image::builder()
-        .icon_name("go-next-symbolic")
-        .build();
-    icon.add_css_class("dim-label");
+    let (icon_name, css_class) = match subcmd.kind {
+        SubcommandKind::Subcommand => ("go-next-symbolic", "accent"),
+        SubcommandKind::Flag => ("preferences-system-symbolic", "dim-label"),
+    };
+
+    let icon = gtk::Image::builder().icon_name(icon_name).build();
+    icon.add_css_class(css_class);
     row.add_prefix(&icon);
 
     let copy_btn = gtk::Button::builder()

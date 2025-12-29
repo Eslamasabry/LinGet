@@ -109,6 +109,23 @@ impl HistoryTracker {
         }
     }
 
+    pub async fn record_downgrade(&mut self, package: &Package, target_version: &str) {
+        let entry = HistoryEntry::new(
+            HistoryOperation::Downgrade,
+            package.name.clone(),
+            package.source,
+        )
+        .with_versions(
+            Some(package.version.clone()),
+            Some(target_version.to_string()),
+        );
+
+        self.history.add(entry);
+        if let Err(e) = self.save().await {
+            warn!(error = %e, "Failed to save history after downgrade");
+        }
+    }
+
     pub async fn record_cleanup(&mut self, source: Option<PackageSource>, freed_bytes: u64) {
         let source_name = source
             .map(|s| s.to_string())
