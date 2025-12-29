@@ -21,6 +21,21 @@ RUST_LOG=linget=debug cargo run  # Run with debug logging
 - **No suppression**: Never use `as any`, `#[allow(unused)]`, or empty `catch {}` blocks
 - **Privilege**: System ops (apt, dnf) use `pkexec` via `run_pkexec()` helper
 
+## Beads (bd) Issue Tracking
+- **Common commands**:
+  ```bash
+  bd list
+  bd create "Title" --description "Context + intended change" --acceptance "How we know it's done"
+  bd show <issue-id>
+  bd update <issue-id> --status in_progress
+  bd update <issue-id> --status closed
+  bd close <issue-id>
+  bd sync
+  ```
+- **Repo state**: Issues are stored in `.beads/issues.jsonl` (git-tracked); local cache is `.beads/beads.db` (gitignored)
+- **Hooks**: If auto-sync warnings appear, run `bd hooks install`
+- **Before pushing code**: Run `bd sync` so issue state is in the remote
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

@@ -438,6 +438,25 @@ impl AppModel {
         }
     }
 
+    fn spawn_task_log_relay(
+        task_id: usize,
+        sender: ComponentSender<Self>,
+    ) -> tokio::sync::mpsc::Sender<StreamLine> {
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(200);
+
+        relm4::spawn(async move {
+            while let Some(line) = log_rx.recv().await {
+                let line = match line {
+                    StreamLine::Stdout(s) => s,
+                    StreamLine::Stderr(s) => format!("ERR: {}", s),
+                };
+                sender.input(AppMsg::AppendLog { task_id, line });
+            }
+        });
+
+        log_tx
+    }
+
     fn refresh_package_list(&mut self) {
         let (filtered, total_count) = self.filtered_packages();
         self.total_filtered_count = total_count;
@@ -2017,18 +2036,7 @@ impl SimpleComponent for AppModel {
 
                     relm4::spawn(async move {
                         let result = if pkg.source == PackageSource::Apt {
-                            let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(200);
-                            let log_sender = sender.clone();
-
-                            relm4::spawn(async move {
-                                while let Some(line) = log_rx.recv().await {
-                                    let line = match line {
-                                        StreamLine::Stdout(s) => s,
-                                        StreamLine::Stderr(s) => format!("ERR: {}", s),
-                                    };
-                                    log_sender.input(AppMsg::AppendLog { task_id, line });
-                                }
-                            });
+                            let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
 
                             let manager = pm.lock().await;
                             manager.remove_streaming(&pkg, Some(log_tx)).await
@@ -2081,18 +2089,7 @@ impl SimpleComponent for AppModel {
 
                     relm4::spawn(async move {
                         let result = if pkg.source == PackageSource::Apt {
-                            let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(200);
-                            let log_sender = sender.clone();
-
-                            relm4::spawn(async move {
-                                while let Some(line) = log_rx.recv().await {
-                                    let line = match line {
-                                        StreamLine::Stdout(s) => s,
-                                        StreamLine::Stderr(s) => format!("ERR: {}", s),
-                                    };
-                                    log_sender.input(AppMsg::AppendLog { task_id, line });
-                                }
-                            });
+                            let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
 
                             let manager = pm.lock().await;
                             manager.update_streaming(&pkg, Some(log_tx)).await
@@ -2144,18 +2141,7 @@ impl SimpleComponent for AppModel {
 
                     relm4::spawn(async move {
                         let result = if pkg.source == PackageSource::Apt {
-                            let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(200);
-                            let log_sender = sender.clone();
-
-                            relm4::spawn(async move {
-                                while let Some(line) = log_rx.recv().await {
-                                    let line = match line {
-                                        StreamLine::Stdout(s) => s,
-                                        StreamLine::Stderr(s) => format!("ERR: {}", s),
-                                    };
-                                    log_sender.input(AppMsg::AppendLog { task_id, line });
-                                }
-                            });
+                            let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
 
                             let manager = pm.lock().await;
                             manager.install_streaming(&pkg, Some(log_tx)).await
