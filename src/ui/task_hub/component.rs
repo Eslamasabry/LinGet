@@ -2,7 +2,7 @@ use crate::models::Package;
 
 use chrono::Local;
 use gtk4::prelude::*;
-use gtk4::{self as gtk};
+use gtk4::{self as gtk, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use relm4::prelude::*;
@@ -692,11 +692,24 @@ impl TaskHubModel {
                 log_box.append(&log_label);
             }
 
+            let log_scrolled = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .min_content_height(120)
+                .max_content_height(220)
+                .child(&log_box)
+                .build();
+
+            let vadj = log_scrolled.vadjustment();
+            glib::idle_add_local_once(move || {
+                let max = (vadj.upper() - vadj.page_size()).max(vadj.lower());
+                vadj.set_value(max);
+            });
+
             let log_row = adw::ActionRow::builder()
                 .activatable(false)
                 .selectable(false)
                 .build();
-            log_row.set_child(Some(&log_box));
+            log_row.set_child(Some(&log_scrolled));
             expander.add_row(&log_row);
 
             let wrapper = gtk::ListBoxRow::new();
