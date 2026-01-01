@@ -1972,3 +1972,14 @@ flowbox.package-grid flowboxchild:nth-child(12) { animation-delay: 330ms; }
                 0 8px 32px alpha(@accent_color, 0.15),
                 0 12px 40px alpha(black, 0.2);
 }
+
+.group-first {
+    margin-top: 16px;
+    border-top: 1px solid alpha(@borders, 0.5);
+}
+
+.group-first:first-child {
+    margin-top: 0;
+    border-top: none;
+}
+

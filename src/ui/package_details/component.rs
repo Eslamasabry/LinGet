@@ -5,6 +5,7 @@ use crate::models::{
     PackageSource, PackageStatus, Recommendation, ScheduledOperation, ScheduledTask,
 };
 use crate::ui::package_details::{enrichment, sandbox};
+use crate::ui::strip_html_tags;
 use crate::ui::widgets::build_schedule_popover;
 
 use gtk4::prelude::*;
@@ -1256,7 +1257,9 @@ impl SimpleComponent for DetailsPanelModel {
         let has_desc = !pkg.description.is_empty();
 
         crate::ui::set_ui_marker("DetailsUpdateViewSetDescription");
-        widgets.description_label.set_label(&pkg.description);
+        widgets
+            .description_label
+            .set_label(&strip_html_tags(&pkg.description));
         widgets.description_label.set_visible(
             has_desc
                 && self
@@ -1377,7 +1380,7 @@ impl SimpleComponent for DetailsPanelModel {
                 for rec in &self.recommendations {
                     let row = adw::ActionRow::builder()
                         .title(&rec.name)
-                        .subtitle(&rec.description)
+                        .subtitle(strip_html_tags(&rec.description))
                         .build();
 
                     let cat_icon = gtk::Image::builder().icon_name(&rec.category_icon).build();

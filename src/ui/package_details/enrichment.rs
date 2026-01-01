@@ -1,5 +1,6 @@
 use crate::models::PackageEnrichment;
 use crate::ui::package_details::{DetailsPanelInput, DetailsPanelModel};
+use crate::ui::strip_html_tags;
 
 use gdk_pixbuf::Pixbuf;
 use gtk4::prelude::*;
@@ -18,9 +19,10 @@ pub fn build_section(
     section.add_css_class("enrichment-section");
 
     if let Some(ref summary) = enrichment.summary {
-        if !summary.is_empty() {
+        let clean_summary = strip_html_tags(summary);
+        if !clean_summary.is_empty() {
             let summary_label = gtk::Label::builder()
-                .label(summary)
+                .label(&clean_summary)
                 .wrap(true)
                 .xalign(0.0)
                 .build();

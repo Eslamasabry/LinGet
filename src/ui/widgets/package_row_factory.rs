@@ -1,4 +1,5 @@
 use crate::models::{get_package_icon, Package, PackageStatus, UpdateCategory};
+use crate::ui::strip_html_tags;
 
 use gtk4::prelude::*;
 use gtk4::{self as gtk, pango};
@@ -17,6 +18,7 @@ pub struct PackageRowModel {
     pub icon_name: String,
     pub compact: bool,
     pub is_scheduled: bool,
+    pub is_group_header: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +29,7 @@ pub struct PackageRowInit {
     pub show_icons: bool,
     pub compact: bool,
     pub is_scheduled: bool,
+    pub is_group_header: bool,
 }
 
 #[derive(Debug)]
@@ -49,19 +52,11 @@ pub enum PackageRowOutput {
     SelectionChanged(Package, bool),
 }
 
-fn escape_markup(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
 fn get_subtitle(pkg: &Package) -> String {
     if pkg.description.is_empty() {
         pkg.source.to_string()
     } else {
-        escape_markup(&pkg.description)
+        strip_html_tags(&pkg.description)
     }
 }
 
@@ -123,7 +118,11 @@ impl FactoryComponent for PackageRowModel {
             set_activatable: true,
             add_css_class: "pkg-row",
             #[watch]
-            set_css_classes: if self.compact {
+            set_css_classes: if self.is_group_header && self.compact {
+                &["pkg-row", "compact-row", "group-first"]
+            } else if self.is_group_header {
+                &["pkg-row", "group-first"]
+            } else if self.compact {
                 &["pkg-row", "compact-row"]
             } else {
                 &["pkg-row"]
@@ -289,6 +288,7 @@ impl FactoryComponent for PackageRowModel {
             icon_name,
             compact: init.compact,
             is_scheduled: init.is_scheduled,
+            is_group_header: init.is_group_header,
         }
     }
 

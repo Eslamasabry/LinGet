@@ -458,21 +458,25 @@ impl AppModel {
     }
 
     fn refresh_package_list(&mut self) {
-        let (filtered, total_count) = self.filtered_packages();
+        let (mut filtered, total_count) = self.filtered_packages();
         self.total_filtered_count = total_count;
         let config = self.config.borrow();
         let favorite_ids: HashSet<_> = config.favorite_packages.iter().cloned().collect();
 
-        // Only populate the ACTIVE factory to avoid double work
+        filtered.sort_by(|a, b| a.source.cmp(&b.source));
+
         let compact = config.ui_compact;
         let scheduler = &config.scheduler;
         match self.layout_mode {
             LayoutMode::List => {
                 let mut list_guard = self.package_rows.guard();
                 list_guard.clear();
+                let mut last_source: Option<PackageSource> = None;
                 for pkg in filtered {
                     let is_favorite = favorite_ids.contains(&pkg.id());
                     let is_scheduled = scheduler.has_pending_schedule(&pkg.id());
+                    let is_group_header = last_source != Some(pkg.source);
+                    last_source = Some(pkg.source);
                     list_guard.push_back(PackageRowInit {
                         package: pkg,
                         is_favorite,
@@ -480,6 +484,7 @@ impl AppModel {
                         show_icons: self.show_icons,
                         compact,
                         is_scheduled,
+                        is_group_header,
                     });
                 }
             }
@@ -496,6 +501,7 @@ impl AppModel {
                         show_icons: self.show_icons,
                         compact,
                         is_scheduled,
+                        is_group_header: false,
                     });
                 }
             }

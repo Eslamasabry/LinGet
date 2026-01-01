@@ -95,3 +95,14 @@ pub(crate) fn start_ui_watchdog() {
         tracing::warn!(error = %e, "Failed to start UI watchdog thread");
     }
 }
+
+/// Regex pattern to match HTML tags for stripping
+static HTML_TAG_PATTERN: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"<[^>]*>").expect("Invalid HTML tag regex"));
+
+/// Strips HTML tags from text, returning plain text content.
+/// Used to sanitize package descriptions that may contain HTML/Markdown.
+pub fn strip_html_tags(text: &str) -> String {
+    let stripped = HTML_TAG_PATTERN.replace_all(text, "");
+    stripped.split_whitespace().collect::<Vec<_>>().join(" ")
+}

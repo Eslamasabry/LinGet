@@ -1,4 +1,5 @@
 use crate::models::{fetch_enrichment, get_package_icon, Package, PackageStatus};
+use crate::ui::strip_html_tags;
 use crate::ui::widgets::{PackageRowInit, PackageRowInput, PackageRowOutput};
 
 use gtk4::prelude::*;
@@ -114,11 +115,12 @@ impl PackageCardModel {
         if desc.is_empty() {
             return String::new();
         }
-        let chars: Vec<char> = desc.chars().collect();
+        let clean = strip_html_tags(desc);
+        let chars: Vec<char> = clean.chars().collect();
         if chars.len() > 120 {
             format!("{}…", chars[..120].iter().collect::<String>())
         } else {
-            desc.clone()
+            clean
         }
     }
 
