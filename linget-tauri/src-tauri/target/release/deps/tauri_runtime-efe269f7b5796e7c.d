@@ -1,0 +1,11 @@
+/home/eslam/Storage/Code/LinGet/linget-tauri/src-tauri/target/release/deps/tauri_runtime-efe269f7b5796e7c.d: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/dpi.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/monitor.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/webview.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/window.rs
+
+/home/eslam/Storage/Code/LinGet/linget-tauri/src-tauri/target/release/deps/libtauri_runtime-efe269f7b5796e7c.rlib: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/dpi.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/monitor.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/webview.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/window.rs
+
+/home/eslam/Storage/Code/LinGet/linget-tauri/src-tauri/target/release/deps/libtauri_runtime-efe269f7b5796e7c.rmeta: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/dpi.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/monitor.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/webview.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/window.rs
+
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/lib.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/dpi.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/monitor.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/webview.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.9.2/src/window.rs:

@@ -8,7 +8,8 @@ import {
   Terminal, Sun, Moon, Zap, Globe, Layers,
   BookOpen, ToggleLeft, ToggleRight, Sparkles,
   AlertTriangle, Keyboard, RotateCcw,
-  CheckCircle, Clock, Shield, User, ExternalLink, ChevronRight
+  CheckCircle, Clock, Shield, User, ExternalLink, ChevronRight,
+  Info, ArrowRight, Loader2
 } from 'lucide-react'
 
 interface Package {
@@ -37,21 +38,31 @@ interface SourceInfo {
   name: string
   icon: string
   enabled: boolean
+  description?: string
   count?: number
 }
 
-const SOURCES: SourceInfo[] = [
-  { id: 'APT', name: 'APT', icon: '🟢', enabled: true },
-  { id: 'Flatpak', name: 'Flatpak', icon: '🟣', enabled: true },
-  { id: 'Snap', name: 'Snap', icon: '🔵', enabled: true },
-  { id: 'npm', name: 'npm', icon: '🟡', enabled: true },
-  { id: 'pip', name: 'pip', icon: '🐍', enabled: true },
-  { id: 'pipx', name: 'pipx', icon: '🐍', enabled: true },
-  { id: 'cargo', name: 'Cargo', icon: '🦀', enabled: true },
-  { id: 'brew', name: 'Homebrew', icon: '🍺', enabled: true },
-  { id: 'dnf', name: 'DNF', icon: '🔴', enabled: true },
-  { id: 'pacman', name: 'Pacman', icon: '📦', enabled: true },
-  { id: 'zypper', name: 'Zypper', icon: '🟠', enabled: true },
+interface SettingsData {
+  dark_mode: boolean
+  auto_refresh: boolean
+  refresh_interval: number
+  enabled_sources: string[]
+}
+
+const DEFAULT_SOURCES: SourceInfo[] = [
+  { id: 'APT', name: 'APT', icon: '🟢', enabled: true, description: 'System packages (Debian/Ubuntu)' },
+  { id: 'Flatpak', name: 'Flatpak', icon: '🟣', enabled: true, description: 'Sandboxed applications' },
+  { id: 'Snap', name: 'Snap', icon: '🔵', enabled: true, description: 'Ubuntu Snap packages' },
+  { id: 'npm', name: 'npm', icon: '🟡', enabled: true, description: 'Node.js packages' },
+  { id: 'pip', name: 'pip', icon: '🐍', enabled: true, description: 'Python packages' },
+  { id: 'pipx', name: 'pipx', icon: '🐍', enabled: true, description: 'Python app packages' },
+  { id: 'cargo', name: 'Cargo', icon: '🦀', enabled: true, description: 'Rust crates' },
+  { id: 'brew', name: 'Homebrew', icon: '🍺', enabled: true, description: 'Linuxbrew packages' },
+  { id: 'dnf', name: 'DNF', icon: '🔴', enabled: true, description: 'Fedora/RHEL packages' },
+  { id: 'pacman', name: 'Pacman', icon: '📦', enabled: true, description: 'Arch Linux packages' },
+  { id: 'zypper', name: 'Zypper', icon: '🟠', enabled: true, description: 'openSUSE packages' },
+  { id: 'conda', name: 'Conda', icon: '🟢', enabled: true, description: 'Conda packages' },
+  { id: 'mamba', name: 'Mamba', icon: '🟢', enabled: true, description: 'Mamba packages' },
 ]
 
 const SHORTCUTS = [
@@ -77,20 +88,19 @@ function PageTransition({ children }: { children: React.ReactNode }) {
   )
 }
 
-// Empty state component with illustration
-function EmptyState({ 
-  icon: Icon, 
-  title, 
-  description, 
-  action 
-}: { 
+function EmptyState({
+  icon: Icon,
+  title,
+  description,
+  action
+}: {
   icon: React.ElementType
   title: string
   description: string
   action?: React.ReactNode
 }) {
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       className="flex flex-col items-center justify-center h-64"
@@ -105,7 +115,6 @@ function EmptyState({
   )
 }
 
-// Skeleton loader
 function SkeletonCard() {
   return (
     <div className="bg-[#0A0A0A] rounded-lg border border-[#27272A] p-4 animate-pulse">
@@ -136,13 +145,96 @@ function SkeletonList() {
   )
 }
 
-// Package card with hover effects
-function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: string, pkg: Package) => void }) {
+interface ConfirmDialogProps {
+  isOpen: boolean
+  title: string
+  message: string
+  confirmText: string
+  cancelText: string
+  confirmStyle: 'danger' | 'primary'
+  onConfirm: () => void
+  onCancel: () => void
+}
+
+function ConfirmDialog({
+  isOpen,
+  title,
+  message,
+  confirmText,
+  cancelText,
+  confirmStyle,
+  onConfirm,
+  onCancel
+}: ConfirmDialogProps) {
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onClick={onCancel}
+        >
+          <motion.div
+            initial={{ scale: 0.95, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.95, opacity: 0 }}
+            className="bg-[#0A0A0A] rounded-xl border border-[#27272A] max-w-md w-full p-6"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-4">
+              <div className={`p-3 rounded-full ${
+                confirmStyle === 'danger' ? 'bg-red-900/30' : 'bg-blue-900/30'
+              }`}>
+                {confirmStyle === 'danger' ? (
+                  <AlertTriangle size={24} className="text-red-400" />
+                ) : (
+                  <Info size={24} className="text-blue-400" />
+                )}
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-white mb-2">{title}</h3>
+                <p className="text-gray-400 text-sm">{message}</p>
+              </div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={onCancel}
+                className="flex-1 px-4 py-2.5 bg-[#1A1A1A] text-gray-300 rounded-lg hover:bg-[#27272A] transition-colors"
+              >
+                {cancelText}
+              </button>
+              <button
+                onClick={onConfirm}
+                className={`flex-1 px-4 py-2.5 rounded-lg transition-colors font-medium ${
+                  confirmStyle === 'danger'
+                    ? 'bg-red-600 text-white hover:bg-red-700'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
+              >
+                {confirmText}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
+interface PackageCardProps {
+  pkg: Package
+  onAction: (action: string, pkg: Package) => void
+  onRequestConfirm: (action: string, pkg: Package) => void
+}
+
+function PackageCard({ pkg, onAction, onRequestConfirm }: PackageCardProps) {
   const [showDetails, setShowDetails] = useState(false)
-  
+
   return (
     <>
-      <motion.div 
+      <motion.div
         whileHover={{ scale: 1.01, borderColor: '#3F3F46' }}
         whileTap={{ scale: 0.99 }}
         className="bg-[#0A0A0A] rounded-lg border border-[#27272A] p-4 transition-all cursor-pointer group"
@@ -188,7 +280,7 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
             {pkg.status === 'not_installed' && 'Available'}
           </span>
         </div>
-        
+
         <div className="flex items-center justify-between mt-3 pt-3 border-t border-[#27272A]">
           <div className="flex items-center gap-3">
             <span className="text-xs text-gray-500 flex items-center gap-1">
@@ -202,15 +294,15 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
           <div className="flex items-center gap-1">
             {pkg.status === 'installed' && (
               <>
-                <button 
-                  onClick={(e) => { e.stopPropagation(); onAction('update', pkg) }}
+                <button
+                  onClick={(e) => { e.stopPropagation(); onRequestConfirm('update', pkg) }}
                   className="p-1.5 text-gray-400 hover:text-yellow-400 hover:bg-[#1A1A1A] rounded transition-colors"
                   title="Update (U)"
                 >
                   <RotateCcw size={14} />
                 </button>
-                <button 
-                  onClick={(e) => { e.stopPropagation(); onAction('remove', pkg) }}
+                <button
+                  onClick={(e) => { e.stopPropagation(); onRequestConfirm('remove', pkg) }}
                   className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-[#1A1A1A] rounded transition-colors"
                   title="Remove"
                 >
@@ -219,8 +311,8 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
               </>
             )}
             {pkg.status === 'update_available' && (
-              <button 
-                onClick={(e) => { e.stopPropagation(); onAction('update', pkg) }}
+              <button
+                onClick={(e) => { e.stopPropagation(); onRequestConfirm('update', pkg) }}
                 className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors flex items-center gap-1"
               >
                 <Download size={12} />
@@ -228,8 +320,8 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
               </button>
             )}
             {pkg.status === 'not_installed' && (
-              <button 
-                onClick={(e) => { e.stopPropagation(); onAction('install', pkg) }}
+              <button
+                onClick={(e) => { e.stopPropagation(); onRequestConfirm('install', pkg) }}
                 className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors flex items-center gap-1"
               >
                 <Download size={12} />
@@ -240,17 +332,16 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
         </div>
       </motion.div>
 
-      {/* Package Details Modal */}
       <AnimatePresence>
         {showDetails && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
             onClick={() => setShowDetails(false)}
           >
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
@@ -271,7 +362,7 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                       {pkg.status === 'update_available' ? `${pkg.version} → ${pkg.available_version}` : pkg.version}
                     </p>
                   </div>
-                  <button 
+                  <button
                     onClick={() => setShowDetails(false)}
                     className="p-2 text-gray-400 hover:text-white hover:bg-[#1A1A1A] rounded-lg transition-colors"
                   >
@@ -279,7 +370,7 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                   </button>
                 </div>
               </div>
-              
+
               <div className="p-6 space-y-4 overflow-y-auto max-h-96">
                 <div>
                   <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1">
@@ -288,7 +379,7 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                   </h3>
                   <p className="text-gray-300">{pkg.description || 'No description available'}</p>
                 </div>
-                
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-1">Status</h3>
@@ -303,7 +394,7 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                        'Not Installed'}
                     </span>
                   </div>
-                  
+
                   {pkg.size && (
                     <div>
                       <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-1">Size</h3>
@@ -311,16 +402,16 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                     </div>
                   )}
                 </div>
-                
+
                 {pkg.homepage && (
                   <div>
                     <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-1 flex items-center gap-1">
                       <ExternalLink size={12} />
                       Homepage
                     </h3>
-                    <a 
-                      href={pkg.homepage} 
-                      target="_blank" 
+                    <a
+                      href={pkg.homepage}
+                      target="_blank"
                       rel="noopener noreferrer"
                       className="text-blue-400 hover:underline flex items-center gap-1 text-sm"
                     >
@@ -328,7 +419,7 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                     </a>
                   </div>
                 )}
-                
+
                 {pkg.license && (
                   <div>
                     <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-1 flex items-center gap-1">
@@ -338,7 +429,7 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                     <p className="text-gray-300">{pkg.license}</p>
                   </div>
                 )}
-                
+
                 {pkg.maintainer && (
                   <div>
                     <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-1 flex items-center gap-1">
@@ -348,7 +439,7 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                     <p className="text-gray-300">{pkg.maintainer}</p>
                   </div>
                 )}
-                
+
                 {pkg.dependencies && pkg.dependencies.length > 0 && (
                   <div>
                     <h3 className="text-xs text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1">
@@ -370,19 +461,19 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                   </div>
                 )}
               </div>
-              
+
               <div className="p-6 border-t border-[#27272A] flex gap-3">
                 {pkg.status === 'installed' && (
                   <>
-                    <button 
-                      onClick={() => { onAction('update', pkg); setShowDetails(false); }}
+                    <button
+                      onClick={() => { onRequestConfirm('update', pkg); setShowDetails(false); }}
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
                     >
                       <RotateCcw size={16} />
                       Update
                     </button>
-                    <button 
-                      onClick={() => { onAction('remove', pkg); setShowDetails(false); }}
+                    <button
+                      onClick={() => { onRequestConfirm('remove', pkg); setShowDetails(false); }}
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-[#1A1A1A] text-red-400 border border-[#27272A] rounded-lg hover:bg-[#27272A] transition-colors font-medium"
                     >
                       <Trash2 size={16} />
@@ -391,8 +482,8 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                   </>
                 )}
                 {pkg.status === 'update_available' && (
-                  <button 
-                    onClick={() => { onAction('update', pkg); setShowDetails(false); }}
+                  <button
+                    onClick={() => { onRequestConfirm('update', pkg); setShowDetails(false); }}
                     className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
                   >
                     <Download size={16} />
@@ -400,8 +491,8 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
                   </button>
                 )}
                 {pkg.status === 'not_installed' && (
-                  <button 
-                    onClick={() => { onAction('install', pkg); setShowDetails(false); }}
+                  <button
+                    onClick={() => { onRequestConfirm('install', pkg); setShowDetails(false); }}
                     className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
                   >
                     <Download size={16} />
@@ -417,7 +508,6 @@ function PackageCard({ pkg, onAction }: { pkg: Package; onAction: (action: strin
   )
 }
 
-// Toast notifications
 function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
     <div className="fixed bottom-4 right-4 z-50 space-y-2">
@@ -440,8 +530,8 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
              toast.type === 'warning' ? <AlertTriangle size={18} /> :
              <Terminal size={18} />}
             <span className="flex-1 text-sm">{toast.message}</span>
-            <button 
-              onClick={() => onDismiss(toast.id)} 
+            <button
+              onClick={() => onDismiss(toast.id)}
               className="text-gray-400 hover:text-white transition-colors"
             >
               <X size={14} />
@@ -453,17 +543,16 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
   )
 }
 
-// Keyboard shortcuts modal
 function ShortcutsModal({ onClose }: { onClose: () => void }) {
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       onClick={onClose}
     >
-      <motion.div 
+      <motion.div
         initial={{ scale: 0.95 }}
         animate={{ scale: 1 }}
         exit={{ scale: 0.95 }}
@@ -494,27 +583,83 @@ function ShortcutsModal({ onClose }: { onClose: () => void }) {
   )
 }
 
-// Installed page
-function InstalledPage({ packages, loading, onAction, loadPackages }: { 
-  packages: Package[]; 
-  loading: boolean; 
-  onAction: (action: string, pkg: Package) => void;
-  loadPackages: () => void;
+function AboutModal({ onClose }: { onClose: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95 }}
+        animate={{ scale: 1 }}
+        exit={{ scale: 0.95 }}
+        className="bg-[#0A0A0A] rounded-xl border border-[#27272A] max-w-md w-full p-6"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="text-center">
+          <div className="w-16 h-16 bg-[#1A1A1A] rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Package size={32} className="text-blue-500" />
+          </div>
+          <h2 className="text-xl font-bold text-white mb-1">LinGet</h2>
+          <p className="text-sm text-gray-500 mb-4">A modern GUI package manager for Linux</p>
+          <div className="text-xs text-gray-600 space-y-1 mb-6">
+            <p>Version 0.1.0</p>
+            <p>Built with Tauri 2 + React</p>
+          </div>
+          <div className="flex justify-center gap-4">
+            <a
+              href="https://github.com/Eslamasabry/LinGet"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-400 hover:underline text-sm flex items-center gap-1"
+            >
+              <ExternalLink size={14} />
+              GitHub
+            </a>
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          className="w-full mt-6 px-4 py-2 bg-[#1A1A1A] text-gray-300 rounded-lg hover:bg-[#27272A] transition-colors"
+        >
+          Close
+        </button>
+      </motion.div>
+    </motion.div>
+  )
+}
+
+function InstalledPage({
+  packages,
+  loading,
+  onAction,
+  onRequestConfirm,
+  loadPackages,
+  sources
+}: {
+  packages: Package[]
+  loading: boolean
+  onAction: (action: string, pkg: Package) => void
+  onRequestConfirm: (action: string, pkg: Package) => void
+  loadPackages: () => void
+  sources: SourceInfo[]
 }) {
   const [selectedSource, setSelectedSource] = useState('all')
-  
-  const filtered = selectedSource === 'all' 
-    ? packages 
+
+  const filtered = selectedSource === 'all'
+    ? packages
     : packages.filter(p => p.source === selectedSource)
-  
-  // Get source counts
-  const sourceCounts = SOURCES.reduce((acc, s) => {
+
+  const sourceCounts = sources.reduce((acc, s) => {
     acc[s.id] = packages.filter(p => p.source === s.id).length
     return acc
   }, {} as Record<string, number>)
-  
+
   const installedCount = packages.filter(p => p.status === 'installed').length
-  
+
   if (loading) {
     return (
       <PageTransition>
@@ -524,7 +669,7 @@ function InstalledPage({ packages, loading, onAction, loadPackages }: {
       </PageTransition>
     )
   }
-  
+
   if (filtered.length === 0) {
     return (
       <PageTransition>
@@ -545,11 +690,10 @@ function InstalledPage({ packages, loading, onAction, loadPackages }: {
       </PageTransition>
     )
   }
-  
+
   return (
     <PageTransition>
       <div>
-        {/* Source filter pills */}
         <div className="flex flex-wrap gap-2 mb-6">
           <button
             onClick={() => setSelectedSource('all')}
@@ -561,7 +705,7 @@ function InstalledPage({ packages, loading, onAction, loadPackages }: {
           >
             All ({installedCount})
           </button>
-          {SOURCES.filter(s => s.enabled && sourceCounts[s.id] > 0).map(source => (
+          {sources.filter(s => s.enabled && sourceCounts[s.id] > 0).map(source => (
             <button
               key={source.id}
               onClick={() => setSelectedSource(source.id)}
@@ -575,13 +719,14 @@ function InstalledPage({ packages, loading, onAction, loadPackages }: {
             </button>
           ))}
         </div>
-        
+
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {filtered.map((pkg) => (
-            <PackageCard 
-              key={`${pkg.source}-${pkg.name}`} 
-              pkg={pkg} 
-              onAction={onAction} 
+            <PackageCard
+              key={`${pkg.source}-${pkg.name}`}
+              pkg={pkg}
+              onAction={onAction}
+              onRequestConfirm={onRequestConfirm}
             />
           ))}
         </div>
@@ -590,15 +735,23 @@ function InstalledPage({ packages, loading, onAction, loadPackages }: {
   )
 }
 
-// Updates page
-function UpdatesPage({ packages, loading, onAction, onUpdateAll }: { 
-  packages: Package[]; 
-  loading: boolean; 
-  onAction: (action: string, pkg: Package) => void;
-  onUpdateAll: () => void;
+function UpdatesPage({
+  packages,
+  loading,
+  onRequestConfirm,
+  onUpdateAll,
+  updatingAll,
+  updateProgress
+}: {
+  packages: Package[]
+  loading: boolean
+  onRequestConfirm: (action: string, pkg: Package) => void
+  onUpdateAll: () => void
+  updatingAll: boolean
+  updateProgress: number
 }) {
   const updates = packages.filter(p => p.status === 'update_available')
-  
+
   if (loading) {
     return (
       <PageTransition>
@@ -606,11 +759,10 @@ function UpdatesPage({ packages, loading, onAction, onUpdateAll }: {
       </PageTransition>
     )
   }
-  
+
   return (
     <PageTransition>
       <div>
-        {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-xl font-semibold text-white flex items-center gap-2">
@@ -624,14 +776,24 @@ function UpdatesPage({ packages, loading, onAction, onUpdateAll }: {
           {updates.length > 0 && (
             <button
               onClick={onUpdateAll}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+              disabled={updatingAll}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
             >
-              <Download size={16} />
-              Update All ({updates.length})
+              {updatingAll ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  Updating {updateProgress}/{updates.length}
+                </>
+              ) : (
+                <>
+                  <Download size={16} />
+                  Update All ({updates.length})
+                </>
+              )}
             </button>
           )}
         </div>
-        
+
         {updates.length === 0 ? (
           <EmptyState
             icon={CheckCircle}
@@ -641,10 +803,11 @@ function UpdatesPage({ packages, loading, onAction, onUpdateAll }: {
         ) : (
           <div className="space-y-3">
             {updates.map((pkg) => (
-              <PackageCard 
-                key={`${pkg.source}-${pkg.name}`} 
-                pkg={pkg} 
-                onAction={onAction} 
+              <PackageCard
+                key={`${pkg.source}-${pkg.name}`}
+                pkg={pkg}
+                onAction={() => onRequestConfirm('update', pkg)}
+                onRequestConfirm={onRequestConfirm}
               />
             ))}
           </div>
@@ -654,17 +817,22 @@ function UpdatesPage({ packages, loading, onAction, onUpdateAll }: {
   )
 }
 
-// Browse page with real search
-function BrowsePage({ loading, onAction }: { loading: boolean; onAction: (action: string, pkg: Package) => void }) {
+function BrowsePage({
+  loading,
+  onRequestConfirm
+}: {
+  loading: boolean
+  onRequestConfirm: (action: string, pkg: Package) => void
+}) {
   const [searchQuery, setSearchQuery] = useState('')
   const [results, setResults] = useState<Package[]>([])
   const [searched, setSearched] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  
+
   const handleSearch = useCallback(async () => {
     if (!searchQuery.trim()) return
-    
+
     setIsSearching(true)
     setSearched(true)
     try {
@@ -676,8 +844,7 @@ function BrowsePage({ loading, onAction }: { loading: boolean; onAction: (action
     }
     setIsSearching(false)
   }, [searchQuery])
-  
-  // Handle keyboard shortcut
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === '/' && document.activeElement !== inputRef.current) {
@@ -688,7 +855,7 @@ function BrowsePage({ loading, onAction }: { loading: boolean; onAction: (action
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
-  
+
   if (loading) {
     return (
       <PageTransition>
@@ -696,11 +863,10 @@ function BrowsePage({ loading, onAction }: { loading: boolean; onAction: (action
       </PageTransition>
     )
   }
-  
+
   return (
     <PageTransition>
       <div>
-        {/* Search */}
         <div className="relative mb-6">
           <Search size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" />
           <input
@@ -718,7 +884,7 @@ function BrowsePage({ loading, onAction }: { loading: boolean; onAction: (action
             </div>
           )}
         </div>
-        
+
         {!searched ? (
           <EmptyState
             icon={Search}
@@ -747,10 +913,11 @@ function BrowsePage({ loading, onAction }: { loading: boolean; onAction: (action
             </p>
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {results.map((pkg) => (
-                <PackageCard 
-                  key={`${pkg.source}-${pkg.name}`} 
-                  pkg={pkg} 
-                  onAction={onAction} 
+                <PackageCard
+                  key={`${pkg.source}-${pkg.name}`}
+                  pkg={pkg}
+                  onAction={() => {}}
+                  onRequestConfirm={onRequestConfirm}
                 />
               ))}
             </div>
@@ -761,63 +928,68 @@ function BrowsePage({ loading, onAction }: { loading: boolean; onAction: (action
   )
 }
 
-// Settings page
-function SettingsPage({ onThemeChange }: { onThemeChange: (dark: boolean) => void }) {
-  const [darkMode, setDarkMode] = useState(true)
-  const [autoRefresh, setAutoRefresh] = useState(false)
-  const [refreshInterval, setRefreshInterval] = useState(5)
-  const [sources, setSources] = useState(SOURCES)
-  
-  const toggleSource = (id: string) => {
-    setSources(prev => prev.map(s => 
-      s.id === id ? { ...s, enabled: !s.enabled } : s
-    ))
-  }
-  
+function SettingsPage({
+  settings,
+  onSettingsChange,
+  onSave,
+  sources,
+  onToggleSource,
+  onShowAbout
+}: {
+  settings: SettingsData
+  onSettingsChange: (updates: Partial<SettingsData>) => void
+  onSave: () => void
+  sources: SourceInfo[]
+  onToggleSource: (id: string) => void
+  onShowAbout: () => void
+}) {
   return (
     <PageTransition>
       <div className="max-w-2xl space-y-6">
         <h2 className="text-xl font-semibold text-white">Settings</h2>
-        
-        {/* Appearance */}
+
         <div className="bg-[#0A0A0A] rounded-lg border border-[#27272A] p-6">
           <h3 className="text-lg font-medium text-white mb-4 flex items-center gap-2">
             <Sun size={18} />
             Appearance
           </h3>
-          
+
           <div className="flex items-center justify-between py-3 border-b border-[#27272A]">
             <div>
               <p className="text-white">Dark Mode</p>
               <p className="text-sm text-gray-500">Use dark theme (OLED optimized)</p>
             </div>
-            <button 
-              onClick={() => { setDarkMode(!darkMode); onThemeChange(!darkMode); }}
+            <button
+              onClick={() => onSettingsChange({ dark_mode: !settings.dark_mode })}
               className={`p-2 rounded-lg transition-colors ${
-                darkMode ? 'bg-blue-600 text-white' : 'bg-[#1A1A1A] text-gray-400'
+                settings.dark_mode ? 'bg-blue-600 text-white' : 'bg-[#1A1A1A] text-gray-400'
               }`}
             >
-              {darkMode ? <Moon size={20} /> : <Sun size={20} />}
+              {settings.dark_mode ? <Moon size={20} /> : <Sun size={20} />}
             </button>
           </div>
         </div>
-        
-        {/* Package Sources */}
+
         <div className="bg-[#0A0A0A] rounded-lg border border-[#27272A] p-6">
           <h3 className="text-lg font-medium text-white mb-4 flex items-center gap-2">
             <Globe size={18} />
             Package Sources
           </h3>
-          
+
           <div className="space-y-2">
             {sources.map(source => (
               <div key={source.id} className="flex items-center justify-between py-2">
                 <div className="flex items-center gap-3">
                   <span className="text-lg">{source.icon}</span>
-                  <span className="text-white">{source.name}</span>
+                  <div>
+                    <span className="text-white">{source.name}</span>
+                    {source.description && (
+                      <p className="text-xs text-gray-500">{source.description}</p>
+                    )}
+                  </div>
                 </div>
-                <button 
-                  onClick={() => toggleSource(source.id)}
+                <button
+                  onClick={() => onToggleSource(source.id)}
                   className={`transition-colors ${
                     source.enabled ? 'text-blue-400' : 'text-gray-600'
                   }`}
@@ -828,39 +1000,38 @@ function SettingsPage({ onThemeChange }: { onThemeChange: (dark: boolean) => voi
             ))}
           </div>
         </div>
-        
-        {/* Behavior */}
+
         <div className="bg-[#0A0A0A] rounded-lg border border-[#27272A] p-6">
           <h3 className="text-lg font-medium text-white mb-4 flex items-center gap-2">
             <Zap size={18} />
             Behavior
           </h3>
-          
+
           <div className="space-y-4">
             <div className="flex items-center justify-between py-2">
               <div>
                 <p className="text-white">Auto Refresh</p>
                 <p className="text-sm text-gray-500">Check for updates on startup</p>
               </div>
-              <button 
-                onClick={() => setAutoRefresh(!autoRefresh)}
+              <button
+                onClick={() => onSettingsChange({ auto_refresh: !settings.auto_refresh })}
                 className={`p-2 rounded-lg transition-colors ${
-                  autoRefresh ? 'bg-blue-600 text-white' : 'bg-[#1A1A1A] text-gray-400'
+                  settings.auto_refresh ? 'bg-blue-600 text-white' : 'bg-[#1A1A1A] text-gray-400'
                 }`}
               >
-                {autoRefresh ? <ToggleRight size={24} /> : <ToggleLeft size={24} />}
+                {settings.auto_refresh ? <ToggleRight size={24} /> : <ToggleLeft size={24} />}
               </button>
             </div>
-            
-            {autoRefresh && (
+
+            {settings.auto_refresh && (
               <div className="flex items-center justify-between py-2">
                 <div>
                   <p className="text-white">Refresh Interval</p>
                   <p className="text-sm text-gray-500">Minutes between auto-refresh</p>
                 </div>
                 <select
-                  value={refreshInterval}
-                  onChange={(e) => setRefreshInterval(Number(e.target.value))}
+                  value={settings.refresh_interval}
+                  onChange={(e) => onSettingsChange({ refresh_interval: Number(e.target.value) })}
                   className="bg-[#1A1A1A] border border-[#27272A] rounded-lg px-3 py-2 text-white"
                 >
                   <option value={1}>1 minute</option>
@@ -872,8 +1043,7 @@ function SettingsPage({ onThemeChange }: { onThemeChange: (dark: boolean) => voi
             )}
           </div>
         </div>
-        
-        {/* Keyboard Shortcuts */}
+
         <div className="bg-[#0A0A0A] rounded-lg border border-[#27272A] p-6">
           <h3 className="text-lg font-medium text-white mb-4 flex items-center gap-2">
             <Keyboard size={18} />
@@ -890,11 +1060,10 @@ function SettingsPage({ onThemeChange }: { onThemeChange: (dark: boolean) => voi
             ))}
           </div>
         </div>
-        
-        {/* About */}
+
         <div className="bg-[#0A0A0A] rounded-lg border border-[#27272A] p-6">
           <h3 className="text-lg font-medium text-white mb-4 flex items-center gap-2">
-            <BookOpen size={18} />
+            <Info size={18} />
             About
           </h3>
           <div className="space-y-2 text-sm">
@@ -907,19 +1076,50 @@ function SettingsPage({ onThemeChange }: { onThemeChange: (dark: boolean) => voi
               <span className="text-white">{sources.filter(s => s.enabled).length} enabled</span>
             </div>
           </div>
+          <button
+            onClick={onShowAbout}
+            className="w-full mt-4 px-4 py-2 bg-[#1A1A1A] text-gray-300 rounded-lg hover:bg-[#27272A] transition-colors"
+          >
+            More Info
+          </button>
         </div>
+
+        <button
+          onClick={onSave}
+          className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center justify-center gap-2"
+        >
+          <Check size={18} />
+          Save Settings
+        </button>
       </div>
     </PageTransition>
   )
 }
 
-// Main App component
 function AppContent() {
   const location = useLocation()
   const [packages, setPackages] = useState<Package[]>([])
   const [loading, setLoading] = useState(true)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showAbout, setShowAbout] = useState(false)
+
+  const [sources, setSources] = useState<SourceInfo[]>(DEFAULT_SOURCES)
+  const [settings, setSettings] = useState<SettingsData>({
+    dark_mode: true,
+    auto_refresh: false,
+    refresh_interval: 5,
+    enabled_sources: []
+  })
+
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean
+    action: string
+    pkg: Package | null
+  }>({ isOpen: false, action: '', pkg: null })
+
+  const [updatingAll, setUpdatingAll] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState(0)
 
   const showToast = useCallback((type: Toast['type'], message: string) => {
     const id = Date.now()
@@ -929,11 +1129,43 @@ function AppContent() {
     }, 4000)
   }, [])
 
+  async function loadSources() {
+    try {
+      const backendSources = await invoke<{ id: string; name: string; description: string; icon: string; enabled: boolean }[]>('get_backend_sources')
+      if (backendSources && backendSources.length > 0) {
+        const newSources = backendSources.map(s => ({
+          id: s.id,
+          name: s.name,
+          icon: s.icon || '📦',
+          enabled: s.enabled,
+          description: s.description
+        }))
+        setSources(prev => {
+          const merged = new Map(prev.map(s => [s.id, s]))
+          return newSources.map(s => merged.get(s.id) ? { ...merged.get(s.id)!, ...s } : s)
+        })
+      }
+    } catch (e) {
+      console.error('Failed to load sources:', e)
+    }
+  }
+
+  async function loadSettings() {
+    try {
+      const saved = await invoke<SettingsData>('load_settings')
+      if (saved) {
+        setSettings(saved)
+      }
+    } catch (e) {
+      console.error('Failed to load settings:', e)
+    }
+  }
+
   async function loadPackages(tab: 'installed' | 'updates' | 'browse') {
     setLoading(true)
     try {
       let result: Package[] = []
-      
+
       if (tab === 'installed') {
         result = await invoke<Package[]>('list_installed_packages')
       } else if (tab === 'updates') {
@@ -941,7 +1173,7 @@ function AppContent() {
       } else {
         result = []
       }
-      
+
       setPackages(result)
     } catch (e) {
       console.error('Failed to load packages:', e)
@@ -971,11 +1203,20 @@ function AppContent() {
 
   async function handleUpdateAll() {
     const updates = packages.filter(p => p.status === 'update_available')
-    for (const pkg of updates) {
-      showToast('info', `Updating ${pkg.name}...`)
-      await handleAction('update', pkg)
+    if (updates.length === 0) return
+
+    setUpdatingAll(true)
+    setUpdateProgress(0)
+
+    try {
+      await invoke('update_all_packages')
+      showToast('success', `Updated ${updates.length} packages`)
+    } catch (e) {
+      console.error('Update all failed:', e)
+      showToast('error', 'Failed to update all packages')
     }
-    showToast('success', 'All packages updated!')
+
+    setUpdatingAll(false)
     loadPackages('installed')
   }
 
@@ -988,7 +1229,11 @@ function AppContent() {
   else if (activeTab === 'browse') currentPage = 'browse'
   else if (activeTab === 'settings') currentPage = 'settings'
 
-  // Keyboard shortcuts
+  useEffect(() => {
+    loadSources()
+    loadSettings()
+  }, [])
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
@@ -997,6 +1242,7 @@ function AppContent() {
       }
       if (e.key === 'Escape') {
         setShowShortcuts(false)
+        setShowAbout(false)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -1009,9 +1255,77 @@ function AppContent() {
     }
   }, [currentPage])
 
+  function requestConfirm(action: string, pkg: Package) {
+    setConfirmDialog({ isOpen: true, action, pkg })
+  }
+
+  function handleConfirm() {
+    if (confirmDialog.pkg && confirmDialog.action) {
+      handleAction(confirmDialog.action, confirmDialog.pkg)
+    }
+    setConfirmDialog({ isOpen: false, action: '', pkg: null })
+  }
+
+  function handleCancelConfirm() {
+    setConfirmDialog({ isOpen: false, action: '', pkg: null })
+  }
+
+  async function saveSettings() {
+    try {
+      await invoke('save_settings', { settings })
+      showToast('success', 'Settings saved')
+    } catch (e) {
+      console.error('Failed to save settings:', e)
+      showToast('error', 'Failed to save settings')
+    }
+  }
+
+  function toggleSource(id: string) {
+    setSources(prev => prev.map(s =>
+      s.id === id ? { ...s, enabled: !s.enabled } : s
+    ))
+    const enabledSources = sources.filter(s => s.enabled).map(s => s.id)
+    setSettings(prev => ({
+      ...prev,
+      enabled_sources: prev.enabled_sources.includes(id)
+        ? prev.enabled_sources.filter(s => s !== id)
+        : [...prev.enabled_sources, id]
+    }))
+  }
+
+  function getConfirmConfig() {
+    const { action } = confirmDialog
+    switch (action) {
+      case 'remove':
+        return {
+          title: 'Remove Package?',
+          message: `Are you sure you want to remove ${confirmDialog.pkg?.name}? This cannot be undone.`,
+          confirmText: 'Remove',
+          cancelText: 'Cancel',
+          confirmStyle: 'danger' as const
+        }
+      case 'update':
+        return {
+          title: 'Update Package?',
+          message: `Update ${confirmDialog.pkg?.name} to version ${confirmDialog.pkg?.available_version}?`,
+          confirmText: 'Update',
+          cancelText: 'Cancel',
+          confirmStyle: 'primary' as const
+        }
+      case 'install':
+      default:
+        return {
+          title: 'Install Package?',
+          message: `Install ${confirmDialog.pkg?.name}?`,
+          confirmText: 'Install',
+          cancelText: 'Cancel',
+          confirmStyle: 'primary' as const
+        }
+    }
+  }
+
   return (
     <div className="flex h-screen bg-black">
-      {/* Sidebar */}
       <aside className="w-64 bg-[#0A0A0A] border-r border-[#27272A] flex flex-col">
         <div className="p-4 border-b border-[#27272A]">
           <h1 className="text-xl font-bold text-white flex items-center gap-2">
@@ -1019,13 +1333,12 @@ function AppContent() {
             LinGet
           </h1>
         </div>
-        
+
         <nav className="flex-1 py-4 space-y-1 px-2">
           <button
-            onClick={() => {}}
             className={`w-full flex items-center gap-3 px-3 py-2.5 text-left rounded-lg transition-colors ${
-              activeTab === 'installed' 
-                ? 'bg-[#1A1A1A] text-blue-400 border-l-2 border-blue-500' 
+              activeTab === 'installed'
+                ? 'bg-[#1A1A1A] text-blue-400 border-l-2 border-blue-500'
                 : 'text-gray-300 hover:bg-[#1A1A1A]'
             }`}
           >
@@ -1035,12 +1348,11 @@ function AppContent() {
               {installedCount}
             </span>
           </button>
-          
+
           <button
-            onClick={() => {}}
             className={`w-full flex items-center gap-3 px-3 py-2.5 text-left rounded-lg transition-colors ${
-              activeTab === 'updates' 
-                ? 'bg-[#1A1A1A] text-yellow-400 border-l-2 border-yellow-500' 
+              activeTab === 'updates'
+                ? 'bg-[#1A1A1A] text-yellow-400 border-l-2 border-yellow-500'
                 : 'text-gray-300 hover:bg-[#1A1A1A]'
             }`}
           >
@@ -1052,24 +1364,22 @@ function AppContent() {
               </span>
             )}
           </button>
-          
+
           <button
-            onClick={() => {}}
             className={`w-full flex items-center gap-3 px-3 py-2.5 text-left rounded-lg transition-colors ${
-              activeTab === 'browse' 
-                ? 'bg-[#1A1A1A] text-green-400 border-l-2 border-green-500' 
+              activeTab === 'browse'
+                ? 'bg-[#1A1A1A] text-green-400 border-l-2 border-green-500'
                 : 'text-gray-300 hover:bg-[#1A1A1A]'
             }`}
           >
             <Search size={20} />
             <span className="flex-1">Browse</span>
           </button>
-          
+
           <button
-            onClick={() => {}}
             className={`w-full flex items-center gap-3 px-3 py-2.5 text-left rounded-lg transition-colors ${
-              activeTab === 'settings' 
-                ? 'bg-[#1A1A1A] text-purple-400 border-l-2 border-purple-500' 
+              activeTab === 'settings'
+                ? 'bg-[#1A1A1A] text-purple-400 border-l-2 border-purple-500'
                 : 'text-gray-300 hover:bg-[#1A1A1A]'
             }`}
           >
@@ -1077,8 +1387,8 @@ function AppContent() {
             <span className="flex-1">Settings</span>
           </button>
         </nav>
-        
-        <div className="p-4 border-t border-[#27272A]">
+
+        <div className="p-4 border-t border-[#27272A] space-y-1">
           <button
             onClick={() => setShowShortcuts(true)}
             className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-gray-400 hover:bg-[#1A1A1A] rounded-lg transition-colors text-sm"
@@ -1089,8 +1399,7 @@ function AppContent() {
           </button>
         </div>
       </aside>
-      
-      {/* Main Content */}
+
       <main className="flex-1 flex flex-col overflow-hidden">
         <header className="bg-[#0A0A0A] border-b border-[#27272A] px-6 py-4">
           <div className="flex items-center justify-between">
@@ -1103,15 +1412,15 @@ function AppContent() {
               </h2>
               {activeTab !== 'settings' && (
                 <p className="text-sm text-gray-500 mt-1">
-                  {activeTab === 'updates' && updateCount > 0 
-                    ? `${updateCount} packages can be updated` 
-                    : activeTab === 'installed' 
+                  {activeTab === 'updates' && updateCount > 0
+                    ? `${updateCount} packages can be updated`
+                    : activeTab === 'installed'
                       ? `${installedCount} packages installed`
                       : 'Search and discover new packages'}
                 </p>
               )}
             </div>
-            
+
             {activeTab !== 'settings' && (
               <button
                 onClick={() => loadPackages(currentPage as 'installed' | 'updates' | 'browse')}
@@ -1124,38 +1433,47 @@ function AppContent() {
             )}
           </div>
         </header>
-        
+
         <div className="flex-1 overflow-auto p-6">
           <AnimatePresence mode="wait">
             {activeTab === 'installed' && (
-              <InstalledPage 
+              <InstalledPage
                 key="installed"
-                packages={packages} 
-                loading={loading} 
+                packages={packages}
+                loading={loading}
                 onAction={handleAction}
+                onRequestConfirm={requestConfirm}
                 loadPackages={() => loadPackages('installed')}
+                sources={sources}
               />
             )}
             {activeTab === 'updates' && (
-              <UpdatesPage 
+              <UpdatesPage
                 key="updates"
-                packages={packages} 
-                loading={loading} 
-                onAction={handleAction}
+                packages={packages}
+                loading={loading}
+                onRequestConfirm={requestConfirm}
                 onUpdateAll={handleUpdateAll}
+                updatingAll={updatingAll}
+                updateProgress={updateProgress}
               />
             )}
             {activeTab === 'browse' && (
-              <BrowsePage 
+              <BrowsePage
                 key="browse"
-                loading={loading} 
-                onAction={handleAction}
+                loading={loading}
+                onRequestConfirm={requestConfirm}
               />
             )}
             {activeTab === 'settings' && (
-              <SettingsPage 
+              <SettingsPage
                 key="settings"
-                onThemeChange={() => {}}
+                settings={settings}
+                onSettingsChange={(updates) => setSettings(prev => ({ ...prev, ...updates }))}
+                onSave={saveSettings}
+                sources={sources}
+                onToggleSource={toggleSource}
+                onShowAbout={() => setShowAbout(true)}
               />
             )}
           </AnimatePresence>
@@ -1163,10 +1481,18 @@ function AppContent() {
       </main>
 
       <ToastContainer toasts={toasts} onDismiss={(id) => setToasts(prev => prev.filter(t => t.id !== id))} />
-      
+
       <AnimatePresence>
         {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
+        {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
       </AnimatePresence>
+
+      <ConfirmDialog
+        isOpen={confirmDialog.isOpen}
+        {...getConfirmConfig()}
+        onConfirm={handleConfirm}
+        onCancel={handleCancelConfirm}
+      />
     </div>
   )
 }

@@ -1,13 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use anyhow::{Context, Result};
+use dirs::config_dir;
 use linget_backend_core::{Package, PackageSource, PackageStatus};
 use linget_backends::backends::PackageManager;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct PackageJson {
     name: String,
     version: String,
@@ -29,6 +31,37 @@ struct AppSettings {
     auto_refresh: bool,
     refresh_interval: u32,
     enabled_sources: Vec<String>,
+}
+
+impl AppSettings {
+    fn path() -> Option<PathBuf> {
+        config_dir().map(|mut p| {
+            p.push("linget");
+            p.push("settings.json");
+            p
+        })
+    }
+
+    fn load() -> Self {
+        match Self::path() {
+            Some(path) if path.exists() => std::fs::read_to_string(path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
+            _ => Self::default(),
+        }
+    }
+
+    fn save(&self) -> Result<()> {
+        if let Some(path) = Self::path() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let json = serde_json::to_string_pretty(self)?;
+            std::fs::write(path, json)?;
+        }
+        Ok(())
+    }
 }
 
 impl From<Package> for PackageJson {
@@ -58,14 +91,17 @@ impl From<Package> for PackageJson {
         }
     }
 }
+
 struct AppState {
     package_manager: Mutex<PackageManager>,
+    settings: Mutex<AppSettings>,
 }
 
 impl AppState {
     fn new() -> Self {
         Self {
             package_manager: Mutex::new(PackageManager::new()),
+            settings: Mutex::new(AppSettings::load()),
         }
     }
 }
@@ -179,16 +215,18 @@ async fn install_package(
     source: String,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let source =
+    let source_enum =
         PackageSource::from_str(&source).ok_or_else(|| format!("Unknown source: {}", source))?;
 
     let manager = state.package_manager.lock().await;
+
+    // Create a minimal package for the install operation
     let package = Package {
-        name,
+        name: name.clone(),
         version: String::new(),
         available_version: None,
         description: String::new(),
-        source,
+        source: source_enum,
         status: PackageStatus::Installing,
         size: None,
         homepage: None,
@@ -208,16 +246,17 @@ async fn remove_package(
     source: String,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let source =
+    let source_enum =
         PackageSource::from_str(&source).ok_or_else(|| format!("Unknown source: {}", source))?;
 
     let manager = state.package_manager.lock().await;
+
     let package = Package {
-        name,
+        name: name.clone(),
         version: String::new(),
         available_version: None,
         description: String::new(),
-        source,
+        source: source_enum,
         status: PackageStatus::Removing,
         size: None,
         homepage: None,
@@ -237,16 +276,17 @@ async fn update_package(
     source: String,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let source =
+    let source_enum =
         PackageSource::from_str(&source).ok_or_else(|| format!("Unknown source: {}", source))?;
 
     let manager = state.package_manager.lock().await;
+
     let package = Package {
-        name,
+        name: name.clone(),
         version: String::new(),
         available_version: None,
         description: String::new(),
-        source,
+        source: source_enum,
         status: PackageStatus::Updating,
         size: None,
         homepage: None,
@@ -292,8 +332,8 @@ async fn search_packages(
 
 #[tauri::command]
 async fn get_package_info(name: String, source: String) -> Result<serde_json::Value, String> {
-    let source = PackageSource::from_str(&source);
-    if source.is_none() {
+    let source_enum = PackageSource::from_str(&source);
+    if source_enum.is_none() {
         return Ok(serde_json::json!({
             "name": name,
             "source": source,
@@ -305,7 +345,7 @@ async fn get_package_info(name: String, source: String) -> Result<serde_json::Va
 
     Ok(serde_json::json!({
         "name": name,
-        "source": source.unwrap().to_string(),
+        "source": source,
         "version": "",
         "description": "",
         "status": "unknown",
@@ -317,8 +357,10 @@ async fn get_package_info(name: String, source: String) -> Result<serde_json::Va
 }
 
 #[tauri::command]
-async fn load_settings() -> Result<serde_json::Value, String> {
-    let settings = AppSettings::default();
+async fn load_settings(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let settings = state.settings.lock().await;
     Ok(serde_json::json!({
         "dark_mode": settings.dark_mode,
         "auto_refresh": settings.auto_refresh,
@@ -328,10 +370,29 @@ async fn load_settings() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn save_settings(settings: serde_json::Value) -> Result<(), String> {
-    // In a real app, save to config file
-    // For now, just acknowledge
-    Ok(())
+async fn save_settings(
+    settings: serde_json::Value,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let mut app_settings = state.settings.lock().await;
+
+    if let Some(dark_mode) = settings.get("dark_mode").and_then(|v| v.as_bool()) {
+        app_settings.dark_mode = dark_mode;
+    }
+    if let Some(auto_refresh) = settings.get("auto_refresh").and_then(|v| v.as_bool()) {
+        app_settings.auto_refresh = auto_refresh;
+    }
+    if let Some(interval) = settings.get("refresh_interval").and_then(|v| v.as_u64()) {
+        app_settings.refresh_interval = interval as u32;
+    }
+    if let Some(enabled) = settings.get("enabled_sources").and_then(|v| v.as_array()) {
+        app_settings.enabled_sources = enabled
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+    }
+
+    app_settings.save().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -341,15 +402,21 @@ async fn get_backend_sources(
     let manager = state.package_manager.lock().await;
     let sources = manager.available_sources();
 
+    let settings = state.settings.lock().await;
+    let enabled_sources: std::collections::HashSet<String> =
+        settings.enabled_sources.iter().cloned().collect();
+
     Ok(sources
         .iter()
         .map(|s| {
+            let id = s.to_string();
+            let is_enabled = enabled_sources.is_empty() || enabled_sources.contains(&id);
             serde_json::json!({
-                "id": s.to_string(),
+                "id": id,
                 "name": s.to_string(),
                 "description": s.description(),
                 "icon": s.icon_name(),
-                "enabled": true
+                "enabled": is_enabled
             })
         })
         .collect())
@@ -367,14 +434,42 @@ async fn update_all_packages(
 
     let mut results = Vec::new();
     for pkg in updates {
+        let update_result = manager.update(&pkg).await;
+
         results.push(serde_json::json!({
             "name": pkg.name,
             "source": pkg.source.to_string(),
-            "status": "updating"
+            "status": if update_result.is_ok() { "updated" } else { "failed" },
+            "error": update_result.err().map(|e| e.to_string())
         }));
     }
 
     Ok(results)
+}
+
+#[tauri::command]
+async fn cancel_operation(
+    _name: String,
+    _source: String,
+    _state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    // TODO: Implement operation cancellation
+    // This would require adding cancellation tokens to the backend operations
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_operation_status(
+    _name: String,
+    _source: String,
+    _state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    // TODO: Implement real-time operation status
+    Ok(serde_json::json!({
+        "status": "idle",
+        "progress": 0,
+        "message": ""
+    }))
 }
 
 fn main() -> Result<()> {
@@ -397,6 +492,8 @@ fn main() -> Result<()> {
             save_settings,
             get_backend_sources,
             update_all_packages,
+            cancel_operation,
+            get_operation_status,
         ])
         .run(tauri::generate_context!())
         .context("Failed to run Tauri application")
