@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, listen } from '@tauri-apps/api/core'
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -9,7 +9,7 @@ import {
   BookOpen, ToggleLeft, ToggleRight, Sparkles,
   AlertTriangle, Keyboard, RotateCcw,
   CheckCircle, Clock, Shield, User, ExternalLink, ChevronRight,
-  Info, ArrowRight, Loader2
+  Info, ArrowRight, Loader2, Play, Pause, Terminal as TerminalIcon
 } from 'lucide-react'
 
 interface Package {
@@ -31,6 +31,25 @@ interface Toast {
   id: number
   type: 'success' | 'error' | 'info' | 'warning'
   message: string
+}
+
+interface OperationLog {
+  id: string
+  timestamp: Date
+  type: 'info' | 'success' | 'error' | 'warning'
+  message: string
+  name?: string
+}
+
+interface RunningOperation {
+  id: string
+  name: string
+  type: 'install' | 'remove' | 'update'
+  status: 'started' | 'running' | 'completed' | 'failed'
+  progress: number
+  message: string
+  logs: OperationLog[]
+  startTime: Date
 }
 
 interface SourceInfo {
@@ -55,8 +74,8 @@ const DEFAULT_SOURCES: SourceInfo[] = [
   { id: 'Snap', name: 'Snap', icon: '🔵', enabled: true, description: 'Ubuntu Snap packages' },
   { id: 'npm', name: 'npm', icon: '🟡', enabled: true, description: 'Node.js packages' },
   { id: 'pip', name: 'pip', icon: '🐍', enabled: true, description: 'Python packages' },
-  { id: 'pipx', name: 'pipx', icon: '🐍', enabled: true, description: 'Python app packages' },
-  { id: 'cargo', name: 'Cargo', icon: '🦀', enabled: true, description: 'Rust crates' },
+  { id: 'pipx', name: 'pipx', icon: '🐍', enabled: true, description: 'Python app packages (pipx)' },
+  { id: 'cargo', name: 'Cargo', icon: '🦀', enabled: true, description: 'Rust crates (cargo install)' },
   { id: 'brew', name: 'Homebrew', icon: '🍺', enabled: true, description: 'Linuxbrew packages' },
   { id: 'dnf', name: 'DNF', icon: '🔴', enabled: true, description: 'Fedora/RHEL packages' },
   { id: 'pacman', name: 'Pacman', icon: '📦', enabled: true, description: 'Arch Linux packages' },
@@ -73,6 +92,7 @@ const SHORTCUTS = [
   { key: 'b', action: 'Browse' },
   { key: 's', action: 'Settings' },
   { key: '?', action: 'Shortcuts' },
+  { key: 't', action: 'Task Hub' },
 ]
 
 function PageTransition({ children }: { children: React.ReactNode }) {
@@ -220,6 +240,101 @@ function ConfirmDialog({
         </motion.div>
       )}
     </AnimatePresence>
+  )
+}
+
+function TaskHub({
+  operations,
+  onCancelOperation
+}: {
+  operations: RunningOperation[]
+  onCancelOperation: (id: string) => void
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [operations])
+
+  if (operations.length === 0) {
+    return (
+      <div className="p-6 text-center">
+        <TerminalIcon size={48} className="mx-auto text-gray-600 mb-4" />
+        <h3 className="text-lg font-medium text-white mb-2">No operations running</h3>
+        <p className="text-sm text-gray-500">Package operations will appear here</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-4 space-y-4 max-h-96 overflow-y-auto" ref={scrollRef}>
+      {operations.map(op => (
+        <motion.div
+          key={op.id}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-[#0A0A0A] rounded-lg border border-[#27272A] p-4"
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              {op.type === 'install' && <Download size={16} className="text-blue-400" />}
+              {op.type === 'remove' && <Trash2 size={16} className="text-red-400" />}
+              {op.type === 'update' && <RotateCcw size={16} className="text-yellow-400" />}
+              <span className="font-medium text-white">{op.name}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {op.status === 'completed' && <Check size={16} className="text-green-400" />}
+              {op.status === 'failed' && <AlertCircle size={16} className="text-red-400" />}
+              {op.status !== 'completed' && op.status !== 'failed' && (
+                <button
+                  onClick={() => onCancelOperation(op.id)}
+                  className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                  title="Cancel"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="mb-2">
+            <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+              <span>{op.message}</span>
+              <span>{op.progress}%</span>
+            </div>
+            <div className="h-1 bg-[#1A1A1A] rounded-full overflow-hidden">
+              <motion.div
+                className={`h-full ${
+                  op.status === 'failed' ? 'bg-red-500' :
+                  op.status === 'completed' ? 'bg-green-500' :
+                  'bg-blue-500'
+                }`}
+                initial={{ width: 0 }}
+                animate={{ width: `${op.progress}%` }}
+              />
+            </div>
+          </div>
+
+          {op.logs.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-[#27272A] max-h-24 overflow-y-auto">
+              {op.logs.slice(-5).map((log, i) => (
+                <div key={i} className="text-xs font-mono text-gray-400">
+                  <span className="text-gray-600">[{log.timestamp.toLocaleTimeString()}]</span>{' '}
+                  <span className={
+                    log.type === 'error' ? 'text-red-400' :
+                    log.type === 'success' ? 'text-green-400' :
+                    log.type === 'warning' ? 'text-yellow-400' :
+                    'text-gray-400'
+                  }>{log.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </motion.div>
+      ))}
+    </div>
   )
 }
 
@@ -806,7 +921,7 @@ function UpdatesPage({
               <PackageCard
                 key={`${pkg.source}-${pkg.name}`}
                 pkg={pkg}
-                onAction={() => onRequestConfirm('update', pkg)}
+                onAction={() => {}}
                 onRequestConfirm={onRequestConfirm}
               />
             ))}
@@ -1103,6 +1218,7 @@ function AppContent() {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showAbout, setShowAbout] = useState(false)
+  const [showTaskHub, setShowTaskHub] = useState(false)
 
   const [sources, setSources] = useState<SourceInfo[]>(DEFAULT_SOURCES)
   const [settings, setSettings] = useState<SettingsData>({
@@ -1120,6 +1236,8 @@ function AppContent() {
 
   const [updatingAll, setUpdatingAll] = useState(false)
   const [updateProgress, setUpdateProgress] = useState(0)
+
+  const [runningOperations, setRunningOperations] = useState<RunningOperation[]>([])
 
   const showToast = useCallback((type: Toast['type'], message: string) => {
     const id = Date.now()
@@ -1240,6 +1358,10 @@ function AppContent() {
         e.preventDefault()
         setShowShortcuts(true)
       }
+      if (e.key === 't' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        setShowTaskHub(prev => !prev)
+      }
       if (e.key === 'Escape') {
         setShowShortcuts(false)
         setShowAbout(false)
@@ -1247,6 +1369,75 @@ function AppContent() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  useEffect(() => {
+    const unlistenProgress = listen<any>('operation-progress', (event) => {
+      const data = event.payload
+      const opId = data.operation_id || data.name
+
+      setRunningOperations(prev => {
+        const existing = prev.find(op => op.id === opId)
+        if (existing) {
+          return prev.map(op =>
+            op.id === opId
+              ? { ...op, status: data.status, progress: data.progress, message: data.message }
+              : op
+          )
+        } else if (data.status === 'started') {
+          return [...prev, {
+            id: opId,
+            name: data.name,
+            type: opId.includes('install') ? 'install' : opId.includes('remove') ? 'remove' : 'update',
+            status: 'started',
+            progress: data.progress || 0,
+            message: data.message,
+            logs: [],
+            startTime: new Date()
+          }]
+        }
+        return prev
+      })
+    })
+
+    const unlistenLog = listen<any>('operation-log', (event) => {
+      const data = event.payload
+      const opId = data.operation_id || data.name
+
+      setRunningOperations(prev => prev.map(op => {
+        if (op.id === opId) {
+          return {
+            ...op,
+            logs: [...op.logs, {
+              id: Date.now().toString(),
+              timestamp: new Date(),
+              type: data.is_error ? 'error' : 'info',
+              message: data.line,
+              name: data.name
+            }]
+          }
+        }
+        return op
+      }))
+    })
+
+    const unlistenBatchProgress = listen<any>('batch-update-progress', (event) => {
+      const data = event.payload
+      setUpdateProgress(data.completed)
+    })
+
+    const unlistenBatchCompleted = listen<any>('batch-update-completed', () => {
+      setRunningOperations(prev => prev.filter(op =>
+        !op.id.includes('update-') || op.status === 'completed'
+      ))
+    })
+
+    return () => {
+      unlistenProgress.then(f => f())
+      unlistenLog.then(f => f())
+      unlistenBatchProgress.then(f => f())
+      unlistenBatchCompleted.then(f => f())
+    }
   }, [])
 
   useEffect(() => {
@@ -1284,13 +1475,22 @@ function AppContent() {
     setSources(prev => prev.map(s =>
       s.id === id ? { ...s, enabled: !s.enabled } : s
     ))
-    const enabledSources = sources.filter(s => s.enabled).map(s => s.id)
     setSettings(prev => ({
       ...prev,
       enabled_sources: prev.enabled_sources.includes(id)
         ? prev.enabled_sources.filter(s => s !== id)
         : [...prev.enabled_sources, id]
     }))
+  }
+
+  async function cancelOperation(id: string) {
+    try {
+      await invoke('cancel_operation', { operation_id: id })
+      setRunningOperations(prev => prev.filter(op => op.id !== id))
+      showToast('info', 'Operation cancelled')
+    } catch (e) {
+      console.error('Failed to cancel operation:', e)
+    }
   }
 
   function getConfirmConfig() {
@@ -1390,6 +1590,18 @@ function AppContent() {
 
         <div className="p-4 border-t border-[#27272A] space-y-1">
           <button
+            onClick={() => setShowTaskHub(true)}
+            className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-gray-400 hover:bg-[#1A1A1A] rounded-lg transition-colors text-sm"
+          >
+            <TerminalIcon size={16} />
+            <span>Task Hub</span>
+            {runningOperations.length > 0 && (
+              <span className="ml-auto px-1.5 py-0.5 text-xs bg-blue-600 text-white rounded">
+                {runningOperations.length}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setShowShortcuts(true)}
             className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-gray-400 hover:bg-[#1A1A1A] rounded-lg transition-colors text-sm"
           >
@@ -1479,6 +1691,43 @@ function AppContent() {
           </AnimatePresence>
         </div>
       </main>
+
+      <AnimatePresence>
+        {showTaskHub && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={() => setShowTaskHub(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-[#0A0A0A] rounded-xl border border-[#27272A] max-w-2xl w-full max-h-[80vh] overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="p-4 border-b border-[#27272A] flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                  <TerminalIcon size={20} />
+                  Task Hub
+                </h2>
+                <button
+                  onClick={() => setShowTaskHub(false)}
+                  className="text-gray-400 hover:text-white"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <TaskHub
+                operations={runningOperations}
+                onCancelOperation={cancelOperation}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <ToastContainer toasts={toasts} onDismiss={(id) => setToasts(prev => prev.filter(t => t.id !== id))} />
 
