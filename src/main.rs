@@ -18,9 +18,9 @@ enum RunMode {
 fn detect_run_mode() -> RunMode {
     let args: Vec<String> = std::env::args().collect();
 
-    // No arguments = GUI mode (default)
+    // No arguments = TUI mode (interactive by default)
     if args.len() <= 1 {
-        return RunMode::Gui;
+        return RunMode::Tui;
     }
 
     match args[1].as_str() {
