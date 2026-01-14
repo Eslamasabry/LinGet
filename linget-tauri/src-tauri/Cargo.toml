@@ -1,0 +1,66 @@
+[package]
+name = "linget-tauri"
+version = "0.1.0"
+description = "A modern GUI package manager for Linux"
+authors = ["LinGet Contributors"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full", "rt-multi-thread", "process", "sync"] }
+
+# Async utilities
+async-trait = "0.1"
+async-channel = "2"
+futures = "0.3"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Tauri
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+
+# Shared backend core
+linget-backend-core = { path = "../../packages/backend-core" }
+
+# Shared backends
+linget-backends = { path = "../../packages/backends" }
+
+# System utilities
+which = "7"
+dirs = "5"
+regex = "1"
+humansize = "2"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Semver
+semver = "1"
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true

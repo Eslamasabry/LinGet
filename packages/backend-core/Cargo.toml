@@ -1,0 +1,12 @@
+[package]
+name = "linget-backend-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core package management types for LinGet"
+authors = ["LinGet Contributors"]
+license = "GPL-3.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+humansize = "2"
+semver = "1"
