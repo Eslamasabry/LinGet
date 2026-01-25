@@ -1,0 +1,13 @@
+pub mod backup;
+pub mod check;
+pub mod completions;
+pub mod ignore;
+pub mod info;
+pub mod install;
+pub mod list;
+pub mod permissions;
+pub mod providers;
+pub mod remove;
+pub mod search;
+pub mod sources;
+pub mod update;

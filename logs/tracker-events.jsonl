@@ -1,0 +1,38 @@
+{"type":"tracker:sync-start","timestamp":"2026-01-25T19:55:10.666Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T19:55:10.773Z","tracker":"beads","success":true,"durationMs":107,"message":"Beads synced with git"}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T19:55:10.844Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T19:55:10.905Z","tracker":"beads","success":true,"durationMs":61,"message":"Beads synced with git"}
+{"type":"iteration:started","timestamp":"2026-01-25T19:55:52.028Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm"}
+{"type":"iteration:completed","timestamp":"2026-01-25T19:55:59.907Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm","status":"failed","durationMs":7856,"taskCompleted":false}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:04:18.515Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:04:18.581Z","tracker":"beads","success":true,"durationMs":66,"message":"Beads synced with git"}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:04:18.652Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:04:18.714Z","tracker":"beads","success":true,"durationMs":62,"message":"Beads synced with git"}
+{"type":"iteration:started","timestamp":"2026-01-25T20:04:40.365Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm"}
+{"type":"iteration:completed","timestamp":"2026-01-25T20:04:42.123Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm","status":"failed","durationMs":1752,"taskCompleted":false}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:08:41.141Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:08:41.212Z","tracker":"beads","success":true,"durationMs":71,"message":"Beads synced with git"}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:08:41.286Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:08:41.348Z","tracker":"beads","success":true,"durationMs":62,"message":"Beads synced with git"}
+{"type":"iteration:started","timestamp":"2026-01-25T20:09:01.860Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm"}
+{"type":"iteration:completed","timestamp":"2026-01-25T20:09:03.474Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm","status":"failed","durationMs":1610,"taskCompleted":false}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:11:29.249Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:11:29.310Z","tracker":"beads","success":true,"durationMs":61,"message":"Beads synced with git"}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:11:29.387Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:11:29.449Z","tracker":"beads","success":true,"durationMs":62,"message":"Beads synced with git"}
+{"type":"iteration:started","timestamp":"2026-01-25T20:11:49.820Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm"}
+{"type":"iteration:completed","timestamp":"2026-01-25T20:11:50.759Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm","status":"completed","durationMs":932,"taskCompleted":false}
+{"type":"iteration:started","timestamp":"2026-01-25T20:11:51.212Z","tracker":"beads","iteration":2,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm"}
+{"type":"iteration:completed","timestamp":"2026-01-25T20:11:52.086Z","tracker":"beads","iteration":2,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm","status":"completed","durationMs":873,"taskCompleted":false}
+{"type":"iteration:started","timestamp":"2026-01-25T20:11:52.560Z","tracker":"beads","iteration":3,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm"}
+{"type":"iteration:completed","timestamp":"2026-01-25T20:11:53.398Z","tracker":"beads","iteration":3,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm","status":"completed","durationMs":837,"taskCompleted":false}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:12:21.854Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:12:21.915Z","tracker":"beads","success":true,"durationMs":61,"message":"Beads synced with git"}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:12:21.994Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:12:22.057Z","tracker":"beads","success":true,"durationMs":63,"message":"Beads synced with git"}
+{"type":"iteration:started","timestamp":"2026-01-25T20:12:43.075Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm"}
+{"type":"iteration:completed","timestamp":"2026-01-25T20:21:14.554Z","tracker":"beads","iteration":1,"taskId":"LinGet-0tb.1","taskTitle":"US-001: Introduce a cohesive visual theme and layout rhythm","status":"failed","durationMs":511473,"taskCompleted":false}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:21:27.219Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:21:27.299Z","tracker":"beads","success":true,"durationMs":80,"message":"Beads synced with git"}
+{"type":"tracker:sync-start","timestamp":"2026-01-25T20:21:27.379Z","tracker":"beads","epicId":"LinGet-0tb","workingDir":"/home/eslam/Storage/Code/LinGet"}
+{"type":"tracker:sync-complete","timestamp":"2026-01-25T20:21:27.449Z","tracker":"beads","success":true,"durationMs":70,"message":"Beads synced with git"}

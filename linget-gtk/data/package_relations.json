@@ -1,0 +1,212 @@
+{
+  "relations": [
+    {
+      "trigger": ["docker", "docker.io", "docker-ce"],
+      "recommendations": [
+        {"name": "lazydocker", "description": "Terminal UI for Docker", "category": "container"},
+        {"name": "dive", "description": "Explore Docker image layers", "category": "container"},
+        {"name": "ctop", "description": "Container metrics and monitoring", "category": "container"},
+        {"name": "docker-compose", "description": "Multi-container orchestration", "category": "container"}
+      ]
+    },
+    {
+      "trigger": ["kubernetes", "kubectl", "k8s"],
+      "recommendations": [
+        {"name": "k9s", "description": "Terminal UI for Kubernetes", "category": "container"},
+        {"name": "helm", "description": "Kubernetes package manager", "category": "container"},
+        {"name": "kubectx", "description": "Switch between contexts easily", "category": "container"},
+        {"name": "stern", "description": "Multi-pod log tailing", "category": "container"}
+      ]
+    },
+    {
+      "trigger": ["neovim", "nvim"],
+      "recommendations": [
+        {"name": "ripgrep", "description": "Fast recursive grep", "category": "cli"},
+        {"name": "fzf", "description": "Fuzzy finder for terminal", "category": "cli"},
+        {"name": "fd", "description": "Fast alternative to find", "category": "cli"},
+        {"name": "bat", "description": "Cat clone with syntax highlighting", "category": "cli"},
+        {"name": "tree-sitter", "description": "Parser generator for syntax", "category": "dev"}
+      ]
+    },
+    {
+      "trigger": ["vim"],
+      "recommendations": [
+        {"name": "neovim", "description": "Modern Vim fork with Lua", "category": "editor"},
+        {"name": "ripgrep", "description": "Fast recursive grep", "category": "cli"},
+        {"name": "fzf", "description": "Fuzzy finder for terminal", "category": "cli"}
+      ]
+    },
+    {
+      "trigger": ["python3", "python"],
+      "recommendations": [
+        {"name": "ipython", "description": "Interactive Python shell", "category": "dev"},
+        {"name": "black", "description": "Python code formatter", "category": "dev"},
+        {"name": "mypy", "description": "Static type checker", "category": "dev"},
+        {"name": "ruff", "description": "Fast Python linter", "category": "dev"},
+        {"name": "poetry", "description": "Python dependency manager", "category": "dev"}
+      ]
+    },
+    {
+      "trigger": ["nodejs", "node", "npm"],
+      "recommendations": [
+        {"name": "pnpm", "description": "Fast, disk-efficient package manager", "category": "dev"},
+        {"name": "yarn", "description": "Alternative package manager", "category": "dev"},
+        {"name": "fnm", "description": "Fast Node.js version manager", "category": "dev"},
+        {"name": "esbuild", "description": "Extremely fast bundler", "category": "dev"}
+      ]
+    },
+    {
+      "trigger": ["rust", "rustc", "cargo"],
+      "recommendations": [
+        {"name": "cargo-watch", "description": "Watch and rebuild on changes", "category": "dev"},
+        {"name": "cargo-edit", "description": "Add/remove deps from CLI", "category": "dev"},
+        {"name": "sccache", "description": "Shared compilation cache", "category": "dev"},
+        {"name": "bacon", "description": "Background Rust code checker", "category": "dev"}
+      ]
+    },
+    {
+      "trigger": ["go", "golang"],
+      "recommendations": [
+        {"name": "golangci-lint", "description": "Fast Go linter", "category": "dev"},
+        {"name": "air", "description": "Live reload for Go apps", "category": "dev"},
+        {"name": "delve", "description": "Go debugger", "category": "dev"}
+      ]
+    },
+    {
+      "trigger": ["git"],
+      "recommendations": [
+        {"name": "lazygit", "description": "Terminal UI for Git", "category": "dev"},
+        {"name": "gh", "description": "GitHub CLI", "category": "dev"},
+        {"name": "git-delta", "description": "Better diff viewer", "category": "dev"},
+        {"name": "tig", "description": "Text-mode Git interface", "category": "dev"}
+      ]
+    },
+    {
+      "trigger": ["tmux"],
+      "recommendations": [
+        {"name": "zellij", "description": "Modern terminal multiplexer", "category": "cli"},
+        {"name": "tpm", "description": "Tmux plugin manager", "category": "cli"}
+      ]
+    },
+    {
+      "trigger": ["zsh"],
+      "recommendations": [
+        {"name": "starship", "description": "Minimal, fast shell prompt", "category": "cli"},
+        {"name": "zoxide", "description": "Smarter cd command", "category": "cli"},
+        {"name": "atuin", "description": "Magical shell history", "category": "cli"}
+      ]
+    },
+    {
+      "trigger": ["bash"],
+      "recommendations": [
+        {"name": "zsh", "description": "Powerful shell with plugins", "category": "cli"},
+        {"name": "fish", "description": "User-friendly shell", "category": "cli"},
+        {"name": "starship", "description": "Minimal, fast shell prompt", "category": "cli"}
+      ]
+    },
+    {
+      "trigger": ["firefox", "firefox-esr"],
+      "recommendations": [
+        {"name": "chromium", "description": "Open-source Chrome browser", "category": "browser"},
+        {"name": "librewolf", "description": "Privacy-focused Firefox fork", "category": "browser"}
+      ]
+    },
+    {
+      "trigger": ["code", "vscode", "visual-studio-code"],
+      "recommendations": [
+        {"name": "neovim", "description": "Fast, extensible editor", "category": "editor"},
+        {"name": "zed", "description": "High-performance editor", "category": "editor"},
+        {"name": "helix", "description": "Post-modern modal editor", "category": "editor"}
+      ]
+    },
+    {
+      "trigger": ["ffmpeg"],
+      "recommendations": [
+        {"name": "yt-dlp", "description": "Download videos from YouTube", "category": "media"},
+        {"name": "handbrake", "description": "Video transcoder", "category": "media"},
+        {"name": "mpv", "description": "Lightweight media player", "category": "media"}
+      ]
+    },
+    {
+      "trigger": ["htop"],
+      "recommendations": [
+        {"name": "btop", "description": "Beautiful resource monitor", "category": "system"},
+        {"name": "bottom", "description": "Graphical process viewer", "category": "system"},
+        {"name": "glances", "description": "System monitoring tool", "category": "system"}
+      ]
+    },
+    {
+      "trigger": ["postgresql", "postgres"],
+      "recommendations": [
+        {"name": "pgcli", "description": "Postgres CLI with autocomplete", "category": "database"},
+        {"name": "pgadmin4", "description": "PostgreSQL admin GUI", "category": "database"},
+        {"name": "dbeaver", "description": "Universal database tool", "category": "database"}
+      ]
+    },
+    {
+      "trigger": ["mysql", "mariadb"],
+      "recommendations": [
+        {"name": "mycli", "description": "MySQL CLI with autocomplete", "category": "database"},
+        {"name": "dbeaver", "description": "Universal database tool", "category": "database"}
+      ]
+    },
+    {
+      "trigger": ["redis"],
+      "recommendations": [
+        {"name": "redis-tools", "description": "Redis CLI utilities", "category": "database"},
+        {"name": "iredis", "description": "Interactive Redis CLI", "category": "database"}
+      ]
+    },
+    {
+      "trigger": ["curl"],
+      "recommendations": [
+        {"name": "httpie", "description": "User-friendly HTTP client", "category": "cli"},
+        {"name": "xh", "description": "Fast HTTPie alternative", "category": "cli"},
+        {"name": "jq", "description": "JSON processor for CLI", "category": "cli"}
+      ]
+    },
+    {
+      "trigger": ["ssh", "openssh"],
+      "recommendations": [
+        {"name": "mosh", "description": "Mobile-friendly SSH", "category": "network"},
+        {"name": "sshfs", "description": "Mount remote dirs via SSH", "category": "network"},
+        {"name": "autossh", "description": "Auto-reconnecting SSH", "category": "network"}
+      ]
+    },
+    {
+      "trigger": ["gimp"],
+      "recommendations": [
+        {"name": "inkscape", "description": "Vector graphics editor", "category": "graphics"},
+        {"name": "krita", "description": "Digital painting app", "category": "graphics"},
+        {"name": "darktable", "description": "Photo workflow software", "category": "graphics"}
+      ]
+    },
+    {
+      "trigger": ["blender"],
+      "recommendations": [
+        {"name": "freecad", "description": "Parametric 3D CAD modeler", "category": "graphics"},
+        {"name": "openscad", "description": "Programmable CAD modeler", "category": "graphics"}
+      ]
+    },
+    {
+      "trigger": ["obs-studio", "obs"],
+      "recommendations": [
+        {"name": "kdenlive", "description": "Video editing software", "category": "media"},
+        {"name": "audacity", "description": "Audio editor", "category": "media"},
+        {"name": "shotcut", "description": "Cross-platform video editor", "category": "media"}
+      ]
+    }
+  ],
+  "categories": {
+    "container": {"icon": "application-x-container-symbolic", "label": "Container Tools"},
+    "cli": {"icon": "utilities-terminal-symbolic", "label": "CLI Tools"},
+    "dev": {"icon": "applications-development-symbolic", "label": "Development"},
+    "editor": {"icon": "text-editor-symbolic", "label": "Editors"},
+    "browser": {"icon": "web-browser-symbolic", "label": "Browsers"},
+    "media": {"icon": "applications-multimedia-symbolic", "label": "Media"},
+    "system": {"icon": "utilities-system-monitor-symbolic", "label": "System"},
+    "database": {"icon": "application-x-database-symbolic", "label": "Database"},
+    "network": {"icon": "network-workgroup-symbolic", "label": "Network"},
+    "graphics": {"icon": "applications-graphics-symbolic", "label": "Graphics"}
+  }
+}

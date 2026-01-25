@@ -24,3 +24,7 @@
 data/icons/hicolor/icon-theme.cache
 # Experiment targets
 experiments/*/target/
+.rustup
+.cargo
+linget-gtk
+logs

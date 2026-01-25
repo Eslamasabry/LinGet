@@ -1,0 +1,9 @@
+{"type":"parallel:started","timestamp":"2026-01-25T19:55:51.848Z","workerCount":5}
+{"type":"parallel:started","timestamp":"2026-01-25T20:04:40.155Z","workerCount":5}
+{"type":"parallel:stopped","timestamp":"2026-01-25T20:04:58.327Z"}
+{"type":"parallel:started","timestamp":"2026-01-25T20:09:01.696Z","workerCount":5}
+{"type":"parallel:stopped","timestamp":"2026-01-25T20:09:54.596Z"}
+{"type":"parallel:started","timestamp":"2026-01-25T20:11:49.665Z","workerCount":5}
+{"type":"parallel:stopped","timestamp":"2026-01-25T20:12:05.636Z"}
+{"type":"parallel:started","timestamp":"2026-01-25T20:12:42.925Z","workerCount":5}
+{"type":"parallel:stopped","timestamp":"2026-01-25T20:21:14.611Z"}

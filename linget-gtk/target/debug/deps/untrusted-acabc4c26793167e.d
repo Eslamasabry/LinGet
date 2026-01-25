@@ -1,0 +1,8 @@
+/home/eslam/Storage/Code/LinGet/linget-gtk/target/debug/deps/untrusted-acabc4c26793167e.d: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/input.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/no_panic.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/reader.rs
+
+/home/eslam/Storage/Code/LinGet/linget-gtk/target/debug/deps/libuntrusted-acabc4c26793167e.rmeta: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/input.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/no_panic.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/reader.rs
+
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/lib.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/input.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/no_panic.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0/src/reader.rs:

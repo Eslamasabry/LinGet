@@ -1,0 +1,12 @@
+/home/eslam/Storage/Code/LinGet/linget-gtk/target/debug/deps/tinystr-43b75567c7a54f46.d: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/macros.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/ascii.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/asciibyte.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/error.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/int_ops.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/unvalidated.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/ule.rs
+
+/home/eslam/Storage/Code/LinGet/linget-gtk/target/debug/deps/libtinystr-43b75567c7a54f46.rmeta: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/macros.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/ascii.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/asciibyte.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/error.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/int_ops.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/unvalidated.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/ule.rs
+
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/lib.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/macros.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/ascii.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/asciibyte.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/error.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/int_ops.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/unvalidated.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.2/src/ule.rs:

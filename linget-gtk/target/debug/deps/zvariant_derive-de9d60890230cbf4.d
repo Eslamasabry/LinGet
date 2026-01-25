@@ -1,0 +1,11 @@
+/home/eslam/Storage/Code/LinGet/linget-gtk/target/debug/deps/zvariant_derive-de9d60890230cbf4.d: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/dict.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/signature.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/type.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/utils.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/value.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/../README.md
+
+/home/eslam/Storage/Code/LinGet/linget-gtk/target/debug/deps/libzvariant_derive-de9d60890230cbf4.so: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/dict.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/signature.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/type.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/utils.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/value.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/../README.md
+
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/lib.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/dict.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/signature.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/type.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/utils.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/value.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.9.1/src/../README.md:

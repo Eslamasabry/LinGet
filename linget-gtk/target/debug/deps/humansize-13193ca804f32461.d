@@ -1,0 +1,12 @@
+/home/eslam/Storage/Code/LinGet/linget-gtk/target/debug/deps/humansize-13193ca804f32461.d: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/options/mod.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/options/defaults.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/numeric_traits.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/scales.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/utils.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/allocating.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/formatters.rs
+
+/home/eslam/Storage/Code/LinGet/linget-gtk/target/debug/deps/libhumansize-13193ca804f32461.rmeta: /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/lib.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/options/mod.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/options/defaults.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/numeric_traits.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/scales.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/utils.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/allocating.rs /home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/formatters.rs
+
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/lib.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/options/mod.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/options/defaults.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/numeric_traits.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/scales.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/utils.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/allocating.rs:
+/home/eslam/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/humansize-2.1.3/src/formatters.rs:
