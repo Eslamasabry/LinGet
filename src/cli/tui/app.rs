@@ -74,7 +74,6 @@ impl App {
             should_quit: false,
             show_updates_only: false,
             load_rx: None,
-            console_buffer: Vec::new(),
             pending_action: None,
         }
     }
@@ -471,39 +470,59 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
             let action = app.pending_action.take();
             match action {
                 Some(PendingAction::Install(pkg)) => {
-                    let manager = app.pm.lock().await;
-                    match manager.install(&pkg).await {
+                    app.append_to_console(format!("Installing {}...", pkg.name));
+                    let result = {
+                        let manager = app.pm.lock().await;
+                        manager.install(&pkg).await
+                    };
+                    match result {
                         Ok(_) => {
+                            app.append_to_console(format!("Installed {}", pkg.name));
                             app.status_message = format!("Success: {}", pkg.name);
                         }
                         Err(e) => {
+                            app.append_to_console(format!("Failed to install {}: {}", pkg.name, e));
                             app.status_message = format!("Error: {}", e);
                         }
                     }
                 }
                 Some(PendingAction::Remove(pkg)) => {
-                    let manager = app.pm.lock().await;
-                    match manager.remove(&pkg).await {
+                    app.append_to_console(format!("Removing {}...", pkg.name));
+                    let result = {
+                        let manager = app.pm.lock().await;
+                        manager.remove(&pkg).await
+                    };
+                    match result {
                         Ok(_) => {
+                            app.append_to_console(format!("Removed {}", pkg.name));
                             app.status_message = format!("Success: {}", pkg.name);
                         }
                         Err(e) => {
+                            app.append_to_console(format!("Failed to remove {}: {}", pkg.name, e));
                             app.status_message = format!("Error: {}", e);
                         }
                     }
                 }
                 Some(PendingAction::UpdateAll(packages)) => {
-                    let manager = app.pm.lock().await;
+                    app.append_to_console(format!("Updating {} packages...", packages.len()));
                     let mut ok_count = 0;
                     let mut failed_count = 0;
 
                     for pkg in packages {
-                        match manager.update(&pkg).await {
+                        let result = {
+                            let manager = app.pm.lock().await;
+                            manager.update(&pkg).await
+                        };
+                        match result {
                             Ok(_) => ok_count += 1,
                             Err(_) => failed_count += 1,
                         }
                     }
 
+                    app.append_to_console(format!(
+                        "Update complete: {} ok, {} failed",
+                        ok_count, failed_count
+                    ));
                     if failed_count == 0 {
                         app.status_message = format!("Updated {} packages", ok_count);
                     } else {
