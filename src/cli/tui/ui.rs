@@ -402,10 +402,15 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let available_height = area.height.saturating_sub(2) as usize;
+    let total_lines = app.console_buffer.len();
+    let start_index = total_lines.saturating_sub(available_height);
+
     let lines: Vec<Line> = app
         .console_buffer
         .iter()
-        .take((area.height.saturating_sub(2)) as usize)
+        .skip(start_index)
+        .take(available_height)
         .map(|s| Line::from(Span::styled(s, panel())))
         .collect();
 
