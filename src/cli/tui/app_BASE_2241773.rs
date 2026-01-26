@@ -7,7 +7,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -43,13 +42,11 @@ pub struct App {
     pub should_quit: bool,
     pub show_updates_only: bool,
     pub load_rx: Option<mpsc::Receiver<Result<Vec<Package>, String>>>,
-    pub console_buffer: VecDeque<String>,
-    pub console_scroll: usize,
 }
 
 impl App {
     pub fn new(pm: Arc<Mutex<PackageManager>>) -> Self {
-        let mut app = Self {
+        Self {
             pm,
             packages: Vec::new(),
             filtered_packages: Vec::new(),
@@ -65,19 +62,7 @@ impl App {
             should_quit: false,
             show_updates_only: false,
             load_rx: None,
-            console_buffer: VecDeque::with_capacity(100),
-            console_scroll: 0,
-        };
-        app.push_console_message("LinGet started");
-        app
-    }
-
-    pub fn push_console_message(&mut self, message: &str) {
-        self.console_buffer.push_back(message.to_string());
-        if self.console_buffer.len() > 100 {
-            self.console_buffer.pop_front();
         }
-        self.console_scroll = self.console_buffer.len().saturating_sub(1).max(0);
     }
 
     pub async fn load_sources(&mut self) {
@@ -90,13 +75,11 @@ impl App {
     /// Start loading packages in the background (non-blocking)
     pub fn start_loading(&mut self) {
         self.loading = true;
-        let msg = if self.show_updates_only {
+        self.status_message = if self.show_updates_only {
             String::from("Checking for updates...")
         } else {
             String::from("Loading packages...")
         };
-        self.status_message = msg.clone();
-        self.push_console_message(&msg);
 
         let (tx, rx) = mpsc::channel(1);
         self.load_rx = Some(rx);
@@ -125,20 +108,16 @@ impl App {
                 Ok(Ok(packages)) => {
                     self.packages = packages;
                     self.filter_packages();
-                    let msg = if self.show_updates_only {
+                    self.status_message = if self.show_updates_only {
                         format!("{} updates available", self.filtered_packages.len())
                     } else {
                         format!("Loaded {} packages", self.filtered_packages.len())
                     };
-                    self.status_message = msg.clone();
-                    self.push_console_message(&msg);
                     self.loading = false;
                     self.load_rx = None;
                 }
                 Ok(Err(e)) => {
-                    let msg = format!("Error: {}", e);
-                    self.status_message = msg.clone();
-                    self.push_console_message(&msg);
+                    self.status_message = format!("Error: {}", e);
                     self.loading = false;
                     self.load_rx = None;
                 }
@@ -157,9 +136,7 @@ impl App {
     /// Blocking load for initial startup
     pub async fn load_packages(&mut self) {
         self.loading = true;
-        let msg = String::from("Loading packages...");
-        self.status_message = msg.clone();
-        self.push_console_message(&msg);
+        self.status_message = String::from("Loading packages...");
 
         let result = {
             let manager = self.pm.lock().await;
@@ -174,14 +151,10 @@ impl App {
             Ok(packages) => {
                 self.packages = packages;
                 self.filter_packages();
-                let msg = format!("Loaded {} packages", self.filtered_packages.len());
-                self.status_message = msg.clone();
-                self.push_console_message(&msg);
+                self.status_message = format!("Loaded {} packages", self.filtered_packages.len());
             }
             Err(e) => {
-                let msg = format!("Error: {}", e);
-                self.status_message = msg.clone();
-                self.push_console_message(&msg);
+                self.status_message = format!("Error: {}", e);
             }
         }
 
@@ -353,7 +326,6 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             app.status_message = String::from(
                 "j/k:nav | Tab:switch panel | Enter:select | /: search | u:updates | r:refresh | i:install | x:remove | q:quit"
             );
-            app.push_console_message("Help displayed");
         }
         KeyCode::Tab => {
             app.active_panel = match app.active_panel {
@@ -388,7 +360,6 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             app.search_query.clear();
             app.status_message =
                 String::from("Search: type query, Enter to confirm, Esc to cancel");
-            app.push_console_message("Search mode activated");
         }
         KeyCode::Char('u') => {
             app.show_updates_only = !app.show_updates_only;
@@ -398,29 +369,23 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             app.start_loading();
         }
         KeyCode::Char('i') => {
-            if let Some(pkg) = app.selected_package().cloned() {
-                let msg = format!("Install {}? (y/n)", pkg.name);
-                app.status_message = msg;
-                app.push_console_message(&format!("Install {} requested", pkg.name));
+            if let Some(pkg) = app.selected_package() {
+                app.status_message = format!("Install {}? (y/n)", pkg.name);
                 app.mode = AppMode::Confirm;
             }
         }
         KeyCode::Char('x') => {
-            if let Some(pkg) = app.selected_package().cloned() {
-                let msg = format!("Remove {}? (y/n)", pkg.name);
-                app.status_message = msg;
-                app.push_console_message(&format!("Remove {} requested", pkg.name));
+            if let Some(pkg) = app.selected_package() {
+                app.status_message = format!("Remove {}? (y/n)", pkg.name);
                 app.mode = AppMode::Confirm;
             }
         }
         KeyCode::Enter => {
-            if let Some(pkg) = app.selected_package().cloned() {
-                let msg = format!(
+            if let Some(pkg) = app.selected_package() {
+                app.status_message = format!(
                     "{} v{} ({:?}) - {}",
                     pkg.name, pkg.version, pkg.source, pkg.description
                 );
-                app.status_message = msg;
-                app.push_console_message(&format!("Viewed package: {}", pkg.name));
             }
         }
         _ => {}
@@ -434,18 +399,15 @@ fn handle_search_mode(app: &mut App, key: KeyCode) {
             app.search_query.clear();
             app.filter_packages();
             app.status_message = String::from("Search cancelled");
-            app.push_console_message("Search cancelled");
         }
         KeyCode::Enter => {
             app.mode = AppMode::Normal;
             app.filter_packages();
-            let msg = format!(
+            app.status_message = format!(
                 "Found {} packages matching '{}'",
                 app.filtered_packages.len(),
                 app.search_query
             );
-            app.status_message = msg.clone();
-            app.push_console_message(&msg);
         }
         KeyCode::Backspace => {
             app.search_query.pop();
@@ -464,28 +426,18 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             if let Some(pkg) = app.selected_package().cloned() {
                 let manager = app.pm.lock().await;
-                let is_install = app.status_message.starts_with("Install");
-                let result = if is_install {
+                let result = if app.status_message.starts_with("Install") {
                     manager.install(&pkg).await
                 } else {
                     manager.remove(&pkg).await
                 };
-                drop(manager);
 
                 match result {
                     Ok(_) => {
-                        let msg = format!("Success: {}", pkg.name);
-                        app.status_message = msg.clone();
-                        app.push_console_message(&format!(
-                            "{} {}: success",
-                            if is_install { "Installed" } else { "Removed" },
-                            pkg.name
-                        ));
+                        app.status_message = format!("Success: {}", pkg.name);
                     }
                     Err(e) => {
-                        let msg = format!("Error: {}", e);
-                        app.status_message = msg.clone();
-                        app.push_console_message(&msg);
+                        app.status_message = format!("Error: {}", e);
                     }
                 }
             }
@@ -494,7 +446,6 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             app.mode = AppMode::Normal;
             app.status_message = String::from("Cancelled");
-            app.push_console_message("Action cancelled");
         }
         _ => {}
     }

@@ -13,19 +13,17 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(6),
-            Constraint::Length(1),
-            Constraint::Length(3),
+            Constraint::Length(3), // Title bar
+            Constraint::Min(10),   // Main content
+            Constraint::Length(1), // Commands bar
+            Constraint::Length(3), // Status bar
         ])
         .split(f.area());
 
     draw_title_bar(f, app, chunks[0]);
     draw_main_content(f, app, chunks[1]);
-    draw_console_panel(f, app, chunks[2]);
-    draw_commands_bar(f, app, chunks[3]);
-    draw_status_bar(f, app, chunks[4]);
+    draw_commands_bar(f, app, chunks[2]);
+    draw_status_bar(f, app, chunks[3]);
 
     // Draw search popup if in search mode
     if app.mode == AppMode::Search {
@@ -224,30 +222,6 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .row_highlight_style(selection_focused());
 
     f.render_widget(table, area);
-}
-
-fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_inactive())
-        .title(" Console ")
-        .title_style(panel_title());
-
-    if app.console_buffer.is_empty() {
-        let empty = Paragraph::new("No console output").style(dim());
-        f.render_widget(empty.block(block), area);
-        return;
-    }
-
-    let lines: Vec<Line> = app
-        .console_buffer
-        .iter()
-        .map(|msg| Line::from(msg.clone()))
-        .collect();
-
-    let paragraph = Paragraph::new(lines).block(block).style(console_text());
-
-    f.render_widget(paragraph, area);
 }
 
 fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {

@@ -123,3 +123,7 @@ pub fn mode_search() -> Style {
 pub fn mode_confirm() -> Style {
     Style::default().fg(palette::RED)
 }
+
+pub fn console_text() -> Style {
+    Style::default().fg(palette::WHITE)
+}

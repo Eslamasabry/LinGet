@@ -18,6 +18,7 @@ use super::ui;
 pub enum ActivePanel {
     Sources,
     Packages,
+    Details,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,8 +44,12 @@ pub struct App {
     pub should_quit: bool,
     pub show_updates_only: bool,
     pub load_rx: Option<mpsc::Receiver<Result<Vec<Package>, String>>>,
+<<<<<<< HEAD
+    pub pending_updates: Vec<Package>,
+=======
     pub console_buffer: VecDeque<String>,
     pub console_scroll: usize,
+>>>>>>> 9e23f0c (LinGet-nge.3: LinGet-nge.3 - US-003: Add console view for recent status/output)
 }
 
 impl App {
@@ -65,6 +70,9 @@ impl App {
             should_quit: false,
             show_updates_only: false,
             load_rx: None,
+<<<<<<< HEAD
+            pending_updates: Vec::new(),
+=======
             console_buffer: VecDeque::with_capacity(100),
             console_scroll: 0,
         };
@@ -76,6 +84,7 @@ impl App {
         self.console_buffer.push_back(message.to_string());
         if self.console_buffer.len() > 100 {
             self.console_buffer.pop_front();
+>>>>>>> 9e23f0c (LinGet-nge.3: LinGet-nge.3 - US-003: Add console view for recent status/output)
         }
         self.console_scroll = self.console_buffer.len().saturating_sub(1).max(0);
     }
@@ -275,6 +284,37 @@ impl App {
     pub fn page_up(&mut self) {
         self.package_index = self.package_index.saturating_sub(10);
     }
+
+    pub async fn execute_update_all(&mut self) {
+        if self.pending_updates.is_empty() {
+            return;
+        }
+
+        let total = self.pending_updates.len();
+        let mut success_count = 0;
+        let mut failed_count = 0;
+
+        for (i, pkg) in self.pending_updates.iter().enumerate() {
+            self.status_message = format!("Updating {}/{}: {}", i + 1, total, pkg.name);
+
+            match self.pm.lock().await.update(pkg).await {
+                Ok(_) => {
+                    success_count += 1;
+                }
+                Err(e) => {
+                    failed_count += 1;
+                    tracing::error!("Failed to update {}: {}", pkg.name, e);
+                }
+            }
+        }
+
+        self.status_message = format!(
+            "Update complete: {} succeeded, {} failed",
+            success_count, failed_count
+        );
+        self.pending_updates.clear();
+        self.start_loading();
+    }
 }
 
 pub async fn run() -> Result<()> {
@@ -351,23 +391,26 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('h') => {
             app.status_message = String::from(
-                "j/k:nav | Tab:switch panel | Enter:select | /: search | u:updates | r:refresh | i:install | x:remove | q:quit"
+                "j/k:nav | Tab:switch | Enter:select | /:search | u:updates | r:refresh | i:install | x:remove | U:update-all | q:quit"
             );
             app.push_console_message("Help displayed");
         }
         KeyCode::Tab => {
             app.active_panel = match app.active_panel {
                 ActivePanel::Sources => ActivePanel::Packages,
-                ActivePanel::Packages => ActivePanel::Sources,
+                ActivePanel::Packages => ActivePanel::Details,
+                ActivePanel::Details => ActivePanel::Sources,
             };
         }
         KeyCode::Char('j') | KeyCode::Down => match app.active_panel {
             ActivePanel::Sources => app.next_source(),
             ActivePanel::Packages => app.next_package(),
+            ActivePanel::Details => app.next_package(),
         },
         KeyCode::Char('k') | KeyCode::Up => match app.active_panel {
             ActivePanel::Sources => app.prev_source(),
             ActivePanel::Packages => app.prev_package(),
+            ActivePanel::Details => app.prev_package(),
         },
         KeyCode::Char('g') | KeyCode::Home => {
             app.package_index = 0;
@@ -410,6 +453,28 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 let msg = format!("Remove {}? (y/n)", pkg.name);
                 app.status_message = msg;
                 app.push_console_message(&format!("Remove {} requested", pkg.name));
+                app.mode = AppMode::Confirm;
+            }
+        }
+        KeyCode::Char('U') => {
+            let updates: Vec<Package> = app
+                .packages
+                .iter()
+                .filter(|p| {
+                    use crate::models::PackageStatus;
+                    p.status == PackageStatus::UpdateAvailable
+                })
+                .cloned()
+                .collect();
+
+            if updates.is_empty() {
+                app.status_message = String::from("No updates available");
+            } else {
+                app.pending_updates = updates;
+                app.status_message = format!(
+                    "Update all {} packages? (y/n)",
+                    app.pending_updates.len()
+                );
                 app.mode = AppMode::Confirm;
             }
         }
@@ -462,7 +527,12 @@ fn handle_search_mode(app: &mut App, key: KeyCode) {
 async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            if let Some(pkg) = app.selected_package().cloned() {
+            if !app.pending_updates.is_empty() && app.status_message.contains("Update all") {
+                let count = app.pending_updates.len();
+                app.status_message = format!("Updating {} packages...", count);
+                app.mode = AppMode::Normal;
+                app.execute_update_all().await;
+            } else if let Some(pkg) = app.selected_package().cloned() {
                 let manager = app.pm.lock().await;
                 let is_install = app.status_message.starts_with("Install");
                 let result = if is_install {
@@ -488,10 +558,13 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                         app.push_console_message(&msg);
                     }
                 }
+                app.mode = AppMode::Normal;
             }
-            app.mode = AppMode::Normal;
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            if !app.pending_updates.is_empty() && app.status_message.contains("Update all") {
+                app.pending_updates.clear();
+            }
             app.mode = AppMode::Normal;
             app.status_message = String::from("Cancelled");
             app.push_console_message("Action cancelled");
