@@ -15,6 +15,8 @@ use tokio::sync::{mpsc, Mutex};
 use super::ui;
 
 const MAX_CONSOLE_LINES: usize = 100;
+const COMPACT_WIDTH: u16 = 100;
+const COMPACT_HEIGHT: u16 = 28;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivePanel {
@@ -359,6 +361,9 @@ async fn run_app(
     app: &mut App,
 ) -> Result<()> {
     loop {
+        let size = terminal.size()?;
+        app.compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
+
         // Check for completed background loading
         app.poll_loading();
 
@@ -400,7 +405,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 "Help displayed - keyboard shortcuts available",
             ));
             app.status_message = String::from(
-                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:update all | r:refresh | i:install | x:remove | q:quit"
+                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:update all (filtered) | r:refresh | i:install | x:remove | q:quit"
             );
         }
         KeyCode::Tab => {

@@ -11,14 +11,15 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 pub fn draw(f: &mut Frame, app: &App) {
+    let console_height = if app.compact { 3 } else { 6 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Title bar
-            Constraint::Min(10),   // Main content
-            Constraint::Length(6), // Console panel
-            Constraint::Length(1), // Commands bar
-            Constraint::Length(3), // Status bar
+            Constraint::Length(3),                             // Title bar
+            Constraint::Min(if app.compact { 8 } else { 10 }), // Main content
+            Constraint::Length(console_height),                // Console panel
+            Constraint::Length(1),                             // Commands bar
+            Constraint::Length(3),                             // Status bar
         ])
         .split(f.area());
 
@@ -28,9 +29,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_commands_bar(f, app, chunks[3]);
     draw_status_bar(f, app, chunks[4]);
 
-    // Draw search popup if in search mode
     if app.mode == AppMode::Search {
         draw_search_popup(f, app);
+    }
+    if app.mode == AppMode::Confirm {
+        draw_confirm_popup(f, app);
     }
 }
 
@@ -82,9 +85,9 @@ fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(12),
-                Constraint::Min(15),
-                Constraint::Length(15),
+                Constraint::Percentage(30),
+                Constraint::Percentage(40),
+                Constraint::Percentage(30),
             ])
             .split(area);
 
@@ -177,7 +180,7 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         });
 
     if app.loading {
-        let loading = Paragraph::new("Loading...")
+        let loading = Paragraph::new("Loading packages...")
             .block(block)
             .style(status_loading());
         f.render_widget(loading, area);
@@ -185,7 +188,7 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
     }
 
     if app.filtered_packages.is_empty() {
-        let empty = Paragraph::new("No packages found")
+        let empty = Paragraph::new("No packages found (use / to search)")
             .block(block)
             .style(dim());
         f.render_widget(empty, area);
@@ -271,7 +274,7 @@ fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
         });
 
     if app.loading {
-        let loading = Paragraph::new("Loading...")
+        let loading = Paragraph::new("Loading details...")
             .block(block)
             .style(status_loading());
         f.render_widget(loading, area);
@@ -517,7 +520,7 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
         .title_style(panel_title());
 
     if app.console_buffer.is_empty() {
-        let empty = Paragraph::new("No recent actions")
+        let empty = Paragraph::new("No recent actions yet")
             .block(block)
             .style(dim());
         f.render_widget(empty, area);
@@ -560,7 +563,7 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(updates_label, description()),
                     Span::styled("│", separator()),
                     Span::styled(" U", key_hint()),
-                    Span::styled("upd", description()),
+                    Span::styled("updF", description()),
                     Span::styled("│", separator()),
                     Span::styled(" r", key_hint()),
                     Span::styled("ref", description()),
@@ -680,7 +683,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_search_popup(f: &mut Frame, app: &App) {
-    let area = centered_rect(50, 3, f.area());
+    let area = centered_rect(60, 5, f.area());
 
     f.render_widget(Clear, area);
 
@@ -691,8 +694,40 @@ fn draw_search_popup(f: &mut Frame, app: &App) {
         .title_style(panel_title_active());
 
     let search_text = format!("{}▏", app.search_query);
-    let paragraph = Paragraph::new(search_text).block(block).style(panel());
+    let lines = vec![
+        Line::from(vec![Span::styled("Query:", label())]),
+        Line::from(vec![Span::styled(search_text, panel())]),
+    ];
+    let paragraph = Paragraph::new(lines).block(block).style(panel());
 
+    f.render_widget(paragraph, area);
+}
+
+fn draw_confirm_popup(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 5, f.area());
+
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_active())
+        .title(" Confirm ")
+        .title_style(panel_title_active());
+
+    let lines = vec![
+        Line::from(vec![Span::styled("Action:", label())]),
+        Line::from(vec![Span::styled(&app.status_message, panel())]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("y", key_hint()),
+            Span::styled(" yes ", description()),
+            Span::styled("│", separator()),
+            Span::styled(" n", key_hint()),
+            Span::styled(" no", description()),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines).block(block).style(panel());
     f.render_widget(paragraph, area);
 }
 
