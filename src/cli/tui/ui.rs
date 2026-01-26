@@ -405,7 +405,6 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
     let lines: Vec<Line> = app
         .console_buffer
         .iter()
-        .rev()
         .take((area.height.saturating_sub(2)) as usize)
         .map(|s| Line::from(Span::styled(s, panel())))
         .collect();
