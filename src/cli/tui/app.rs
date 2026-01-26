@@ -1,6 +1,7 @@
 use crate::backend::PackageManager;
 use crate::models::{Package, PackageSource};
 use anyhow::Result;
+use chrono;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
@@ -74,6 +75,7 @@ impl App {
             should_quit: false,
             show_updates_only: false,
             load_rx: None,
+            console_buffer: Vec::new(),
             pending_action: None,
         }
     }
@@ -100,6 +102,17 @@ impl App {
         } else {
             String::from("Loading packages...")
         };
+        self.append_to_console(if self.show_updates_only {
+            format!(
+                "[{}] Checking for available updates...",
+                chrono::Local::now().format("%H:%M:%S")
+            )
+        } else {
+            format!(
+                "[{}] Loading installed packages from system...",
+                chrono::Local::now().format("%H:%M:%S")
+            )
+        });
 
         let (tx, rx) = mpsc::channel(1);
         self.load_rx = Some(rx);
@@ -133,11 +146,26 @@ impl App {
                     } else {
                         format!("Loaded {} packages", self.filtered_packages.len())
                     };
+                    self.append_to_console(format!(
+                        "[{}] Loaded {} packages from {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        self.filtered_packages.len(),
+                        if self.show_updates_only {
+                            "update check"
+                        } else {
+                            "system"
+                        }
+                    ));
                     self.loading = false;
                     self.load_rx = None;
                 }
                 Ok(Err(e)) => {
                     self.status_message = format!("Error: {}", e);
+                    self.append_to_console(format!(
+                        "[{}] ERROR: Failed to load packages - {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        e
+                    ));
                     self.loading = false;
                     self.load_rx = None;
                 }
@@ -146,6 +174,10 @@ impl App {
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     self.status_message = String::from("Loading failed");
+                    self.append_to_console(format!(
+                        "[{}] ERROR: Loading channel disconnected",
+                        chrono::Local::now().format("%H:%M:%S")
+                    ));
                     self.loading = false;
                     self.load_rx = None;
                 }
@@ -157,6 +189,15 @@ impl App {
     pub async fn load_packages(&mut self) {
         self.loading = true;
         self.status_message = String::from("Loading packages...");
+        self.append_to_console(format!(
+            "[{}] Initial package load started from {}...",
+            chrono::Local::now().format("%H:%M:%S"),
+            if self.show_updates_only {
+                "update check"
+            } else {
+                "system"
+            }
+        ));
 
         let result = {
             let manager = self.pm.lock().await;
@@ -172,9 +213,19 @@ impl App {
                 self.packages = packages;
                 self.filter_packages();
                 self.status_message = format!("Loaded {} packages", self.filtered_packages.len());
+                self.append_to_console(format!(
+                    "[{}] Initial load complete: {} packages loaded",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    self.filtered_packages.len()
+                ));
             }
             Err(e) => {
                 self.status_message = format!("Error: {}", e);
+                self.append_to_console(format!(
+                    "[{}] ERROR: Initial load failed - {}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    e
+                ));
             }
         }
 
@@ -343,7 +394,9 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             app.should_quit = true;
         }
         KeyCode::Char('h') => {
-            app.append_to_console(String::from("Help displayed"));
+            app.append_to_console(String::from(
+                "Help displayed - keyboard shortcuts available",
+            ));
             app.status_message = String::from(
                 "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:update all | r:refresh | i:install | x:remove | q:quit"
             );
@@ -401,16 +454,32 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 app.status_message = String::from("No updates available");
             } else {
                 app.status_message = format!("Update all {} packages? (y/n)", updates.len());
+                app.append_to_console(format!(
+                    "[{}] Confirming bulk update of {} packages",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    updates.len()
+                ));
                 app.pending_action = Some(PendingAction::UpdateAll(updates));
                 app.mode = AppMode::Confirm;
             }
         }
         KeyCode::Char('r') => {
+            app.append_to_console(format!(
+                "[{}] Manual refresh triggered - reloading package list...",
+                chrono::Local::now().format("%H:%M:%S")
+            ));
             app.start_loading();
         }
         KeyCode::Char('i') => {
             if let Some(pkg) = app.selected_package().cloned() {
                 app.status_message = format!("Install {}? (y/n)", pkg.name);
+                app.append_to_console(format!(
+                    "[{}] Confirming installation of {} v{} from {:?}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    pkg.name,
+                    pkg.version,
+                    pkg.source
+                ));
                 app.pending_action = Some(PendingAction::Install(pkg));
                 app.mode = AppMode::Confirm;
             }
@@ -418,6 +487,12 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         KeyCode::Char('x') => {
             if let Some(pkg) = app.selected_package().cloned() {
                 app.status_message = format!("Remove {}? (y/n)", pkg.name);
+                app.append_to_console(format!(
+                    "[{}] Confirming removal of {} v{}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    pkg.name,
+                    pkg.version
+                ));
                 app.pending_action = Some(PendingAction::Remove(pkg));
                 app.mode = AppMode::Confirm;
             }
@@ -470,64 +545,90 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
             let action = app.pending_action.take();
             match action {
                 Some(PendingAction::Install(pkg)) => {
-                    app.append_to_console(format!("Installing {}...", pkg.name));
                     let result = {
                         let manager = app.pm.lock().await;
                         manager.install(&pkg).await
                     };
                     match result {
                         Ok(_) => {
-                            app.append_to_console(format!("Installed {}", pkg.name));
                             app.status_message = format!("Success: {}", pkg.name);
+                            app.append_to_console(format!(
+                                "[{}] INSTALLED: {} v{} from {:?}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                pkg.name,
+                                pkg.version,
+                                pkg.source
+                            ));
                         }
                         Err(e) => {
-                            app.append_to_console(format!("Failed to install {}: {}", pkg.name, e));
                             app.status_message = format!("Error: {}", e);
+                            app.append_to_console(format!(
+                                "[{}] FAILED: {} - {}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                pkg.name,
+                                e
+                            ));
                         }
                     }
                 }
                 Some(PendingAction::Remove(pkg)) => {
-                    app.append_to_console(format!("Removing {}...", pkg.name));
                     let result = {
                         let manager = app.pm.lock().await;
                         manager.remove(&pkg).await
                     };
                     match result {
                         Ok(_) => {
-                            app.append_to_console(format!("Removed {}", pkg.name));
                             app.status_message = format!("Success: {}", pkg.name);
+                            app.append_to_console(format!(
+                                "[{}] REMOVED: {} v{}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                pkg.name,
+                                pkg.version
+                            ));
                         }
                         Err(e) => {
-                            app.append_to_console(format!("Failed to remove {}: {}", pkg.name, e));
                             app.status_message = format!("Error: {}", e);
+                            app.append_to_console(format!(
+                                "[{}] FAILED: {} - {}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                pkg.name,
+                                e
+                            ));
                         }
                     }
                 }
                 Some(PendingAction::UpdateAll(packages)) => {
-                    app.append_to_console(format!("Updating {} packages...", packages.len()));
-                    let mut ok_count = 0;
-                    let mut failed_count = 0;
+                    let (ok_count, failed_count) = {
+                        let manager = app.pm.lock().await;
+                        let mut ok_count = 0;
+                        let mut failed_count = 0;
 
-                    for pkg in packages {
-                        let result = {
-                            let manager = app.pm.lock().await;
-                            manager.update(&pkg).await
-                        };
-                        match result {
-                            Ok(_) => ok_count += 1,
-                            Err(_) => failed_count += 1,
+                        for pkg in packages {
+                            match manager.update(&pkg).await {
+                                Ok(_) => ok_count += 1,
+                                Err(_) => failed_count += 1,
+                            }
                         }
-                    }
 
-                    app.append_to_console(format!(
-                        "Update complete: {} ok, {} failed",
-                        ok_count, failed_count
-                    ));
+                        (ok_count, failed_count)
+                    };
+
                     if failed_count == 0 {
                         app.status_message = format!("Updated {} packages", ok_count);
+                        app.append_to_console(format!(
+                            "[{}] BULK UPDATE COMPLETE: {} packages updated successfully",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            ok_count
+                        ));
                     } else {
                         app.status_message =
                             format!("Update all: {} ok, {} failed", ok_count, failed_count);
+                        app.append_to_console(format!(
+                            "[{}] BULK UPDATE COMPLETE: {} ok, {} failed",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            ok_count,
+                            failed_count
+                        ));
                     }
                 }
                 None => {}
@@ -538,6 +639,10 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
             app.pending_action = None;
             app.mode = AppMode::Normal;
             app.status_message = String::from("Cancelled");
+            app.append_to_console(format!(
+                "[{}] Operation cancelled by user",
+                chrono::Local::now().format("%H:%M:%S")
+            ));
         }
         _ => {}
     }
