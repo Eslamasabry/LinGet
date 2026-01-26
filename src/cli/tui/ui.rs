@@ -15,6 +15,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(3), // Title bar
             Constraint::Min(10),   // Main content
+            Constraint::Length(6), // Console panel
             Constraint::Length(1), // Commands bar
             Constraint::Length(3), // Status bar
         ])
@@ -22,8 +23,9 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_title_bar(f, app, chunks[0]);
     draw_main_content(f, app, chunks[1]);
-    draw_commands_bar(f, app, chunks[2]);
-    draw_status_bar(f, app, chunks[3]);
+    draw_console_panel(f, app, chunks[2]);
+    draw_commands_bar(f, app, chunks[3]);
+    draw_status_bar(f, app, chunks[4]);
 
     // Draw search popup if in search mode
     if app.mode == AppMode::Search {
@@ -383,6 +385,33 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     } else {
         lines
     }
+}
+
+fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_inactive())
+        .title(" Console ")
+        .title_style(panel_title());
+
+    if app.console_buffer.is_empty() {
+        let empty = Paragraph::new("No recent actions")
+            .block(block)
+            .style(dim());
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let lines: Vec<Line> = app
+        .console_buffer
+        .iter()
+        .rev()
+        .take((area.height.saturating_sub(2)) as usize)
+        .map(|s| Line::from(Span::styled(s, panel())))
+        .collect();
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, area);
 }
 
 fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
