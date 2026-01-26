@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Table},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -77,7 +78,7 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
-    if app.compact_mode {
+    if app.compact {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -304,29 +305,26 @@ fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
         pkg.version.clone()
     };
 
-    let name_line = Line::from(vec![
-        Span::styled("Name: ", label()),
-        Span::styled(&pkg.name, panel_title_active()),
-    ]);
+    let content_width = area.width.saturating_sub(2) as usize;
 
-    let source_line = Line::from(vec![
-        Span::styled("Source: ", label()),
-        Span::styled(format!("{}", pkg.source), panel()),
-    ]);
-
-    let status_line = Line::from(vec![
-        Span::styled("Status: ", label()),
-        Span::styled(status_text, status_style_for_status(pkg.status)),
-    ]);
-
-    let version_line = Line::from(vec![
-        Span::styled("Version: ", label()),
-        Span::styled(version_info, panel()),
-    ]);
+    let name_line = labeled_line("Name: ", &pkg.name, panel_title_active(), content_width);
+    let source_line = labeled_line(
+        "Source: ",
+        &format!("{}", pkg.source),
+        panel(),
+        content_width,
+    );
+    let status_line = labeled_line(
+        "Status: ",
+        status_text,
+        status_style_for_status(pkg.status),
+        content_width,
+    );
+    let version_line = labeled_line("Version: ", &version_info, panel(), content_width);
 
     let description_line = Line::from(vec![Span::styled("Description: ", label())]);
 
-    let wrapped_description = wrap_text(&pkg.description, area.width.saturating_sub(2) as usize);
+    let wrapped_description = wrap_text(&pkg.description, content_width);
 
     let lines: Vec<Line> = vec![
         name_line,
@@ -371,27 +369,58 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 
     let mut lines = Vec::new();
     let mut current_line = String::new();
+    let mut current_width = 0;
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut word_iter = words.into_iter();
 
     if let Some(first_word) = word_iter.next() {
-        current_line.push_str(first_word);
+        for chunk in split_long_word(first_word, max_width) {
+            if current_line.is_empty() {
+                current_line = chunk;
+                current_width = UnicodeWidthStr::width(current_line.as_str());
+            } else {
+                lines.push(current_line);
+                current_line = chunk;
+                current_width = UnicodeWidthStr::width(current_line.as_str());
+            }
+        }
     }
 
     for word in word_iter {
-        let potential = if current_line.is_empty() {
-            word.to_string()
-        } else {
-            format!("{} {}", current_line, word)
-        };
-
-        if potential.len() <= max_width {
-            current_line = potential;
-        } else {
-            if !current_line.is_empty() {
-                lines.push(current_line.clone());
+        let word_width = UnicodeWidthStr::width(word);
+        if current_line.is_empty() {
+            for chunk in split_long_word(word, max_width) {
+                if current_line.is_empty() {
+                    current_line = chunk;
+                    current_width = UnicodeWidthStr::width(current_line.as_str());
+                } else {
+                    lines.push(current_line);
+                    current_line = chunk;
+                    current_width = UnicodeWidthStr::width(current_line.as_str());
+                }
             }
-            current_line = word.to_string();
+            continue;
+        }
+
+        let next_width = current_width + 1 + word_width;
+        if next_width <= max_width {
+            current_line.push(' ');
+            current_line.push_str(word);
+            current_width = next_width;
+        } else {
+            lines.push(current_line);
+            current_line = String::new();
+            current_width = 0;
+            for chunk in split_long_word(word, max_width) {
+                if current_line.is_empty() {
+                    current_line = chunk;
+                    current_width = UnicodeWidthStr::width(current_line.as_str());
+                } else {
+                    lines.push(current_line);
+                    current_line = chunk;
+                    current_width = UnicodeWidthStr::width(current_line.as_str());
+                }
+            }
         }
     }
 
@@ -404,6 +433,80 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     } else {
         lines
     }
+}
+
+fn labeled_line(
+    label_text: &str,
+    value: &str,
+    value_style: Style,
+    max_width: usize,
+) -> Line<'static> {
+    let label_width = UnicodeWidthStr::width(label_text);
+    let value_width = max_width.saturating_sub(label_width);
+    let value_text = truncate_to_width(value, value_width);
+    let label_owned = label_text.to_string();
+
+    Line::from(vec![
+        Span::styled(label_owned, label()),
+        Span::styled(value_text, value_style),
+    ])
+}
+
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+
+    if max_width == 1 {
+        return String::from("…");
+    }
+
+    let mut out = String::new();
+    let mut width = 0;
+    let target = max_width.saturating_sub(1);
+
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
+        if width + ch_width > target {
+            break;
+        }
+        out.push(ch);
+        width += ch_width;
+    }
+
+    out.push('…');
+    out
+}
+
+fn split_long_word(word: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![String::new()];
+    }
+
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut width = 0;
+
+    for ch in word.chars() {
+        let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
+        if width + ch_width > max_width && !current.is_empty() {
+            parts.push(current);
+            current = String::new();
+            width = 0;
+        }
+        current.push(ch);
+        width += ch_width;
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    parts
 }
 
 fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -421,15 +524,12 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let available_height = area.height.saturating_sub(2) as usize;
-    let total_lines = app.console_buffer.len();
-    let start_index = total_lines.saturating_sub(available_height);
-
+    let max_lines = area.height.saturating_sub(2) as usize;
+    let start = app.console_buffer.len().saturating_sub(max_lines);
     let lines: Vec<Line> = app
         .console_buffer
         .iter()
-        .skip(start_index)
-        .take(available_height)
+        .skip(start)
         .map(|s| Line::from(Span::styled(s, panel())))
         .collect();
 
@@ -489,7 +589,7 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(format!(" {} ", updates_label), description()),
                     Span::styled("│", separator()),
                     Span::styled(" U", key_hint()),
-                    Span::styled(" update-all ", description()),
+                    Span::styled(" update-all (filtered) ", description()),
                     Span::styled("│", separator()),
                     Span::styled(" r", key_hint()),
                     Span::styled(" refresh ", description()),

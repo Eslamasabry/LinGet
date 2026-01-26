@@ -1688,6 +1688,7 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "tracing-subscriber",
+ "unicode-width 0.1.11",
  "uuid",
  "which",
 ]

@@ -53,6 +53,28 @@ fn sanitize_environment() {
     }
 }
 
+fn init_logging(run_mode: RunMode) {
+    let filter = EnvFilter::from_default_env()
+        .add_directive("linget=info".parse().unwrap())
+        .add_directive("gtk=warn".parse().unwrap());
+
+    match run_mode {
+        RunMode::Tui => {
+            // Avoid emitting logs to the terminal while in alternate screen.
+            tracing_subscriber::registry()
+                .with(fmt::layer().with_writer(std::io::sink))
+                .with(filter)
+                .init();
+        }
+        RunMode::Gui | RunMode::Cli => {
+            tracing_subscriber::registry()
+                .with(fmt::layer())
+                .with(filter)
+                .init();
+        }
+    }
+}
+
 fn run_gui(runtime: tokio::runtime::Runtime) {
     tracing::info!(
         "Starting {} v{} (GUI mode with Relm4)",
@@ -120,15 +142,10 @@ fn run_cli(runtime: tokio::runtime::Runtime) {
 }
 
 fn main() {
+    let run_mode = detect_run_mode();
+
     // Initialize logging
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::from_default_env()
-                .add_directive("linget=info".parse().unwrap())
-                .add_directive("gtk=warn".parse().unwrap()),
-        )
-        .init();
+    init_logging(run_mode);
 
     // Create tokio runtime for async operations
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -137,7 +154,7 @@ fn main() {
         .expect("Failed to create Tokio runtime");
 
     // Detect and run appropriate mode
-    match detect_run_mode() {
+    match run_mode {
         RunMode::Gui => run_gui(runtime),
         RunMode::Tui => run_tui(runtime),
         RunMode::Cli => run_cli(runtime),
