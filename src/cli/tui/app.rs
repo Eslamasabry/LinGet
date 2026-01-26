@@ -17,6 +17,7 @@ use super::ui;
 pub enum ActivePanel {
     Sources,
     Packages,
+    Details,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,16 +331,19 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         KeyCode::Tab => {
             app.active_panel = match app.active_panel {
                 ActivePanel::Sources => ActivePanel::Packages,
-                ActivePanel::Packages => ActivePanel::Sources,
+                ActivePanel::Packages => ActivePanel::Details,
+                ActivePanel::Details => ActivePanel::Sources,
             };
         }
         KeyCode::Char('j') | KeyCode::Down => match app.active_panel {
             ActivePanel::Sources => app.next_source(),
             ActivePanel::Packages => app.next_package(),
+            ActivePanel::Details => app.next_package(),
         },
         KeyCode::Char('k') | KeyCode::Up => match app.active_panel {
             ActivePanel::Sources => app.prev_source(),
             ActivePanel::Packages => app.prev_package(),
+            ActivePanel::Details => app.prev_package(),
         },
         KeyCode::Char('g') | KeyCode::Home => {
             app.package_index = 0;

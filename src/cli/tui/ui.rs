@@ -73,11 +73,16 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
 fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(22), Constraint::Min(40)])
+        .constraints([
+            Constraint::Length(20),
+            Constraint::Min(30),
+            Constraint::Min(25),
+        ])
         .split(area);
 
     draw_sources_panel(f, app, chunks[0]);
     draw_packages_panel(f, app, chunks[1]);
+    draw_details_panel(f, app, chunks[2]);
 }
 
 fn draw_sources_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -196,9 +201,9 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
             };
 
             Row::new(vec![
-                Span::styled(truncate_string(&pkg.name, 25), style),
-                Span::styled(truncate_string(&version, 20), style),
-                Span::styled(format!("{:?}", pkg.source), style),
+                Span::styled(truncate_string(&pkg.name, 20), style),
+                Span::styled(truncate_string(&version, 15), style),
+                Span::styled(truncate_string(&format!("{:?}", pkg.source), 8), style),
                 Span::styled(status_icon, status_style),
             ])
             .style(style)
@@ -210,9 +215,9 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .bottom_margin(1);
 
     let widths = [
-        Constraint::Min(25),
         Constraint::Min(20),
-        Constraint::Length(10),
+        Constraint::Min(15),
+        Constraint::Length(8),
         Constraint::Length(2),
     ];
 
@@ -222,6 +227,155 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .row_highlight_style(selection_focused());
 
     f.render_widget(table, area);
+}
+
+fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
+    let is_active = app.active_panel == ActivePanel::Details;
+
+    let border_style = if is_active {
+        border_active()
+    } else {
+        border_inactive()
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(" Details ")
+        .title_style(if is_active {
+            panel_title_active()
+        } else {
+            panel_title()
+        });
+
+    if app.loading {
+        let loading = Paragraph::new("Loading...")
+            .block(block)
+            .style(status_loading());
+        f.render_widget(loading, area);
+        return;
+    }
+
+    if app.filtered_packages.is_empty() {
+        let empty = Paragraph::new("No packages found")
+            .block(block)
+            .style(dim());
+        f.render_widget(empty, area);
+        return;
+    }
+
+    if let Some(pkg) = app.selected_package() {
+        let mut lines: Vec<Line> = Vec::new();
+
+        lines.push(Line::from(vec![
+            Span::styled("Name: ", panel_title()),
+            Span::styled(&pkg.name, panel()),
+        ]));
+
+        let version_text = if let Some(ref avail) = pkg.available_version {
+            if pkg.has_update() {
+                format!("{} → {}", pkg.version, avail)
+            } else {
+                pkg.version.clone()
+            }
+        } else {
+            pkg.version.clone()
+        };
+        lines.push(Line::from(vec![
+            Span::styled("Version: ", panel_title()),
+            Span::styled(&version_text, panel()),
+        ]));
+
+        let status_text = format!("{:?}", pkg.status);
+        let status_style = match pkg.status {
+            PackageStatus::Installed => status_installed(),
+            PackageStatus::UpdateAvailable => status_update(),
+            PackageStatus::NotInstalled => status_not_installed(),
+            PackageStatus::Installing | PackageStatus::Updating => status_loading(),
+            PackageStatus::Removing => status_removing(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("Status: ", panel_title()),
+            Span::styled(&status_text, status_style),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled("Source: ", panel_title()),
+            Span::styled(format!("{:?}", pkg.source), panel()),
+        ]));
+
+        if !pkg.description.is_empty() {
+            lines.push(Line::from(vec![Span::styled("", panel())]));
+            lines.push(Line::from(vec![Span::styled(
+                truncate_string(&pkg.description, (area.width as usize).saturating_sub(4)),
+                panel(),
+            )]));
+        }
+
+        if let Some(_size) = pkg.size {
+            lines.push(Line::from(vec![Span::styled("", panel())]));
+            lines.push(Line::from(vec![
+                Span::styled("Size: ", panel_title()),
+                Span::styled(pkg.size_display(), panel()),
+            ]));
+        }
+
+        if let Some(ref homepage) = pkg.homepage {
+            lines.push(Line::from(vec![Span::styled("", panel())]));
+            lines.push(Line::from(vec![
+                Span::styled("Homepage: ", panel_title()),
+                Span::styled(truncate_string(homepage, (area.width as usize).saturating_sub(12)), panel()),
+            ]));
+        }
+
+        if let Some(ref license) = pkg.license {
+            lines.push(Line::from(vec![Span::styled("", panel())]));
+            lines.push(Line::from(vec![
+                Span::styled("License: ", panel_title()),
+                Span::styled(license, panel()),
+            ]));
+        }
+
+        if let Some(ref maintainer) = pkg.maintainer {
+            lines.push(Line::from(vec![Span::styled("", panel())]));
+            lines.push(Line::from(vec![
+                Span::styled("Maintainer: ", panel_title()),
+                Span::styled(maintainer, panel()),
+            ]));
+        }
+
+        if let Some(ref install_date) = pkg.install_date {
+            lines.push(Line::from(vec![Span::styled("", panel())]));
+            lines.push(Line::from(vec![
+                Span::styled("Installed: ", panel_title()),
+                Span::styled(install_date, panel()),
+            ]));
+        }
+
+        if !pkg.dependencies.is_empty() {
+            lines.push(Line::from(vec![Span::styled("", panel())]));
+            let deps_text = format!("Dependencies ({})", pkg.dependencies.len());
+            lines.push(Line::from(vec![Span::styled(deps_text, panel_title())]));
+            for dep in pkg.dependencies.iter().take(10) {
+                lines.push(Line::from(vec![
+                    Span::styled("  • ", dim()),
+                    Span::styled(truncate_string(dep, (area.width as usize).saturating_sub(6)), panel()),
+                ]));
+            }
+            if pkg.dependencies.len() > 10 {
+                let more = format!("  ... and {} more", pkg.dependencies.len() - 10);
+                lines.push(Line::from(vec![Span::styled(more, dim())]));
+            }
+        }
+
+        let paragraph = Paragraph::new(lines).block(block).style(panel());
+        f.render_widget(paragraph, area);
+    } else {
+        let no_selection = Paragraph::new("Select a package to view details")
+            .block(block)
+            .style(dim());
+        f.render_widget(no_selection, area);
+    }
 }
 
 fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
