@@ -13,17 +13,19 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Title bar
-            Constraint::Min(10),   // Main content
-            Constraint::Length(1), // Commands bar
-            Constraint::Length(3), // Status bar
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(6),
+            Constraint::Length(1),
+            Constraint::Length(3),
         ])
         .split(f.area());
 
     draw_title_bar(f, app, chunks[0]);
     draw_main_content(f, app, chunks[1]);
-    draw_commands_bar(f, app, chunks[2]);
-    draw_status_bar(f, app, chunks[3]);
+    draw_console_panel(f, app, chunks[2]);
+    draw_commands_bar(f, app, chunks[3]);
+    draw_status_bar(f, app, chunks[4]);
 
     // Draw search popup if in search mode
     if app.mode == AppMode::Search {
@@ -229,6 +231,28 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
+<<<<<<< HEAD
+fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_inactive())
+        .title(" Console ")
+        .title_style(panel_title());
+
+    if app.console_buffer.is_empty() {
+        let empty = Paragraph::new("No console output").style(dim());
+        f.render_widget(empty.block(block), area);
+        return;
+    }
+
+    let lines: Vec<Line> = app
+        .console_buffer
+        .iter()
+        .map(|msg| Line::from(msg.clone()))
+        .collect();
+
+    let paragraph = Paragraph::new(lines).block(block).style(console_text());
+=======
 fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
     let is_active = app.active_panel == ActivePanel::Details;
 
@@ -325,10 +349,13 @@ fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
     all_lines.append(&mut description_lines);
 
     let paragraph = Paragraph::new(all_lines).block(block).style(panel());
+>>>>>>> 2ccd7b0 (LinGet-nge.2: LinGet-nge.2 - US-002: Populate package details panel)
 
     f.render_widget(paragraph, area);
 }
 
+<<<<<<< HEAD
+=======
 fn status_style_for_status(status: PackageStatus) -> Style {
     match status {
         PackageStatus::Installed => status_installed(),
@@ -385,6 +412,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     }
 }
 
+>>>>>>> 2ccd7b0 (LinGet-nge.2: LinGet-nge.2 - US-002: Populate package details panel)
 fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
     let commands = match app.mode {
         AppMode::Normal => {

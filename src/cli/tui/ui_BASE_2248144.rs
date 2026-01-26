@@ -73,16 +73,11 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
 fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(22),
-            Constraint::Percentage(50),
-            Constraint::Min(35),
-        ])
+        .constraints([Constraint::Length(22), Constraint::Min(40)])
         .split(area);
 
     draw_sources_panel(f, app, chunks[0]);
     draw_packages_panel(f, app, chunks[1]);
-    draw_details_panel(f, app, chunks[2]);
 }
 
 fn draw_sources_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -227,162 +222,6 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .row_highlight_style(selection_focused());
 
     f.render_widget(table, area);
-}
-
-fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
-    let is_active = app.active_panel == ActivePanel::Details;
-
-    let border_style = if is_active {
-        border_active()
-    } else {
-        border_inactive()
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(" Details ")
-        .title_style(if is_active {
-            panel_title_active()
-        } else {
-            panel_title()
-        });
-
-    if app.loading {
-        let loading = Paragraph::new("Loading...")
-            .block(block)
-            .style(status_loading());
-        f.render_widget(loading, area);
-        return;
-    }
-
-    let selected_package = app.selected_package();
-
-    if selected_package.is_none() {
-        let empty = Paragraph::new("Select a package to view details")
-            .block(block)
-            .style(dim());
-        f.render_widget(empty, area);
-        return;
-    }
-
-    let pkg = selected_package.unwrap();
-
-    let status_text = match pkg.status {
-        PackageStatus::Installed => "Installed",
-        PackageStatus::UpdateAvailable => "Update Available",
-        PackageStatus::NotInstalled => "Not Installed",
-        PackageStatus::Installing => "Installing...",
-        PackageStatus::Removing => "Removing...",
-        PackageStatus::Updating => "Updating...",
-    };
-
-    let version_info = if let Some(ref avail) = pkg.available_version {
-        format!("{} → {}", pkg.version, avail)
-    } else {
-        pkg.version.clone()
-    };
-
-    let name_line = Line::from(vec![
-        Span::styled("Name: ", label()),
-        Span::styled(&pkg.name, panel_title_active()),
-    ]);
-
-    let source_line = Line::from(vec![
-        Span::styled("Source: ", label()),
-        Span::styled(format!("{}", pkg.source), panel()),
-    ]);
-
-    let status_line = Line::from(vec![
-        Span::styled("Status: ", label()),
-        Span::styled(status_text, status_style_for_status(pkg.status)),
-    ]);
-
-    let version_line = Line::from(vec![
-        Span::styled("Version: ", label()),
-        Span::styled(version_info, panel()),
-    ]);
-
-    let description_line = Line::from(vec![Span::styled("Description: ", label())]);
-
-    let wrapped_description = wrap_text(&pkg.description, area.width.saturating_sub(2) as usize);
-
-    let lines: Vec<Line> = vec![
-        name_line,
-        source_line,
-        status_line,
-        version_line,
-        Line::from(""),
-        description_line,
-    ];
-
-    let mut description_lines: Vec<Line> = wrapped_description
-        .iter()
-        .map(|s| Line::from(Span::styled(s, panel())))
-        .collect();
-
-    let mut all_lines = lines;
-    all_lines.append(&mut description_lines);
-
-    let paragraph = Paragraph::new(all_lines).block(block).style(panel());
-
-    f.render_widget(paragraph, area);
-}
-
-fn status_style_for_status(status: PackageStatus) -> Style {
-    match status {
-        PackageStatus::Installed => status_installed(),
-        PackageStatus::UpdateAvailable => status_update(),
-        PackageStatus::NotInstalled => status_not_installed(),
-        PackageStatus::Installing | PackageStatus::Updating => status_loading(),
-        PackageStatus::Removing => status_removing(),
-    }
-}
-
-fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
-    if text.is_empty() {
-        return vec![String::from("No description available")];
-    }
-
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let mut word_iter = words.into_iter();
-
-    if let Some(first_word) = word_iter.next() {
-        current_line.push_str(first_word);
-    }
-
-    for word in word_iter {
-        let potential = if current_line.is_empty() {
-            word.to_string()
-        } else {
-            format!("{} {}", current_line, word)
-        };
-
-        if potential.len() <= max_width {
-            current_line = potential;
-        } else {
-            if !current_line.is_empty() {
-                lines.push(current_line.clone());
-            }
-            current_line = word.to_string();
-        }
-    }
-
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-
-    if lines.is_empty() {
-        vec![String::from("No description available")]
-    } else {
-        lines
-    }
 }
 
 fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {

@@ -123,9 +123,3 @@ pub fn mode_search() -> Style {
 pub fn mode_confirm() -> Style {
     Style::default().fg(palette::RED)
 }
-
-pub fn label() -> Style {
-    Style::default()
-        .fg(palette::DARK_GRAY)
-        .add_modifier(Modifier::BOLD)
-}

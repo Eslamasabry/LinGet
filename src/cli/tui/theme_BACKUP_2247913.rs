@@ -124,8 +124,13 @@ pub fn mode_confirm() -> Style {
     Style::default().fg(palette::RED)
 }
 
+<<<<<<< HEAD
+pub fn console_text() -> Style {
+    Style::default().fg(palette::WHITE)
+=======
 pub fn label() -> Style {
     Style::default()
         .fg(palette::DARK_GRAY)
         .add_modifier(Modifier::BOLD)
+>>>>>>> 2ccd7b0 (LinGet-nge.2: LinGet-nge.2 - US-002: Populate package details panel)
 }
