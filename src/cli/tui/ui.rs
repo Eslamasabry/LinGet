@@ -57,13 +57,39 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
         .map(|s| format!("{:?}", s))
         .unwrap_or_else(|| "All".to_string());
 
+    let selected_count = app.selected_count();
     let pkg_count = if app.compact {
-        format!(" {} | {} ", app.filtered_packages.len(), source_name)
+        if selected_count > 0 {
+            format!(
+                " {} | {} | {} sel ",
+                app.filtered_packages.len(),
+                source_name,
+                selected_count
+            )
+        } else {
+            format!(" {} | {} ", app.filtered_packages.len(), source_name)
+        }
     } else if app.show_updates_only {
+        if selected_count > 0 {
+            format!(
+                " {} updates available | Source: {} | {} selected ",
+                app.filtered_packages.len(),
+                source_name,
+                selected_count
+            )
+        } else {
+            format!(
+                " {} updates available | Source: {} ",
+                app.filtered_packages.len(),
+                source_name
+            )
+        }
+    } else if selected_count > 0 {
         format!(
-            " {} updates available | Source: {} ",
+            " {} packages | Source: {} | {} selected ",
             app.filtered_packages.len(),
-            source_name
+            source_name,
+            selected_count
         )
     } else {
         format!(
@@ -201,6 +227,7 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, pkg)| {
             let is_selected = i == app.package_index;
+            let is_marked = app.is_package_selected(pkg);
             let style = if is_selected { selection() } else { panel() };
 
             let status_style = match pkg.status {
@@ -225,16 +252,11 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
                 pkg.version.clone()
             };
 
-            let marker = if app.is_selected(pkg) { "[✓]" } else { "[ ]" };
-            let marker_style = if app.is_selected(pkg) {
-                style.add_modifier(Modifier::BOLD)
-            } else {
-                style
-            };
+            let mark = if is_marked { "☑ " } else { "☐ " };
 
             Row::new(vec![
-                Span::styled(marker, marker_style),
-                Span::styled(truncate_string(&pkg.name, 25), style),
+                Span::styled(mark, accent()),
+                Span::styled(truncate_string(&pkg.name, 23), style),
                 Span::styled(truncate_string(&version, 20), style),
                 Span::styled(format!("{:?}", pkg.source), style),
                 Span::styled(status_icon, status_style),
@@ -248,8 +270,8 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .bottom_margin(1);
 
     let widths = [
-        Constraint::Length(4),
-        Constraint::Min(25),
+        Constraint::Length(3),
+        Constraint::Min(23),
         Constraint::Min(20),
         Constraint::Length(10),
         Constraint::Length(2),

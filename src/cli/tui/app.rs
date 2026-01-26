@@ -44,7 +44,6 @@ pub struct App {
     pub pm: Arc<Mutex<PackageManager>>,
     pub packages: Vec<Package>,
     pub filtered_packages: Vec<Package>,
-    pub selected_packages: HashSet<String>,
     pub available_sources: Vec<PackageSource>,
     pub selected_source: Option<PackageSource>,
     pub source_index: usize,
@@ -60,6 +59,7 @@ pub struct App {
     pub console_buffer: Vec<String>,
     pub pending_action: Option<PendingAction>,
     pub compact: bool,
+    pub selected_packages: HashSet<String>,
 }
 
 impl App {
@@ -68,7 +68,6 @@ impl App {
             pm,
             packages: Vec::new(),
             filtered_packages: Vec::new(),
-            selected_packages: HashSet::new(),
             available_sources: Vec::new(),
             selected_source: None,
             source_index: 0,
@@ -84,6 +83,7 @@ impl App {
             console_buffer: Vec::new(),
             pending_action: None,
             compact: false,
+            selected_packages: HashSet::new(),
         }
     }
 
@@ -327,12 +327,14 @@ impl App {
         self.package_index = self.package_index.saturating_sub(10);
     }
 
-    pub fn toggle_selection(&mut self, package: &Package) {
-        let id = package.id();
-        if self.selected_packages.contains(&id) {
-            self.selected_packages.remove(&id);
-        } else {
-            self.selected_packages.insert(id);
+    pub fn toggle_selection(&mut self) {
+        if let Some(pkg) = self.selected_package() {
+            let id = pkg.id();
+            if self.selected_packages.contains(&id) {
+                self.selected_packages.remove(&id);
+            } else {
+                self.selected_packages.insert(id);
+            }
         }
     }
 
@@ -346,19 +348,12 @@ impl App {
         self.selected_packages.clear();
     }
 
-    pub fn is_selected(&self, package: &Package) -> bool {
-        self.selected_packages.contains(&package.id())
-    }
-
     pub fn selected_count(&self) -> usize {
         self.selected_packages.len()
     }
 
-    pub fn selected_packages_list(&self) -> Vec<&Package> {
-        self.packages
-            .iter()
-            .filter(|p| self.selected_packages.contains(&p.id()))
-            .collect()
+    pub fn is_package_selected(&self, pkg: &Package) -> bool {
+        self.selected_packages.contains(&pkg.id())
     }
 }
 
@@ -442,7 +437,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 "Help displayed - keyboard shortcuts available",
             ));
             app.status_message = String::from(
-                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:update all (filtered) | r:refresh | i:install | x:remove | q:quit"
+                "j/k:nav | Tab:switch | Space:toggle | a:select all | c:clear | /:search | u:updates | U:upd all | r:refresh | i:install | x:remove | q:quit"
             );
         }
         KeyCode::Tab => {
@@ -549,6 +544,22 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 );
                 app.active_panel = ActivePanel::Details;
             }
+        }
+        KeyCode::Char(' ') => {
+            app.toggle_selection();
+            if app.selected_count() > 0 {
+                app.status_message = format!("{} selected", app.selected_count());
+            } else {
+                app.status_message = String::from("Selection cleared");
+            }
+        }
+        KeyCode::Char('a') => {
+            app.select_all();
+            app.status_message = format!("{} selected", app.selected_count());
+        }
+        KeyCode::Char('c') => {
+            app.clear_selection();
+            app.status_message = String::from("Selection cleared");
         }
         _ => {}
     }
