@@ -29,6 +29,13 @@ pub enum AppMode {
     Confirm,
 }
 
+#[derive(Clone, Debug)]
+pub enum PendingAction {
+    Install(Package),
+    Remove(Package),
+    UpdateAll(Vec<Package>),
+}
+
 pub struct App {
     pub pm: Arc<Mutex<PackageManager>>,
     pub packages: Vec<Package>,
@@ -46,6 +53,7 @@ pub struct App {
     pub show_updates_only: bool,
     pub load_rx: Option<mpsc::Receiver<Result<Vec<Package>, String>>>,
     pub console_buffer: Vec<String>,
+    pub pending_action: Option<PendingAction>,
 }
 
 impl App {
@@ -66,6 +74,8 @@ impl App {
             should_quit: false,
             show_updates_only: false,
             load_rx: None,
+            console_buffer: Vec::new(),
+            pending_action: None,
             console_buffer: Vec::new(),
         }
     }
@@ -336,7 +346,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('h') => {
             app.status_message = String::from(
-                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | r:refresh | i:install | x:remove | q:quit"
+                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:update all | r:refresh | i:install | x:remove | q:quit"
             );
         }
         KeyCode::Tab => {
@@ -380,18 +390,36 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             app.show_updates_only = !app.show_updates_only;
             app.start_loading();
         }
+        KeyCode::Char('U') => {
+            let updates: Vec<Package> = app
+                .filtered_packages
+                .iter()
+                .filter(|pkg| pkg.has_update())
+                .cloned()
+                .collect();
+
+            if updates.is_empty() {
+                app.status_message = String::from("No updates available");
+            } else {
+                app.status_message = format!("Update all {} packages? (y/n)", updates.len());
+                app.pending_action = Some(PendingAction::UpdateAll(updates));
+                app.mode = AppMode::Confirm;
+            }
+        }
         KeyCode::Char('r') => {
             app.start_loading();
         }
         KeyCode::Char('i') => {
-            if let Some(pkg) = app.selected_package() {
+            if let Some(pkg) = app.selected_package().cloned() {
                 app.status_message = format!("Install {}? (y/n)", pkg.name);
+                app.pending_action = Some(PendingAction::Install(pkg));
                 app.mode = AppMode::Confirm;
             }
         }
         KeyCode::Char('x') => {
-            if let Some(pkg) = app.selected_package() {
+            if let Some(pkg) = app.selected_package().cloned() {
                 app.status_message = format!("Remove {}? (y/n)", pkg.name);
+                app.pending_action = Some(PendingAction::Remove(pkg));
                 app.mode = AppMode::Confirm;
             }
         }
@@ -440,26 +468,55 @@ fn handle_search_mode(app: &mut App, key: KeyCode) {
 async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            if let Some(pkg) = app.selected_package().cloned() {
-                let manager = app.pm.lock().await;
-                let result = if app.status_message.starts_with("Install") {
-                    manager.install(&pkg).await
-                } else {
-                    manager.remove(&pkg).await
-                };
-
-                match result {
-                    Ok(_) => {
-                        app.status_message = format!("Success: {}", pkg.name);
-                    }
-                    Err(e) => {
-                        app.status_message = format!("Error: {}", e);
+            let action = app.pending_action.take();
+            match action {
+                Some(PendingAction::Install(pkg)) => {
+                    let manager = app.pm.lock().await;
+                    match manager.install(&pkg).await {
+                        Ok(_) => {
+                            app.status_message = format!("Success: {}", pkg.name);
+                        }
+                        Err(e) => {
+                            app.status_message = format!("Error: {}", e);
+                        }
                     }
                 }
+                Some(PendingAction::Remove(pkg)) => {
+                    let manager = app.pm.lock().await;
+                    match manager.remove(&pkg).await {
+                        Ok(_) => {
+                            app.status_message = format!("Success: {}", pkg.name);
+                        }
+                        Err(e) => {
+                            app.status_message = format!("Error: {}", e);
+                        }
+                    }
+                }
+                Some(PendingAction::UpdateAll(packages)) => {
+                    let manager = app.pm.lock().await;
+                    let mut ok_count = 0;
+                    let mut failed_count = 0;
+
+                    for pkg in packages {
+                        match manager.update(&pkg).await {
+                            Ok(_) => ok_count += 1,
+                            Err(_) => failed_count += 1,
+                        }
+                    }
+
+                    if failed_count == 0 {
+                        app.status_message = format!("Updated {} packages", ok_count);
+                    } else {
+                        app.status_message =
+                            format!("Update all: {} ok, {} failed", ok_count, failed_count);
+                    }
+                }
+                None => {}
             }
             app.mode = AppMode::Normal;
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            app.pending_action = None;
             app.mode = AppMode::Normal;
             app.status_message = String::from("Cancelled");
         }
