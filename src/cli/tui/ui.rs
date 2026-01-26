@@ -9,12 +9,17 @@ use ratatui::{
     Frame,
 };
 
-const NARROW_WIDTH_THRESHOLD: u16 = 90;
-const NARROW_HEIGHT_THRESHOLD: u16 = 24;
-
 pub fn draw(f: &mut Frame, app: &App) {
-    let area = f.area();
-    let chunks = draw_main_layout(area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Title bar
+            Constraint::Min(10),   // Main content
+            Constraint::Length(6), // Console panel
+            Constraint::Length(1), // Commands bar
+            Constraint::Length(3), // Status bar
+        ])
+        .split(f.area());
 
     draw_title_bar(f, app, chunks[0]);
     draw_main_content(f, app, chunks[1]);
@@ -26,44 +31,6 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == AppMode::Search {
         draw_search_popup(f, app);
     }
-}
-
-fn draw_main_layout(area: Rect) -> Vec<Rect> {
-    let total_height = area.height;
-
-    if total_height <= NARROW_HEIGHT_THRESHOLD {
-        draw_main_layout_narrow(area)
-    } else {
-        draw_main_layout_wide(area)
-    }
-}
-
-fn draw_main_layout_wide(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(6),
-            Constraint::Length(1),
-            Constraint::Length(3),
-        ])
-        .split(area)
-        .to_vec()
-}
-
-fn draw_main_layout_narrow(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Length(3),
-        ])
-        .split(area)
-        .to_vec()
 }
 
 fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -106,41 +73,33 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
-    if area.width <= NARROW_WIDTH_THRESHOLD {
-        draw_main_content_narrow(f, app, area);
+    if app.compact_mode {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(12),
+                Constraint::Min(15),
+                Constraint::Length(15),
+            ])
+            .split(area);
+
+        draw_sources_panel(f, app, chunks[0]);
+        draw_packages_panel(f, app, chunks[1]);
+        draw_details_panel(f, app, chunks[2]);
     } else {
-        draw_main_content_wide(f, app, area);
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(22),
+                Constraint::Percentage(50),
+                Constraint::Min(35),
+            ])
+            .split(area);
+
+        draw_sources_panel(f, app, chunks[0]);
+        draw_packages_panel(f, app, chunks[1]);
+        draw_details_panel(f, app, chunks[2]);
     }
-}
-
-fn draw_main_content_wide(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(22),
-            Constraint::Percentage(50),
-            Constraint::Min(35),
-        ])
-        .split(area);
-
-    draw_sources_panel(f, app, chunks[0]);
-    draw_packages_panel(f, app, chunks[1]);
-    draw_details_panel(f, app, chunks[2]);
-}
-
-fn draw_main_content_narrow(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(18),
-            Constraint::Min(20),
-            Constraint::Min(25),
-        ])
-        .split(area);
-
-    draw_sources_panel(f, app, chunks[0]);
-    draw_packages_panel(f, app, chunks[1]);
-    draw_details_panel(f, app, chunks[2]);
 }
 
 fn draw_sources_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -341,42 +300,29 @@ fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
         pkg.version.clone()
     };
 
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let label_width = 12;
-    let value_width = inner_width.saturating_sub(label_width);
-
     let name_line = Line::from(vec![
         Span::styled("Name: ", label()),
-        Span::styled(
-            truncate_string(&pkg.name, value_width),
-            panel_title_active(),
-        ),
+        Span::styled(&pkg.name, panel_title_active()),
     ]);
 
     let source_line = Line::from(vec![
         Span::styled("Source: ", label()),
-        Span::styled(
-            truncate_string(&format!("{}", pkg.source), value_width),
-            panel(),
-        ),
+        Span::styled(format!("{}", pkg.source), panel()),
     ]);
 
     let status_line = Line::from(vec![
         Span::styled("Status: ", label()),
-        Span::styled(
-            truncate_string(status_text, value_width),
-            status_style_for_status(pkg.status),
-        ),
+        Span::styled(status_text, status_style_for_status(pkg.status)),
     ]);
 
     let version_line = Line::from(vec![
         Span::styled("Version: ", label()),
-        Span::styled(truncate_string(&version_info, value_width), panel()),
+        Span::styled(version_info, panel()),
     ]);
 
     let description_line = Line::from(vec![Span::styled("Description: ", label())]);
 
-    let wrapped_description = wrap_text(&pkg.description, inner_width);
+    let wrapped_description = wrap_text(&pkg.description, area.width.saturating_sub(2) as usize);
 
     let lines: Vec<Line> = vec![
         name_line,
