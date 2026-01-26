@@ -386,7 +386,16 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "updates"
             };
-            vec![
+            let update_all_hint = if app.pending_updates.is_empty() {
+                Vec::new()
+            } else {
+                vec![
+                    Span::styled("│", separator()),
+                    Span::styled(" U", key_hint()),
+                    Span::styled(" update-all ", description()),
+                ]
+            };
+            let mut commands = vec![
                 Span::styled("↑↓/jk", key_hint()),
                 Span::styled(" nav ", description()),
                 Span::styled("│", separator()),
@@ -407,10 +416,14 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("│", separator()),
                 Span::styled(" x", key_hint()),
                 Span::styled(" remove ", description()),
+            ];
+            commands.extend(update_all_hint);
+            commands.extend(vec![
                 Span::styled("│", separator()),
                 Span::styled(" q", key_hint()),
                 Span::styled(" quit", description()),
-            ]
+            ]);
+            commands
         }
         AppMode::Search => vec![
             Span::styled("Enter", key_hint()),
