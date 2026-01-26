@@ -76,7 +76,6 @@ impl App {
             load_rx: None,
             console_buffer: Vec::new(),
             pending_action: None,
-            console_buffer: Vec::new(),
         }
     }
 
@@ -345,6 +344,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             app.should_quit = true;
         }
         KeyCode::Char('h') => {
+            app.append_to_console(String::from("Help displayed"));
             app.status_message = String::from(
                 "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:update all | r:refresh | i:install | x:remove | q:quit"
             );
