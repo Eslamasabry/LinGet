@@ -9,6 +9,8 @@ use ratatui::{
     Frame,
 };
 
+const NARROW_WIDTH_THRESHOLD: u16 = 90;
+
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -73,12 +75,35 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
+    if area.width <= NARROW_WIDTH_THRESHOLD {
+        draw_main_content_narrow(f, app, area);
+    } else {
+        draw_main_content_wide(f, app, area);
+    }
+}
+
+fn draw_main_content_wide(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(22),
             Constraint::Percentage(50),
             Constraint::Min(35),
+        ])
+        .split(area);
+
+    draw_sources_panel(f, app, chunks[0]);
+    draw_packages_panel(f, app, chunks[1]);
+    draw_details_panel(f, app, chunks[2]);
+}
+
+fn draw_main_content_narrow(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(18),
+            Constraint::Min(20),
+            Constraint::Min(25),
         ])
         .split(area);
 
