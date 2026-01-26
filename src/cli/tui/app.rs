@@ -13,6 +13,8 @@ use tokio::sync::{mpsc, Mutex};
 
 use super::ui;
 
+const MAX_CONSOLE_LINES: usize = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivePanel {
     Sources,
@@ -43,6 +45,7 @@ pub struct App {
     pub should_quit: bool,
     pub show_updates_only: bool,
     pub load_rx: Option<mpsc::Receiver<Result<Vec<Package>, String>>>,
+    pub console_buffer: Vec<String>,
 }
 
 impl App {
@@ -63,6 +66,14 @@ impl App {
             should_quit: false,
             show_updates_only: false,
             load_rx: None,
+            console_buffer: Vec::new(),
+        }
+    }
+
+    pub fn append_to_console(&mut self, line: String) {
+        self.console_buffer.push(line);
+        if self.console_buffer.len() > MAX_CONSOLE_LINES {
+            self.console_buffer.remove(0);
         }
     }
 
