@@ -225,7 +225,15 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
                 pkg.version.clone()
             };
 
+            let marker = if app.is_selected(pkg) { "[✓]" } else { "[ ]" };
+            let marker_style = if app.is_selected(pkg) {
+                style.add_modifier(Modifier::BOLD)
+            } else {
+                style
+            };
+
             Row::new(vec![
+                Span::styled(marker, marker_style),
                 Span::styled(truncate_string(&pkg.name, 25), style),
                 Span::styled(truncate_string(&version, 20), style),
                 Span::styled(format!("{:?}", pkg.source), style),
@@ -235,11 +243,12 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let header = Row::new(vec!["Name", "Version", "Source", ""])
+    let header = Row::new(vec!["", "Name", "Version", "Source", ""])
         .style(table_header())
         .bottom_margin(1);
 
     let widths = [
+        Constraint::Length(4),
         Constraint::Min(25),
         Constraint::Min(20),
         Constraint::Length(10),
