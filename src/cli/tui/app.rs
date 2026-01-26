@@ -1,5 +1,5 @@
 use crate::backend::PackageManager;
-use crate::models::{Package, PackageSource};
+use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::Result;
 use chrono;
 use crossterm::{
@@ -8,7 +8,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -37,6 +36,8 @@ pub enum AppMode {
 pub enum PendingAction {
     Install(Package),
     Remove(Package),
+    InstallAll(Vec<Package>),
+    RemoveAll(Vec<Package>),
     UpdateAll(Vec<Package>),
 }
 
@@ -59,7 +60,6 @@ pub struct App {
     pub console_buffer: Vec<String>,
     pub pending_action: Option<PendingAction>,
     pub compact: bool,
-    pub selected_packages: HashSet<String>,
 }
 
 impl App {
@@ -83,7 +83,6 @@ impl App {
             console_buffer: Vec::new(),
             pending_action: None,
             compact: false,
-            selected_packages: HashSet::new(),
         }
     }
 
@@ -326,35 +325,6 @@ impl App {
     pub fn page_up(&mut self) {
         self.package_index = self.package_index.saturating_sub(10);
     }
-
-    pub fn toggle_selection(&mut self) {
-        if let Some(pkg) = self.selected_package() {
-            let id = pkg.id();
-            if self.selected_packages.contains(&id) {
-                self.selected_packages.remove(&id);
-            } else {
-                self.selected_packages.insert(id);
-            }
-        }
-    }
-
-    pub fn select_all(&mut self) {
-        for pkg in &self.filtered_packages {
-            self.selected_packages.insert(pkg.id());
-        }
-    }
-
-    pub fn clear_selection(&mut self) {
-        self.selected_packages.clear();
-    }
-
-    pub fn selected_count(&self) -> usize {
-        self.selected_packages.len()
-    }
-
-    pub fn is_package_selected(&self, pkg: &Package) -> bool {
-        self.selected_packages.contains(&pkg.id())
-    }
 }
 
 pub async fn run() -> Result<()> {
@@ -437,7 +407,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 "Help displayed - keyboard shortcuts available",
             ));
             app.status_message = String::from(
-                "j/k:nav | Tab:switch | Space:toggle | a:select all | c:clear | /:search | u:updates | U:upd all | r:refresh | i:install | x:remove | q:quit"
+                "j/k:nav | Tab:panel | Enter:details | /:search | u:updates | U:upd all | I:inst all | X:rm all | r:refresh | i:install | x:remove | q:quit"
             );
         }
         KeyCode::Tab => {
@@ -523,6 +493,28 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 app.mode = AppMode::Confirm;
             }
         }
+        KeyCode::Char('I') => {
+            let to_install: Vec<Package> = app
+                .filtered_packages
+                .iter()
+                .filter(|pkg| pkg.status == PackageStatus::NotInstalled)
+                .cloned()
+                .collect();
+
+            if to_install.is_empty() {
+                app.status_message =
+                    String::from("No packages to install (all filtered packages are installed)");
+            } else {
+                app.status_message = format!("Install {} packages? (y/n)", to_install.len());
+                app.append_to_console(format!(
+                    "[{}] Confirming batch install of {} packages",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    to_install.len()
+                ));
+                app.pending_action = Some(PendingAction::InstallAll(to_install));
+                app.mode = AppMode::Confirm;
+            }
+        }
         KeyCode::Char('x') => {
             if let Some(pkg) = app.selected_package().cloned() {
                 app.status_message = format!("Remove {}? (y/n)", pkg.name);
@@ -536,6 +528,28 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 app.mode = AppMode::Confirm;
             }
         }
+        KeyCode::Char('X') => {
+            let to_remove: Vec<Package> = app
+                .filtered_packages
+                .iter()
+                .filter(|pkg| pkg.status == PackageStatus::Installed)
+                .cloned()
+                .collect();
+
+            if to_remove.is_empty() {
+                app.status_message =
+                    String::from("No packages to remove (no filtered packages are installed)");
+            } else {
+                app.status_message = format!("Remove {} packages? (y/n)", to_remove.len());
+                app.append_to_console(format!(
+                    "[{}] Confirming batch removal of {} packages",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    to_remove.len()
+                ));
+                app.pending_action = Some(PendingAction::RemoveAll(to_remove));
+                app.mode = AppMode::Confirm;
+            }
+        }
         KeyCode::Enter => {
             if let Some(pkg) = app.selected_package() {
                 app.status_message = format!(
@@ -544,22 +558,6 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 );
                 app.active_panel = ActivePanel::Details;
             }
-        }
-        KeyCode::Char(' ') => {
-            app.toggle_selection();
-            if app.selected_count() > 0 {
-                app.status_message = format!("{} selected", app.selected_count());
-            } else {
-                app.status_message = String::from("Selection cleared");
-            }
-        }
-        KeyCode::Char('a') => {
-            app.select_all();
-            app.status_message = format!("{} selected", app.selected_count());
-        }
-        KeyCode::Char('c') => {
-            app.clear_selection();
-            app.status_message = String::from("Selection cleared");
         }
         _ => {}
     }
@@ -652,6 +650,76 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                                 e
                             ));
                         }
+                    }
+                    should_refresh = true;
+                }
+                Some(PendingAction::InstallAll(packages)) => {
+                    let (ok_count, failed_count) = {
+                        let manager = app.pm.lock().await;
+                        let mut ok_count = 0;
+                        let mut failed_count = 0;
+
+                        for pkg in packages {
+                            match manager.install(&pkg).await {
+                                Ok(_) => ok_count += 1,
+                                Err(_) => failed_count += 1,
+                            }
+                        }
+
+                        (ok_count, failed_count)
+                    };
+
+                    if failed_count == 0 {
+                        app.status_message = format!("Installed {} packages", ok_count);
+                        app.append_to_console(format!(
+                            "[{}] BULK INSTALL COMPLETE: {} packages installed successfully",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            ok_count
+                        ));
+                    } else {
+                        app.status_message =
+                            format!("Install all: {} ok, {} failed", ok_count, failed_count);
+                        app.append_to_console(format!(
+                            "[{}] BULK INSTALL COMPLETE: {} ok, {} failed",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            ok_count,
+                            failed_count
+                        ));
+                    }
+                    should_refresh = true;
+                }
+                Some(PendingAction::RemoveAll(packages)) => {
+                    let (ok_count, failed_count) = {
+                        let manager = app.pm.lock().await;
+                        let mut ok_count = 0;
+                        let mut failed_count = 0;
+
+                        for pkg in packages {
+                            match manager.remove(&pkg).await {
+                                Ok(_) => ok_count += 1,
+                                Err(_) => failed_count += 1,
+                            }
+                        }
+
+                        (ok_count, failed_count)
+                    };
+
+                    if failed_count == 0 {
+                        app.status_message = format!("Removed {} packages", ok_count);
+                        app.append_to_console(format!(
+                            "[{}] BULK REMOVE COMPLETE: {} packages removed successfully",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            ok_count
+                        ));
+                    } else {
+                        app.status_message =
+                            format!("Remove all: {} ok, {} failed", ok_count, failed_count);
+                        app.append_to_console(format!(
+                            "[{}] BULK REMOVE COMPLETE: {} ok, {} failed",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            ok_count,
+                            failed_count
+                        ));
                     }
                     should_refresh = true;
                 }

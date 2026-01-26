@@ -1,4 +1,4 @@
-use super::app::{ActivePanel, App, AppMode};
+use super::app::{ActivePanel, App, AppMode, PendingAction};
 use super::theme::*;
 use crate::models::PackageStatus;
 use ratatui::{
@@ -596,6 +596,12 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" U", key_hint()),
                     Span::styled("updF", description()),
                     Span::styled("│", separator()),
+                    Span::styled(" I", key_hint()),
+                    Span::styled("instF", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" X", key_hint()),
+                    Span::styled("rmF", description()),
+                    Span::styled("│", separator()),
                     Span::styled(" r", key_hint()),
                     Span::styled("ref", description()),
                     Span::styled("│", separator()),
@@ -623,7 +629,13 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(format!(" {} ", updates_label), description()),
                     Span::styled("│", separator()),
                     Span::styled(" U", key_hint()),
-                    Span::styled(" update-all (filtered) ", description()),
+                    Span::styled(" update-all ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" I", key_hint()),
+                    Span::styled(" install-all ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" X", key_hint()),
+                    Span::styled(" remove-all ", description()),
                     Span::styled("│", separator()),
                     Span::styled(" r", key_hint()),
                     Span::styled(" refresh ", description()),
@@ -735,7 +747,20 @@ fn draw_search_popup(f: &mut Frame, app: &App) {
 }
 
 fn draw_confirm_popup(f: &mut Frame, app: &App) {
-    let area = centered_rect(60, 5, f.area());
+    let message = if let Some(ref action) = app.pending_action {
+        match action {
+            PendingAction::Install(pkg) => format!("Install {}?", pkg.name),
+            PendingAction::Remove(pkg) => format!("Remove {}?", pkg.name),
+            PendingAction::InstallAll(pkgs) => format!("Install {} packages?", pkgs.len()),
+            PendingAction::RemoveAll(pkgs) => format!("Remove {} packages?", pkgs.len()),
+            PendingAction::UpdateAll(pkgs) => format!("Update {} packages?", pkgs.len()),
+        }
+    } else {
+        app.status_message.clone()
+    };
+
+    let popup_height = if message.contains("packages") { 6 } else { 5 };
+    let area = centered_rect(60, popup_height, f.area());
 
     f.render_widget(Clear, area);
 
@@ -747,7 +772,7 @@ fn draw_confirm_popup(f: &mut Frame, app: &App) {
 
     let lines = vec![
         Line::from(vec![Span::styled("Action:", label())]),
-        Line::from(vec![Span::styled(&app.status_message, panel())]),
+        Line::from(vec![Span::styled(&message, panel())]),
         Line::from(""),
         Line::from(vec![
             Span::styled("y", key_hint()),
