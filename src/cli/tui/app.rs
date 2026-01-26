@@ -8,6 +8,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -58,6 +59,7 @@ pub struct App {
     pub console_buffer: Vec<String>,
     pub pending_action: Option<PendingAction>,
     pub compact: bool,
+    pub selected_packages: HashSet<String>,
 }
 
 impl App {
@@ -81,6 +83,7 @@ impl App {
             console_buffer: Vec::new(),
             pending_action: None,
             compact: false,
+            selected_packages: HashSet::new(),
         }
     }
 
@@ -144,6 +147,7 @@ impl App {
             match rx.try_recv() {
                 Ok(Ok(packages)) => {
                     self.packages = packages;
+                    self.cleanup_stale_selections();
                     self.filter_packages();
                     self.status_message = if self.show_updates_only {
                         format!("{} updates available", self.filtered_packages.len())
@@ -215,6 +219,7 @@ impl App {
         match result {
             Ok(packages) => {
                 self.packages = packages;
+                self.cleanup_stale_selections();
                 self.filter_packages();
                 self.status_message = format!("Loaded {} packages", self.filtered_packages.len());
                 self.append_to_console(format!(
@@ -322,6 +327,46 @@ impl App {
 
     pub fn page_up(&mut self) {
         self.package_index = self.package_index.saturating_sub(10);
+    }
+
+    pub fn is_selected(&self, package: &Package) -> bool {
+        self.selected_packages.contains(&package.id())
+    }
+
+    pub fn toggle_selection(&mut self, package: &Package) {
+        let id = package.id();
+        if self.selected_packages.contains(&id) {
+            self.selected_packages.remove(&id);
+        } else {
+            self.selected_packages.insert(id);
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        for pkg in &self.filtered_packages {
+            self.selected_packages.insert(pkg.id());
+        }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected_packages.clear();
+    }
+
+    pub fn selected_count(&self) -> usize {
+        self.selected_packages.len()
+    }
+
+    pub fn get_selected_packages(&self) -> Vec<Package> {
+        self.packages
+            .iter()
+            .filter(|p| self.selected_packages.contains(&p.id()))
+            .cloned()
+            .collect()
+    }
+
+    fn cleanup_stale_selections(&mut self) {
+        let valid_ids: HashSet<String> = self.packages.iter().map(|p| p.id()).collect();
+        self.selected_packages.retain(|id| valid_ids.contains(id));
     }
 }
 
@@ -659,5 +704,87 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
             ));
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::PackageStatus;
+
+    fn create_test_package(name: &str, source: PackageSource) -> Package {
+        Package {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            available_version: None,
+            description: "Test package".to_string(),
+            source,
+            status: PackageStatus::Installed,
+            size: None,
+            homepage: None,
+            license: None,
+            maintainer: None,
+            dependencies: vec![],
+            install_date: None,
+            update_category: None,
+            enrichment: None,
+        }
+    }
+
+    #[test]
+    fn test_selection_methods() {
+        let pm = Arc::new(Mutex::new(PackageManager::new()));
+        let mut app = App::new(pm);
+
+        let pkg1 = create_test_package("pkg1", PackageSource::Apt);
+        let pkg2 = create_test_package("pkg2", PackageSource::Apt);
+        let pkg3 = create_test_package("pkg3", PackageSource::Dnf);
+
+        app.packages = vec![pkg1.clone(), pkg2.clone(), pkg3.clone()];
+        app.filter_packages();
+
+        assert!(!app.is_selected(&pkg1));
+        assert_eq!(app.selected_count(), 0);
+
+        app.toggle_selection(&pkg1);
+        assert!(app.is_selected(&pkg1));
+        assert_eq!(app.selected_count(), 1);
+
+        app.toggle_selection(&pkg1);
+        assert!(!app.is_selected(&pkg1));
+        assert_eq!(app.selected_count(), 0);
+
+        app.select_all();
+        assert_eq!(app.selected_count(), 3);
+        assert!(app.is_selected(&pkg1));
+        assert!(app.is_selected(&pkg2));
+        assert!(app.is_selected(&pkg3));
+
+        app.clear_selection();
+        assert_eq!(app.selected_count(), 0);
+
+        app.select_all();
+        let selected = app.get_selected_packages();
+        assert_eq!(selected.len(), 3);
+    }
+
+    #[test]
+    fn test_cleanup_stale_selections() {
+        let pm = Arc::new(Mutex::new(PackageManager::new()));
+        let mut app = App::new(pm);
+
+        let pkg1 = create_test_package("pkg1", PackageSource::Apt);
+        let pkg2 = create_test_package("pkg2", PackageSource::Apt);
+
+        app.packages = vec![pkg1.clone(), pkg2.clone()];
+        app.filter_packages();
+
+        app.select_all();
+        assert_eq!(app.selected_count(), 2);
+
+        app.packages = vec![pkg1.clone()];
+        app.cleanup_stale_selections();
+        assert_eq!(app.selected_count(), 1);
+        assert!(app.is_selected(&pkg1));
     }
 }
