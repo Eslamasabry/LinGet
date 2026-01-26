@@ -550,6 +550,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let action = app.pending_action.take();
+            let mut should_refresh = false;
             match action {
                 Some(PendingAction::Install(pkg)) => {
                     let result = {
@@ -577,6 +578,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                             ));
                         }
                     }
+                    should_refresh = true;
                 }
                 Some(PendingAction::Remove(pkg)) => {
                     let result = {
@@ -603,6 +605,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                             ));
                         }
                     }
+                    should_refresh = true;
                 }
                 Some(PendingAction::UpdateAll(packages)) => {
                     let (ok_count, failed_count) = {
@@ -637,10 +640,14 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                             failed_count
                         ));
                     }
+                    should_refresh = true;
                 }
                 None => {}
             }
             app.mode = AppMode::Normal;
+            if should_refresh {
+                app.start_loading();
+            }
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             app.pending_action = None;
