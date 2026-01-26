@@ -10,18 +10,11 @@ use ratatui::{
 };
 
 const NARROW_WIDTH_THRESHOLD: u16 = 90;
+const NARROW_HEIGHT_THRESHOLD: u16 = 24;
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Title bar
-            Constraint::Min(10),   // Main content
-            Constraint::Length(6), // Console panel
-            Constraint::Length(1), // Commands bar
-            Constraint::Length(3), // Status bar
-        ])
-        .split(f.area());
+    let area = f.area();
+    let chunks = draw_main_layout(area);
 
     draw_title_bar(f, app, chunks[0]);
     draw_main_content(f, app, chunks[1]);
@@ -33,6 +26,44 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == AppMode::Search {
         draw_search_popup(f, app);
     }
+}
+
+fn draw_main_layout(area: Rect) -> Vec<Rect> {
+    let total_height = area.height;
+
+    if total_height <= NARROW_HEIGHT_THRESHOLD {
+        draw_main_layout_narrow(area)
+    } else {
+        draw_main_layout_wide(area)
+    }
+}
+
+fn draw_main_layout_wide(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(6),
+            Constraint::Length(1),
+            Constraint::Length(3),
+        ])
+        .split(area)
+        .to_vec()
+}
+
+fn draw_main_layout_narrow(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(3),
+        ])
+        .split(area)
+        .to_vec()
 }
 
 fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
