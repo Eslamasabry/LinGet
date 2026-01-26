@@ -34,7 +34,9 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
-    let (title, title_color) = if app.show_updates_only {
+    let (title, title_color) = if app.compact {
+        (" LinGet ", title_color())
+    } else if app.show_updates_only {
         (" LinGet TUI - Updates Available ", accent_color())
     } else {
         (" LinGet TUI - Installed Packages ", title_color())
@@ -51,7 +53,9 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
         .map(|s| format!("{:?}", s))
         .unwrap_or_else(|| "All".to_string());
 
-    let pkg_count = if app.show_updates_only {
+    let pkg_count = if app.compact {
+        format!(" {} | {} ", app.filtered_packages.len(), source_name)
+    } else if app.show_updates_only {
         format!(
             " {} updates available | Source: {} ",
             app.filtered_packages.len(),
@@ -441,49 +445,104 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "updates"
             };
-            vec![
-                Span::styled("↑↓/jk", key_hint()),
-                Span::styled(" nav ", description()),
-                Span::styled("│", separator()),
-                Span::styled(" Tab", key_hint()),
-                Span::styled(" panel ", description()),
-                Span::styled("│", separator()),
-                Span::styled(" /", key_hint()),
-                Span::styled(" search ", description()),
-                Span::styled("│", separator()),
-                Span::styled(" u", key_hint()),
-                Span::styled(format!(" {} ", updates_label), description()),
-                Span::styled("│", separator()),
-                Span::styled(" U", key_hint()),
-                Span::styled(" update-all ", description()),
-                Span::styled("│", separator()),
-                Span::styled(" r", key_hint()),
-                Span::styled(" refresh ", description()),
-                Span::styled("│", separator()),
-                Span::styled(" i", key_hint()),
-                Span::styled(" install ", description()),
-                Span::styled("│", separator()),
-                Span::styled(" x", key_hint()),
-                Span::styled(" remove ", description()),
-                Span::styled("│", separator()),
-                Span::styled(" q", key_hint()),
-                Span::styled(" quit", description()),
-            ]
+            if app.compact {
+                vec![
+                    Span::styled("↑↓/jk", key_hint()),
+                    Span::styled("n", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" Tab", key_hint()),
+                    Span::styled("p", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" /", key_hint()),
+                    Span::styled("s", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" u", key_hint()),
+                    Span::styled(updates_label, description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" U", key_hint()),
+                    Span::styled("upd", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" r", key_hint()),
+                    Span::styled("ref", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" i", key_hint()),
+                    Span::styled("ins", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" x", key_hint()),
+                    Span::styled("rm", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" q", key_hint()),
+                    Span::styled("q", description()),
+                ]
+            } else {
+                vec![
+                    Span::styled("↑↓/jk", key_hint()),
+                    Span::styled(" nav ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" Tab", key_hint()),
+                    Span::styled(" panel ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" /", key_hint()),
+                    Span::styled(" search ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" u", key_hint()),
+                    Span::styled(format!(" {} ", updates_label), description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" U", key_hint()),
+                    Span::styled(" update-all ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" r", key_hint()),
+                    Span::styled(" refresh ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" i", key_hint()),
+                    Span::styled(" install ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" x", key_hint()),
+                    Span::styled(" remove ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" q", key_hint()),
+                    Span::styled(" quit", description()),
+                ]
+            }
         }
-        AppMode::Search => vec![
-            Span::styled("Enter", key_hint()),
-            Span::styled(" confirm ", description()),
-            Span::styled("│", separator()),
-            Span::styled(" Esc", key_hint()),
-            Span::styled(" cancel", description()),
-        ],
-        AppMode::Confirm => vec![
-            Span::styled("y", key_hint()),
-            Span::styled(" yes ", description()),
-            Span::styled("│", separator()),
-            Span::styled(" n", key_hint()),
-            Span::styled(" no", description()),
-        ],
+        AppMode::Search => {
+            if app.compact {
+                vec![
+                    Span::styled("Enter", key_hint()),
+                    Span::styled("ok", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" Esc", key_hint()),
+                    Span::styled("ca", description()),
+                ]
+            } else {
+                vec![
+                    Span::styled("Enter", key_hint()),
+                    Span::styled(" confirm ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" Esc", key_hint()),
+                    Span::styled(" cancel", description()),
+                ]
+            }
+        }
+        AppMode::Confirm => {
+            if app.compact {
+                vec![
+                    Span::styled("y", key_hint()),
+                    Span::styled("y", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" n", key_hint()),
+                    Span::styled("n", description()),
+                ]
+            } else {
+                vec![
+                    Span::styled("y", key_hint()),
+                    Span::styled(" yes ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" n", key_hint()),
+                    Span::styled(" no", description()),
+                ]
+            }
+        }
     };
 
     let line = Line::from(commands);

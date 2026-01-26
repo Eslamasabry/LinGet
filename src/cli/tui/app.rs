@@ -55,7 +55,7 @@ pub struct App {
     pub load_rx: Option<mpsc::Receiver<Result<Vec<Package>, String>>>,
     pub console_buffer: Vec<String>,
     pub pending_action: Option<PendingAction>,
-    pub compact_mode: bool,
+    pub compact: bool,
 }
 
 impl App {
@@ -78,7 +78,7 @@ impl App {
             load_rx: None,
             console_buffer: Vec::new(),
             pending_action: None,
-            compact_mode: false,
+            compact: false,
         }
     }
 
@@ -400,7 +400,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 "Help displayed - keyboard shortcuts available",
             ));
             app.status_message = String::from(
-                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:update all | r:refresh | i:install | x:remove | c:compact | q:quit"
+                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:update all | r:refresh | i:install | x:remove | q:quit"
             );
         }
         KeyCode::Tab => {
@@ -471,23 +471,6 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 chrono::Local::now().format("%H:%M:%S")
             ));
             app.start_loading();
-        }
-        KeyCode::Char('c') => {
-            app.compact_mode = !app.compact_mode;
-            app.status_message = if app.compact_mode {
-                String::from("Compact mode: panels stacked vertically")
-            } else {
-                String::from("Compact mode: panels side by side")
-            };
-            app.append_to_console(format!(
-                "[{}] Compact mode {}",
-                chrono::Local::now().format("%H:%M:%S"),
-                if app.compact_mode {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            ));
         }
         KeyCode::Char('i') => {
             if let Some(pkg) = app.selected_package().cloned() {
