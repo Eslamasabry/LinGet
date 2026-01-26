@@ -341,29 +341,42 @@ fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
         pkg.version.clone()
     };
 
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let label_width = 12;
+    let value_width = inner_width.saturating_sub(label_width);
+
     let name_line = Line::from(vec![
         Span::styled("Name: ", label()),
-        Span::styled(&pkg.name, panel_title_active()),
+        Span::styled(
+            truncate_string(&pkg.name, value_width),
+            panel_title_active(),
+        ),
     ]);
 
     let source_line = Line::from(vec![
         Span::styled("Source: ", label()),
-        Span::styled(format!("{}", pkg.source), panel()),
+        Span::styled(
+            truncate_string(&format!("{}", pkg.source), value_width),
+            panel(),
+        ),
     ]);
 
     let status_line = Line::from(vec![
         Span::styled("Status: ", label()),
-        Span::styled(status_text, status_style_for_status(pkg.status)),
+        Span::styled(
+            truncate_string(status_text, value_width),
+            status_style_for_status(pkg.status),
+        ),
     ]);
 
     let version_line = Line::from(vec![
         Span::styled("Version: ", label()),
-        Span::styled(version_info, panel()),
+        Span::styled(truncate_string(&version_info, value_width), panel()),
     ]);
 
     let description_line = Line::from(vec![Span::styled("Description: ", label())]);
 
-    let wrapped_description = wrap_text(&pkg.description, area.width.saturating_sub(2) as usize);
+    let wrapped_description = wrap_text(&pkg.description, inner_width);
 
     let lines: Vec<Line> = vec![
         name_line,
