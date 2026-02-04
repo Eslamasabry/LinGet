@@ -227,7 +227,7 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, pkg)| {
             let is_selected = i == app.package_index;
-            let is_marked = app.is_package_selected(pkg);
+            let is_marked = app.is_selected(pkg);
             let style = if is_selected { selection() } else { panel() };
 
             let status_style = match pkg.status {
@@ -312,17 +312,16 @@ fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let selected_package = app.selected_package();
-
-    if selected_package.is_none() {
-        let empty = Paragraph::new("Select a package to view details")
-            .block(block)
-            .style(dim());
-        f.render_widget(empty, area);
-        return;
-    }
-
-    let pkg = selected_package.unwrap();
+    let pkg = match app.selected_package() {
+        Some(p) => p,
+        None => {
+            let empty = Paragraph::new("Select a package to view details")
+                .block(block)
+                .style(dim());
+            f.render_widget(empty, area);
+            return;
+        }
+    };
 
     let status_text = match pkg.status {
         PackageStatus::Installed => "Installed",
@@ -751,8 +750,6 @@ fn draw_confirm_popup(f: &mut Frame, app: &App) {
         match action {
             PendingAction::Install(pkg) => format!("Install {}?", pkg.name),
             PendingAction::Remove(pkg) => format!("Remove {}?", pkg.name),
-            PendingAction::InstallAll(pkgs) => format!("Install {} packages?", pkgs.len()),
-            PendingAction::RemoveAll(pkgs) => format!("Remove {} packages?", pkgs.len()),
             PendingAction::UpdateAll(pkgs) => format!("Update {} packages?", pkgs.len()),
         }
     } else {

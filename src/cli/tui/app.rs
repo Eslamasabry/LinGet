@@ -527,6 +527,22 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             ));
             app.start_loading();
         }
+        KeyCode::Char(' ') => {
+            if let Some(pkg) = app.selected_package().cloned() {
+                app.toggle_selection(&pkg);
+                app.status_message = format!("Selected: {}", app.selected_count());
+            } else {
+                app.status_message = String::from("No package selected");
+            }
+        }
+        KeyCode::Char('a') => {
+            app.select_all();
+            app.status_message = format!("Selected: {}", app.selected_count());
+        }
+        KeyCode::Char('c') => {
+            app.clear_selection();
+            app.status_message = String::from("Selection cleared");
+        }
         KeyCode::Char('i') => {
             if let Some(pkg) = app.selected_package().cloned() {
                 app.status_message = format!("Install {}? (y/n)", pkg.name);

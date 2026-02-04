@@ -314,12 +314,13 @@ async fn fetch_pypi(name: &str) -> Option<PackageEnrichment> {
         .ok()?;
     let url = format!("https://pypi.org/pypi/{}/json", name);
 
-    let resp = client.get(&url).send().await;
-    if let Err(ref e) = resp {
-        tracing::debug!("Failed to fetch PyPI metadata: {}", e);
-        return None;
-    }
-    let resp = resp.unwrap();
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("Failed to fetch PyPI metadata: {}", e);
+            return None;
+        }
+    };
     if !resp.status().is_success() {
         return None;
     }
@@ -402,12 +403,13 @@ async fn fetch_npmjs(name: &str) -> Option<PackageEnrichment> {
         .ok()?;
     let url = format!("https://registry.npmjs.org/{}", name);
 
-    let resp = client.get(&url).send().await;
-    if let Err(ref e) = resp {
-        tracing::debug!("Failed to fetch npmjs registry metadata: {}", e);
-        return None;
-    }
-    let resp = resp.unwrap();
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("Failed to fetch npmjs registry metadata: {}", e);
+            return None;
+        }
+    };
     if !resp.status().is_success() {
         return None;
     }
@@ -482,16 +484,18 @@ async fn fetch_snapcraft(name: &str) -> Option<PackageEnrichment> {
         .ok()?;
     let url = format!("https://api.snapcraft.io/v2/snaps/info/{}", name);
 
-    let resp = client
+    let resp = match client
         .get(&url)
         .header("Snap-Device-Series", "16")
         .send()
-        .await;
-    if let Err(ref e) = resp {
-        tracing::debug!("Failed to fetch snap metadata: {}", e);
-        return None;
-    }
-    let resp = resp.unwrap();
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("Failed to fetch snap metadata: {}", e);
+            return None;
+        }
+    };
     if !resp.status().is_success() {
         return None;
     }
@@ -576,12 +580,13 @@ async fn fetch_pub_dev(name: &str) -> Option<PackageEnrichment> {
 
     // Fetch package info
     let url = format!("https://pub.dev/api/packages/{}", name);
-    let resp = client.get(&url).send().await;
-    if let Err(ref e) = resp {
-        tracing::debug!("Failed to fetch pub.dev package info: {}", e);
-        return None;
-    }
-    let resp = resp.unwrap();
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("Failed to fetch pub.dev package info: {}", e);
+            return None;
+        }
+    };
     if !resp.status().is_success() {
         return None;
     }

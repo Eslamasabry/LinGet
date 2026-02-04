@@ -3234,12 +3234,9 @@ impl SimpleComponent for AppModel {
                             sender.input(AppMsg::HistoryTrackerReady { external_changes });
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "Failed to load history tracker");
-                            let tracker = HistoryTracker::load().await.unwrap_or_else(|_| {
-                                panic!("Critical: Cannot initialize history tracker")
-                            });
-                            let mut guard = tracker_arc.lock().await;
-                            *guard = Some(tracker);
+                            tracing::error!(error = %e, "Critical: Failed to load history tracker");
+                            // Just leave the tracker as None - the app can still function
+                            // without history tracking
                         }
                     }
                 });
