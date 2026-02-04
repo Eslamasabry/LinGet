@@ -4,6 +4,7 @@ pub mod palette {
     use super::*;
 
     pub const CYAN: Color = Color::Rgb(0, 255, 255);
+    pub const HUD_BLUE: Color = Color::Rgb(40, 150, 220);
     pub const YELLOW: Color = Color::Rgb(255, 255, 0);
     pub const GREEN: Color = Color::Rgb(0, 255, 0);
     pub const RED: Color = Color::Rgb(255, 0, 0);
@@ -128,4 +129,74 @@ pub fn label() -> Style {
     Style::default()
         .fg(palette::DARK_GRAY)
         .add_modifier(Modifier::BOLD)
+}
+
+pub fn hud_border() -> Style {
+    Style::default()
+        .fg(palette::CYAN)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn hud_title() -> Style {
+    Style::default()
+        .fg(palette::CYAN)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+}
+
+pub fn hud_label() -> Style {
+    Style::default()
+        .fg(palette::HUD_BLUE)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn hud_action() -> Style {
+    Style::default()
+        .fg(palette::WHITE)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn hud_separator() -> Style {
+    Style::default().fg(palette::INACTIVE_BORDER)
+}
+
+pub fn hud_value_active() -> Style {
+    Style::default()
+        .fg(palette::CYAN)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn hud_value_queued() -> Style {
+    Style::default()
+        .fg(palette::YELLOW)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn hud_value_completed() -> Style {
+    Style::default()
+        .fg(palette::GREEN)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn task_status_running() -> Style {
+    Style::default()
+        .fg(palette::CYAN)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn task_status_queued() -> Style {
+    Style::default().fg(palette::YELLOW)
+}
+
+pub fn task_status_completed() -> Style {
+    Style::default().fg(palette::GREEN)
+}
+
+pub fn task_status_failed() -> Style {
+    Style::default()
+        .fg(palette::RED)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn task_status_cancelled() -> Style {
+    Style::default().fg(palette::DARK_GRAY)
 }

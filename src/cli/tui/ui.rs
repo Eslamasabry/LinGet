@@ -1,5 +1,6 @@
 use super::app::{ActivePanel, App, AppMode, PendingAction};
 use super::theme::*;
+use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
 use crate::models::PackageStatus;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -111,17 +112,22 @@ fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(25),
-                Constraint::Percentage(35),
-                Constraint::Percentage(25),
-                Constraint::Percentage(15),
+                Constraint::Percentage(30),
+                Constraint::Percentage(40),
+                Constraint::Percentage(30),
             ])
             .split(area);
 
         draw_sources_panel(f, app, chunks[0]);
         draw_packages_panel(f, app, chunks[1]);
-        draw_details_panel(f, app, chunks[2]);
-        draw_queue_panel(f, app, chunks[3]);
+
+        let detail_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(chunks[2]);
+
+        draw_details_panel(f, app, detail_chunks[0]);
+        draw_task_queue_panel(f, app, detail_chunks[1]);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -134,12 +140,14 @@ fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
 
         draw_sources_panel(f, app, chunks[0]);
         draw_packages_panel(f, app, chunks[1]);
-        let right_chunks = Layout::default()
+
+        let detail_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
             .split(chunks[2]);
-        draw_details_panel(f, app, right_chunks[0]);
-        draw_queue_panel(f, app, right_chunks[1]);
+
+        draw_details_panel(f, app, detail_chunks[0]);
+        draw_task_queue_panel(f, app, detail_chunks[1]);
     }
 }
 
@@ -388,98 +396,49 @@ fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-fn draw_queue_panel(f: &mut Frame, app: &App, area: Rect) {
-    let is_active = app.active_panel == ActivePanel::Queue;
-
-    let border_style = if is_active {
-        border_active()
-    } else {
-        border_inactive()
-    };
-
-    let title = format!(" Queue ({}) ", app.queued_tasks.len());
+fn draw_task_queue_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(title)
-        .title_style(if is_active {
-            panel_title_active()
-        } else {
-            panel_title()
-        });
+        .border_style(hud_border())
+        .title(" Task Queue ")
+        .title_style(hud_title());
 
-    if app.queued_tasks.is_empty() {
-        let empty = Paragraph::new("No queued tasks").block(block).style(dim());
-        f.render_widget(empty, area);
-        return;
+    let inner = block.inner(area);
+    let content_width = inner.width as usize;
+    let (active, queued, completed) = task_queue_counts(&app.task_queue.entries);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let summary = Line::from(vec![
+        Span::styled("ACTIVE ", hud_label()),
+        Span::styled(format!("{}", active), hud_value_active()),
+        Span::styled(" | ", hud_separator()),
+        Span::styled("QUEUED ", hud_label()),
+        Span::styled(format!("{}", queued), hud_value_queued()),
+        Span::styled(" | ", hud_separator()),
+        Span::styled("COMPLETED ", hud_label()),
+        Span::styled(format!("{}", completed), hud_value_completed()),
+    ]);
+    lines.push(summary);
+
+    if inner.height > 1 {
+        lines.push(Line::from(""));
     }
 
-    let rows: Vec<Row> = app
-        .queued_tasks
-        .iter()
-        .enumerate()
-        .map(|(i, task)| {
-            let is_selected = i == app.queue_index;
-            let style = if is_selected { selection() } else { panel() };
-
-            let status = if task.completed {
-                if task.error.is_some() {
-                    "Failed"
-                } else {
-                    "Completed"
-                }
-            } else if task.is_due() {
-                "Running"
-            } else {
-                "Queued"
-            };
-
-            let status_style = if task.completed {
-                if task.error.is_some() {
-                    status_removing()
-                } else {
-                    status_installed()
-                }
-            } else if task.is_due() {
-                status_loading()
-            } else {
-                status_update()
-            };
-
-            Row::new(vec![
-                Span::styled(task.operation.display_name(), style),
-                Span::styled(truncate_string(&task.package_name, 20), style),
-                Span::styled(status, status_style),
-                Span::styled(truncate_string(&task.time_until(), 16), style),
-            ])
-            .style(style)
-        })
-        .collect();
-
-    let header = Row::new(vec!["Op", "Package", "Status", "When"]).style(table_header());
-
-    let widths = if app.compact {
-        [
-            Constraint::Length(6),
-            Constraint::Min(10),
-            Constraint::Length(8),
-            Constraint::Length(10),
-        ]
+    if app.task_queue.entries.is_empty() {
+        lines.push(Line::from(Span::styled("No queued tasks", dim())));
     } else {
-        [
-            Constraint::Length(8),
-            Constraint::Min(18),
-            Constraint::Length(10),
-            Constraint::Length(12),
-        ]
-    };
+        let mut available = inner.height.saturating_sub(lines.len() as u16) as usize;
+        for entry in app.task_queue.entries.iter().rev() {
+            if available == 0 {
+                break;
+            }
+            lines.push(task_queue_line(entry, content_width));
+            available = available.saturating_sub(1);
+        }
+    }
 
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(block)
-        .row_highlight_style(selection_focused());
-
-    f.render_widget(table, area);
+    let paragraph = Paragraph::new(lines).block(block).style(panel());
+    f.render_widget(paragraph, area);
 }
 
 fn status_style_for_status(status: PackageStatus) -> Style {
@@ -489,6 +448,84 @@ fn status_style_for_status(status: PackageStatus) -> Style {
         PackageStatus::NotInstalled => status_not_installed(),
         PackageStatus::Installing | PackageStatus::Updating => status_loading(),
         PackageStatus::Removing => status_removing(),
+    }
+}
+
+fn task_queue_counts(entries: &[TaskQueueEntry]) -> (usize, usize, usize) {
+    let mut active = 0;
+    let mut queued = 0;
+    let mut completed = 0;
+
+    for entry in entries {
+        match entry.status {
+            TaskQueueStatus::Running => active += 1,
+            TaskQueueStatus::Queued => queued += 1,
+            TaskQueueStatus::Completed | TaskQueueStatus::Failed | TaskQueueStatus::Cancelled => {
+                completed += 1
+            }
+        }
+    }
+
+    (active, queued, completed)
+}
+
+fn task_queue_line(entry: &TaskQueueEntry, max_width: usize) -> Line<'static> {
+    let status_label = task_status_label(entry.status);
+    let action_label = task_action_label(entry.action);
+    let status_prefix = format!("[{}] ", status_label);
+    let action_text = format!("{} ", action_label);
+
+    let info = match entry.status {
+        TaskQueueStatus::Failed => {
+            if let Some(error) = &entry.error {
+                format!(
+                    "{} ({:?}) - {}",
+                    entry.package_name, entry.package_source, error
+                )
+            } else {
+                format!("{} ({:?})", entry.package_name, entry.package_source)
+            }
+        }
+        _ => format!("{} ({:?})", entry.package_name, entry.package_source),
+    };
+
+    let prefix_width = UnicodeWidthStr::width(status_prefix.as_str())
+        + UnicodeWidthStr::width(action_text.as_str());
+    let remaining = max_width.saturating_sub(prefix_width);
+    let info_text = truncate_to_width(&info, remaining);
+
+    Line::from(vec![
+        Span::styled(status_prefix, task_status_style(entry.status)),
+        Span::styled(action_text, hud_action()),
+        Span::styled(info_text, panel()),
+    ])
+}
+
+fn task_status_label(status: TaskQueueStatus) -> &'static str {
+    match status {
+        TaskQueueStatus::Queued => "QUE",
+        TaskQueueStatus::Running => "RUN",
+        TaskQueueStatus::Completed => "DONE",
+        TaskQueueStatus::Failed => "FAIL",
+        TaskQueueStatus::Cancelled => "CXL",
+    }
+}
+
+fn task_action_label(action: TaskQueueAction) -> &'static str {
+    match action {
+        TaskQueueAction::Install => "INSTALL",
+        TaskQueueAction::Remove => "REMOVE",
+        TaskQueueAction::Update => "UPDATE",
+    }
+}
+
+fn task_status_style(status: TaskQueueStatus) -> Style {
+    match status {
+        TaskQueueStatus::Queued => task_status_queued(),
+        TaskQueueStatus::Running => task_status_running(),
+        TaskQueueStatus::Completed => task_status_completed(),
+        TaskQueueStatus::Failed => task_status_failed(),
+        TaskQueueStatus::Cancelled => task_status_cancelled(),
     }
 }
 
@@ -680,7 +717,7 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                 "updates"
             };
             if app.compact {
-                let mut commands = vec![
+                vec![
                     Span::styled("↑↓/jk", key_hint()),
                     Span::styled("n", description()),
                     Span::styled("│", separator()),
@@ -713,20 +750,9 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("│", separator()),
                     Span::styled(" q", key_hint()),
                     Span::styled("q", description()),
-                ];
-                if app.active_panel == ActivePanel::Queue {
-                    commands.extend(vec![
-                        Span::styled("│", separator()),
-                        Span::styled(" C", key_hint()),
-                        Span::styled("can", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" R", key_hint()),
-                        Span::styled("ret", description()),
-                    ]);
-                }
-                commands
+                ]
             } else {
-                let mut commands = vec![
+                vec![
                     Span::styled("↑↓/jk", key_hint()),
                     Span::styled(" nav ", description()),
                     Span::styled("│", separator()),
@@ -759,18 +785,7 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("│", separator()),
                     Span::styled(" q", key_hint()),
                     Span::styled(" quit", description()),
-                ];
-                if app.active_panel == ActivePanel::Queue {
-                    commands.extend(vec![
-                        Span::styled("│", separator()),
-                        Span::styled(" C", key_hint()),
-                        Span::styled(" cancel ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" R", key_hint()),
-                        Span::styled(" retry", description()),
-                    ]);
-                }
-                commands
+                ]
             }
         }
         AppMode::Search => {
@@ -873,15 +888,7 @@ fn draw_confirm_popup(f: &mut Frame, app: &App) {
         match action {
             PendingAction::Install(pkg) => format!("Install {}?", pkg.name),
             PendingAction::Remove(pkg) => format!("Remove {}?", pkg.name),
-            PendingAction::UpdateAll(pkgs) => {
-                format!("Queue updates for {} packages?", pkgs.len())
-            }
-            PendingAction::InstallSelected(pkgs) => {
-                format!("Queue installs for {} packages?", pkgs.len())
-            }
-            PendingAction::RemoveSelected(pkgs) => {
-                format!("Queue removals for {} packages?", pkgs.len())
-            }
+            PendingAction::UpdateAll(pkgs) => format!("Update {} packages?", pkgs.len()),
         }
     } else {
         app.status_message.clone()
