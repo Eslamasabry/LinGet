@@ -1,5 +1,9 @@
 use crate::backend::PackageManager;
-use crate::models::{Package, PackageSource};
+use crate::models::history::{
+    load_operation_history, save_operation_history, TaskQueueAction, TaskQueueEntry,
+    TaskQueueState,
+};
+use crate::models::{Config, OperationHistory, Package, PackageSource};
 use anyhow::Result;
 use chrono;
 use crossterm::{
@@ -60,10 +64,20 @@ pub struct App {
     pub pending_action: Option<PendingAction>,
     pub compact: bool,
     pub selected_packages: HashSet<String>,
+    pub task_queue: TaskQueueState,
+    pub retain_task_queue_history: bool,
 }
 
 impl App {
     pub fn new(pm: Arc<Mutex<PackageManager>>) -> Self {
+        Self::with_task_queue(pm, TaskQueueState::new(), true)
+    }
+
+    pub fn with_task_queue(
+        pm: Arc<Mutex<PackageManager>>,
+        task_queue: TaskQueueState,
+        retain_task_queue_history: bool,
+    ) -> Self {
         Self {
             pm,
             packages: Vec::new(),
@@ -84,6 +98,8 @@ impl App {
             pending_action: None,
             compact: false,
             selected_packages: HashSet::new(),
+            task_queue,
+            retain_task_queue_history,
         }
     }
 
@@ -91,6 +107,61 @@ impl App {
         self.console_buffer.push(line);
         if self.console_buffer.len() > MAX_CONSOLE_LINES {
             self.console_buffer.remove(0);
+        }
+    }
+
+    fn start_task_entry(&mut self, action: TaskQueueAction, package: &Package) -> String {
+        let mut entry = TaskQueueEntry::new(
+            action,
+            package.id(),
+            package.name.clone(),
+            package.source,
+        );
+        entry.mark_running();
+        let entry_id = entry.id.clone();
+        self.task_queue.enqueue(entry);
+        self.persist_task_queue();
+        entry_id
+    }
+
+    fn mark_task_completed(&mut self, entry_id: &str) {
+        if let Some(entry) = self.task_queue.get_mut(entry_id) {
+            entry.mark_completed();
+        }
+        self.persist_task_queue();
+    }
+
+    fn mark_task_failed(&mut self, entry_id: &str, error: String) {
+        if let Some(entry) = self.task_queue.get_mut(entry_id) {
+            entry.mark_failed(error);
+        }
+        self.persist_task_queue();
+    }
+
+    fn persist_task_queue(&mut self) {
+        if !self.retain_task_queue_history {
+            self.task_queue.retain_active();
+        }
+
+        let mut history = match load_operation_history() {
+            Ok(history) => history,
+            Err(e) => {
+                self.append_to_console(format!(
+                    "[{}] WARN: Failed to load history for task queue: {}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    e
+                ));
+                OperationHistory::new()
+            }
+        };
+
+        history.task_queue = self.task_queue.clone();
+        if let Err(e) = save_operation_history(&history) {
+            self.append_to_console(format!(
+                "[{}] WARN: Failed to save task queue: {}",
+                chrono::Local::now().format("%H:%M:%S"),
+                e
+            ));
         }
     }
 
@@ -385,7 +456,16 @@ pub async fn run() -> Result<()> {
 
     // Create app state
     let pm = Arc::new(Mutex::new(PackageManager::new()));
-    let mut app = App::new(pm);
+    let config = Config::load();
+    let retain_task_queue_history = config.retain_task_queue_history;
+    let task_queue = match load_task_queue_state(retain_task_queue_history) {
+        Ok(queue) => queue,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load task queue history");
+            TaskQueueState::new()
+        }
+    };
+    let mut app = App::with_task_queue(pm, task_queue, retain_task_queue_history);
 
     // Initial load
     app.load_sources().await;
@@ -438,6 +518,18 @@ async fn run_app(
     }
 
     Ok(())
+}
+
+fn load_task_queue_state(retain_task_queue_history: bool) -> Result<TaskQueueState> {
+    let mut history = load_operation_history()?;
+    if !retain_task_queue_history {
+        let original_len = history.task_queue.entries.len();
+        history.task_queue.retain_active();
+        if history.task_queue.entries.len() != original_len {
+            save_operation_history(&history)?;
+        }
+    }
+    Ok(history.task_queue)
 }
 
 fn handle_normal_mode(app: &mut App, key: KeyCode) {
@@ -619,12 +711,14 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
             let mut should_refresh = false;
             match action {
                 Some(PendingAction::Install(pkg)) => {
+                    let task_entry_id = app.start_task_entry(TaskQueueAction::Install, &pkg);
                     let result = {
                         let manager = app.pm.lock().await;
                         manager.install(&pkg).await
                     };
                     match result {
                         Ok(_) => {
+                            app.mark_task_completed(&task_entry_id);
                             app.status_message = format!("Success: {}", pkg.name);
                             app.append_to_console(format!(
                                 "[{}] INSTALLED: {} v{} from {:?}",
@@ -635,6 +729,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                             ));
                         }
                         Err(e) => {
+                            app.mark_task_failed(&task_entry_id, e.to_string());
                             app.status_message = format!("Error: {}", e);
                             app.append_to_console(format!(
                                 "[{}] FAILED: {} - {}",
@@ -647,12 +742,14 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                     should_refresh = true;
                 }
                 Some(PendingAction::Remove(pkg)) => {
+                    let task_entry_id = app.start_task_entry(TaskQueueAction::Remove, &pkg);
                     let result = {
                         let manager = app.pm.lock().await;
                         manager.remove(&pkg).await
                     };
                     match result {
                         Ok(_) => {
+                            app.mark_task_completed(&task_entry_id);
                             app.status_message = format!("Success: {}", pkg.name);
                             app.append_to_console(format!(
                                 "[{}] REMOVED: {} v{}",
@@ -662,6 +759,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                             ));
                         }
                         Err(e) => {
+                            app.mark_task_failed(&task_entry_id, e.to_string());
                             app.status_message = format!("Error: {}", e);
                             app.append_to_console(format!(
                                 "[{}] FAILED: {} - {}",
@@ -683,8 +781,11 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                         let manager = app.pm.lock().await;
 
                         for pkg in &packages {
+                            let task_entry_id =
+                                app.start_task_entry(TaskQueueAction::Update, pkg);
                             match manager.update(pkg).await {
                                 Ok(_) => {
+                                    app.mark_task_completed(&task_entry_id);
                                     ok_count += 1;
                                     logs.push(format!(
                                         "[{}] UPDATED: {} v{} -> v{}",
@@ -695,6 +796,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                                     ));
                                 }
                                 Err(e) => {
+                                    app.mark_task_failed(&task_entry_id, e.to_string());
                                     failed_count += 1;
                                     logs.push(format!("[{}] FAILED: {} - {}", now, pkg.name, e));
                                 }

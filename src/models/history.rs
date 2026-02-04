@@ -1,10 +1,16 @@
 #![allow(dead_code)]
 
 use crate::models::PackageSource;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use uuid::Uuid;
+
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+
+const HISTORY_FILE: &str = "history.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HistoryOperation {
@@ -157,11 +163,13 @@ impl HistoryEntry {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationHistory {
     pub entries: Vec<HistoryEntry>,
     #[serde(default)]
     pub max_entries: usize,
+    #[serde(default)]
+    pub task_queue: TaskQueueState,
 }
 
 impl OperationHistory {
@@ -169,6 +177,7 @@ impl OperationHistory {
         Self {
             entries: Vec::new(),
             max_entries: 500,
+            task_queue: TaskQueueState::new(),
         }
     }
 
@@ -266,6 +275,12 @@ impl OperationHistory {
     }
 }
 
+impl Default for OperationHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct HistoryStats {
     pub total: usize,
@@ -274,6 +289,129 @@ pub struct HistoryStats {
     pub updates: usize,
     pub downgrades: usize,
     pub cleanups: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskQueueAction {
+    Install,
+    Remove,
+    Update,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskQueueStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl TaskQueueStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            TaskQueueStatus::Completed | TaskQueueStatus::Failed | TaskQueueStatus::Cancelled
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskQueueEntry {
+    pub id: String,
+    pub action: TaskQueueAction,
+    pub package_id: String,
+    pub package_name: String,
+    pub package_source: PackageSource,
+    pub status: TaskQueueStatus,
+    pub queued_at: DateTime<Local>,
+    pub started_at: Option<DateTime<Local>>,
+    pub completed_at: Option<DateTime<Local>>,
+    pub error: Option<String>,
+}
+
+impl TaskQueueEntry {
+    pub fn new(
+        action: TaskQueueAction,
+        package_id: String,
+        package_name: String,
+        package_source: PackageSource,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            action,
+            package_id,
+            package_name,
+            package_source,
+            status: TaskQueueStatus::Queued,
+            queued_at: Local::now(),
+            started_at: None,
+            completed_at: None,
+            error: None,
+        }
+    }
+
+    pub fn mark_running(&mut self) {
+        self.status = TaskQueueStatus::Running;
+        if self.started_at.is_none() {
+            self.started_at = Some(Local::now());
+        }
+    }
+
+    pub fn mark_completed(&mut self) {
+        self.status = TaskQueueStatus::Completed;
+        self.completed_at = Some(Local::now());
+    }
+
+    pub fn mark_failed(&mut self, error: String) {
+        self.status = TaskQueueStatus::Failed;
+        self.completed_at = Some(Local::now());
+        self.error = Some(error);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskQueueState {
+    pub entries: Vec<TaskQueueEntry>,
+    #[serde(default)]
+    pub max_entries: usize,
+}
+
+impl TaskQueueState {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            max_entries: 200,
+        }
+    }
+
+    pub fn enqueue(&mut self, entry: TaskQueueEntry) {
+        self.entries.push(entry);
+        self.prune();
+    }
+
+    pub fn get_mut(&mut self, entry_id: &str) -> Option<&mut TaskQueueEntry> {
+        self.entries.iter_mut().find(|e| e.id == entry_id)
+    }
+
+    pub fn prune(&mut self) {
+        if self.max_entries == 0 || self.entries.len() <= self.max_entries {
+            return;
+        }
+
+        let overflow = self.entries.len() - self.max_entries;
+        self.entries.drain(0..overflow);
+    }
+
+    pub fn retain_active(&mut self) {
+        self.entries.retain(|entry| !entry.status.is_terminal());
+    }
+}
+
+impl Default for TaskQueueState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,4 +564,37 @@ pub struct UpdatedEntry {
     pub source: PackageSource,
     pub old_version: String,
     pub new_version: String,
+}
+
+fn data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("linget")
+}
+
+fn history_path() -> PathBuf {
+    data_dir().join(HISTORY_FILE)
+}
+
+pub fn load_operation_history() -> Result<OperationHistory> {
+    let path = history_path();
+    if !path.exists() {
+        return Ok(OperationHistory::new());
+    }
+
+    let content = fs::read_to_string(&path).context("Failed to read history file")?;
+    serde_json::from_str(&content).context("Failed to parse history file")
+}
+
+pub fn save_operation_history(history: &OperationHistory) -> Result<()> {
+    let path = history_path();
+
+    if let Some(dir) = path.parent() {
+        if !dir.exists() {
+            fs::create_dir_all(dir).context("Failed to create data directory")?;
+        }
+    }
+
+    let content = serde_json::to_string_pretty(history).context("Failed to serialize history")?;
+    fs::write(&path, content).context("Failed to write history file")
 }

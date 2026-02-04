@@ -90,6 +90,10 @@ pub struct Config {
 
     #[serde(default)]
     pub scheduler: SchedulerState,
+
+    /// Retain completed task queue entries across sessions
+    #[serde(default = "default_retain_task_queue_history")]
+    pub retain_task_queue_history: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -191,6 +195,10 @@ impl AccentColor {
 }
 
 fn default_ui_show_icons() -> bool {
+    true
+}
+
+fn default_retain_task_queue_history() -> bool {
     true
 }
 
@@ -391,6 +399,7 @@ impl Default for Config {
             accent_color: AccentColor::default(),
             appearance: AppearanceConfig::default(),
             scheduler: SchedulerState::default(),
+            retain_task_queue_history: default_retain_task_queue_history(),
         }
     }
 }
