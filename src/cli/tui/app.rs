@@ -1,9 +1,7 @@
 use crate::backend::PackageManager;
-use crate::models::history::{
-    load_operation_history, save_operation_history, TaskQueueAction, TaskQueueEntry,
-    TaskQueueState,
+use crate::models::{
+    Package, PackageSource, PackageStatus, ScheduledOperation, ScheduledTask,
 };
-use crate::models::{Config, OperationHistory, Package, PackageSource};
 use anyhow::Result;
 use chrono;
 use crossterm::{
@@ -42,6 +40,8 @@ pub enum PendingAction {
     Install(Package),
     Remove(Package),
     UpdateAll(Vec<Package>),
+    InstallSelected(Vec<Package>),
+    RemoveSelected(Vec<Package>),
 }
 
 pub struct App {
@@ -64,20 +64,11 @@ pub struct App {
     pub pending_action: Option<PendingAction>,
     pub compact: bool,
     pub selected_packages: HashSet<String>,
-    pub task_queue: TaskQueueState,
-    pub retain_task_queue_history: bool,
+    pub queued_tasks: Vec<ScheduledTask>,
 }
 
 impl App {
     pub fn new(pm: Arc<Mutex<PackageManager>>) -> Self {
-        Self::with_task_queue(pm, TaskQueueState::new(), true)
-    }
-
-    pub fn with_task_queue(
-        pm: Arc<Mutex<PackageManager>>,
-        task_queue: TaskQueueState,
-        retain_task_queue_history: bool,
-    ) -> Self {
         Self {
             pm,
             packages: Vec::new(),
@@ -98,8 +89,7 @@ impl App {
             pending_action: None,
             compact: false,
             selected_packages: HashSet::new(),
-            task_queue,
-            retain_task_queue_history,
+            queued_tasks: Vec::new(),
         }
     }
 
@@ -107,61 +97,6 @@ impl App {
         self.console_buffer.push(line);
         if self.console_buffer.len() > MAX_CONSOLE_LINES {
             self.console_buffer.remove(0);
-        }
-    }
-
-    fn start_task_entry(&mut self, action: TaskQueueAction, package: &Package) -> String {
-        let mut entry = TaskQueueEntry::new(
-            action,
-            package.id(),
-            package.name.clone(),
-            package.source,
-        );
-        entry.mark_running();
-        let entry_id = entry.id.clone();
-        self.task_queue.enqueue(entry);
-        self.persist_task_queue();
-        entry_id
-    }
-
-    fn mark_task_completed(&mut self, entry_id: &str) {
-        if let Some(entry) = self.task_queue.get_mut(entry_id) {
-            entry.mark_completed();
-        }
-        self.persist_task_queue();
-    }
-
-    fn mark_task_failed(&mut self, entry_id: &str, error: String) {
-        if let Some(entry) = self.task_queue.get_mut(entry_id) {
-            entry.mark_failed(error);
-        }
-        self.persist_task_queue();
-    }
-
-    fn persist_task_queue(&mut self) {
-        if !self.retain_task_queue_history {
-            self.task_queue.retain_active();
-        }
-
-        let mut history = match load_operation_history() {
-            Ok(history) => history,
-            Err(e) => {
-                self.append_to_console(format!(
-                    "[{}] WARN: Failed to load history for task queue: {}",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    e
-                ));
-                OperationHistory::new()
-            }
-        };
-
-        history.task_queue = self.task_queue.clone();
-        if let Err(e) = save_operation_history(&history) {
-            self.append_to_console(format!(
-                "[{}] WARN: Failed to save task queue: {}",
-                chrono::Local::now().format("%H:%M:%S"),
-                e
-            ));
         }
     }
 
@@ -444,6 +379,19 @@ impl App {
         let valid_ids: HashSet<String> = self.packages.iter().map(|p| p.id()).collect();
         self.selected_packages.retain(|id| valid_ids.contains(id));
     }
+
+    fn queue_tasks(&mut self, packages: Vec<Package>, operation: ScheduledOperation) -> usize {
+        let scheduled_at = chrono::Utc::now();
+        let tasks: Vec<ScheduledTask> = packages
+            .into_iter()
+            .map(|pkg| {
+                ScheduledTask::new(pkg.id(), pkg.name, pkg.source, operation, scheduled_at)
+            })
+            .collect();
+        let count = tasks.len();
+        self.queued_tasks.extend(tasks);
+        count
+    }
 }
 
 pub async fn run() -> Result<()> {
@@ -456,16 +404,7 @@ pub async fn run() -> Result<()> {
 
     // Create app state
     let pm = Arc::new(Mutex::new(PackageManager::new()));
-    let config = Config::load();
-    let retain_task_queue_history = config.retain_task_queue_history;
-    let task_queue = match load_task_queue_state(retain_task_queue_history) {
-        Ok(queue) => queue,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to load task queue history");
-            TaskQueueState::new()
-        }
-    };
-    let mut app = App::with_task_queue(pm, task_queue, retain_task_queue_history);
+    let mut app = App::new(pm);
 
     // Initial load
     app.load_sources().await;
@@ -520,18 +459,6 @@ async fn run_app(
     Ok(())
 }
 
-fn load_task_queue_state(retain_task_queue_history: bool) -> Result<TaskQueueState> {
-    let mut history = load_operation_history()?;
-    if !retain_task_queue_history {
-        let original_len = history.task_queue.entries.len();
-        history.task_queue.retain_active();
-        if history.task_queue.entries.len() != original_len {
-            save_operation_history(&history)?;
-        }
-    }
-    Ok(history.task_queue)
-}
-
 fn handle_normal_mode(app: &mut App, key: KeyCode) {
     // Don't process keys while loading (except quit)
     if app.loading && key != KeyCode::Char('q') && key != KeyCode::Esc {
@@ -547,7 +474,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 "Help displayed - keyboard shortcuts available",
             ));
             app.status_message = String::from(
-                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:update all (filtered) | r:refresh | i:install | x:remove | q:quit"
+                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:queue updates (filtered) | I:queue installs (selected) | X:queue removals (selected) | r:refresh | i:install | x:remove | q:quit"
             );
         }
         KeyCode::Tab => {
@@ -602,13 +529,61 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             if updates.is_empty() {
                 app.status_message = String::from("No updates available");
             } else {
-                app.status_message = format!("Update all {} packages? (y/n)", updates.len());
+                app.status_message =
+                    format!("Queue updates for {} packages? (y/n)", updates.len());
                 app.append_to_console(format!(
-                    "[{}] Confirming bulk update of {} packages",
+                    "[{}] Confirming queued updates for {} packages",
                     chrono::Local::now().format("%H:%M:%S"),
                     updates.len()
                 ));
                 app.pending_action = Some(PendingAction::UpdateAll(updates));
+                app.mode = AppMode::Confirm;
+            }
+        }
+        KeyCode::Char('I') => {
+            let install_targets: Vec<Package> = app
+                .get_selected_packages()
+                .into_iter()
+                .filter(|pkg| pkg.status == PackageStatus::NotInstalled)
+                .collect();
+
+            if install_targets.is_empty() {
+                app.status_message = String::from("No installable packages selected");
+            } else {
+                app.status_message =
+                    format!("Queue installs for {} packages? (y/n)", install_targets.len());
+                app.append_to_console(format!(
+                    "[{}] Confirming queued installs for {} packages",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    install_targets.len()
+                ));
+                app.pending_action = Some(PendingAction::InstallSelected(install_targets));
+                app.mode = AppMode::Confirm;
+            }
+        }
+        KeyCode::Char('X') => {
+            let remove_targets: Vec<Package> = app
+                .get_selected_packages()
+                .into_iter()
+                .filter(|pkg| {
+                    matches!(
+                        pkg.status,
+                        PackageStatus::Installed | PackageStatus::UpdateAvailable
+                    )
+                })
+                .collect();
+
+            if remove_targets.is_empty() {
+                app.status_message = String::from("No removable packages selected");
+            } else {
+                app.status_message =
+                    format!("Queue removals for {} packages? (y/n)", remove_targets.len());
+                app.append_to_console(format!(
+                    "[{}] Confirming queued removals for {} packages",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    remove_targets.len()
+                ));
+                app.pending_action = Some(PendingAction::RemoveSelected(remove_targets));
                 app.mode = AppMode::Confirm;
             }
         }
@@ -711,14 +686,12 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
             let mut should_refresh = false;
             match action {
                 Some(PendingAction::Install(pkg)) => {
-                    let task_entry_id = app.start_task_entry(TaskQueueAction::Install, &pkg);
                     let result = {
                         let manager = app.pm.lock().await;
                         manager.install(&pkg).await
                     };
                     match result {
                         Ok(_) => {
-                            app.mark_task_completed(&task_entry_id);
                             app.status_message = format!("Success: {}", pkg.name);
                             app.append_to_console(format!(
                                 "[{}] INSTALLED: {} v{} from {:?}",
@@ -729,7 +702,6 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                             ));
                         }
                         Err(e) => {
-                            app.mark_task_failed(&task_entry_id, e.to_string());
                             app.status_message = format!("Error: {}", e);
                             app.append_to_console(format!(
                                 "[{}] FAILED: {} - {}",
@@ -742,14 +714,12 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                     should_refresh = true;
                 }
                 Some(PendingAction::Remove(pkg)) => {
-                    let task_entry_id = app.start_task_entry(TaskQueueAction::Remove, &pkg);
                     let result = {
                         let manager = app.pm.lock().await;
                         manager.remove(&pkg).await
                     };
                     match result {
                         Ok(_) => {
-                            app.mark_task_completed(&task_entry_id);
                             app.status_message = format!("Success: {}", pkg.name);
                             app.append_to_console(format!(
                                 "[{}] REMOVED: {} v{}",
@@ -759,7 +729,6 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                             ));
                         }
                         Err(e) => {
-                            app.mark_task_failed(&task_entry_id, e.to_string());
                             app.status_message = format!("Error: {}", e);
                             app.append_to_console(format!(
                                 "[{}] FAILED: {} - {}",
@@ -772,57 +741,31 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                     should_refresh = true;
                 }
                 Some(PendingAction::UpdateAll(packages)) => {
-                    let mut ok_count = 0;
-                    let mut failed_count = 0;
-                    let mut logs: Vec<String> = Vec::new();
-                    let now = chrono::Local::now().format("%H:%M:%S").to_string();
-
-                    {
-                        let manager = app.pm.lock().await;
-
-                        for pkg in &packages {
-                            let task_entry_id =
-                                app.start_task_entry(TaskQueueAction::Update, pkg);
-                            match manager.update(pkg).await {
-                                Ok(_) => {
-                                    app.mark_task_completed(&task_entry_id);
-                                    ok_count += 1;
-                                    logs.push(format!(
-                                        "[{}] UPDATED: {} v{} -> v{}",
-                                        now,
-                                        pkg.name,
-                                        pkg.version,
-                                        pkg.available_version.as_ref().unwrap_or(&pkg.version)
-                                    ));
-                                }
-                                Err(e) => {
-                                    app.mark_task_failed(&task_entry_id, e.to_string());
-                                    failed_count += 1;
-                                    logs.push(format!("[{}] FAILED: {} - {}", now, pkg.name, e));
-                                }
-                            }
-                        }
-                    };
-
-                    for log in logs {
-                        app.append_to_console(log);
-                    }
-
-                    if failed_count == 0 {
-                        app.status_message = format!("Updated {} packages", ok_count);
-                        app.append_to_console(format!(
-                            "[{}] BULK UPDATE COMPLETE: {} succeeded, 0 failed",
-                            now, ok_count
-                        ));
-                    } else {
-                        app.status_message =
-                            format!("Update all: {} ok, {} failed", ok_count, failed_count);
-                        app.append_to_console(format!(
-                            "[{}] BULK UPDATE COMPLETE: {} succeeded, {} failed",
-                            now, ok_count, failed_count
-                        ));
-                    }
-                    should_refresh = true;
+                    let queued = app.queue_tasks(packages, ScheduledOperation::Update);
+                    app.status_message = format!("Queued {} update tasks", queued);
+                    app.append_to_console(format!(
+                        "[{}] QUEUED: {} update tasks",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        queued
+                    ));
+                }
+                Some(PendingAction::InstallSelected(packages)) => {
+                    let queued = app.queue_tasks(packages, ScheduledOperation::Install);
+                    app.status_message = format!("Queued {} install tasks", queued);
+                    app.append_to_console(format!(
+                        "[{}] QUEUED: {} install tasks",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        queued
+                    ));
+                }
+                Some(PendingAction::RemoveSelected(packages)) => {
+                    let queued = app.queue_tasks(packages, ScheduledOperation::Remove);
+                    app.status_message = format!("Queued {} remove tasks", queued);
+                    app.append_to_console(format!(
+                        "[{}] QUEUED: {} remove tasks",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        queued
+                    ));
                 }
                 None => {}
             }

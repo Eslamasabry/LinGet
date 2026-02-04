@@ -750,7 +750,15 @@ fn draw_confirm_popup(f: &mut Frame, app: &App) {
         match action {
             PendingAction::Install(pkg) => format!("Install {}?", pkg.name),
             PendingAction::Remove(pkg) => format!("Remove {}?", pkg.name),
-            PendingAction::UpdateAll(pkgs) => format!("Update {} packages?", pkgs.len()),
+            PendingAction::UpdateAll(pkgs) => {
+                format!("Queue updates for {} packages?", pkgs.len())
+            }
+            PendingAction::InstallSelected(pkgs) => {
+                format!("Queue installs for {} packages?", pkgs.len())
+            }
+            PendingAction::RemoveSelected(pkgs) => {
+                format!("Queue removals for {} packages?", pkgs.len())
+            }
         }
     } else {
         app.status_message.clone()
