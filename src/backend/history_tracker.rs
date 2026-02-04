@@ -2,11 +2,12 @@
 
 use crate::models::{
     HistoryEntry, HistoryOperation, OperationHistory, Package, PackageSnapshot, PackageSource,
+    TaskQueueEntry, TaskQueueStatus,
 };
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 use tokio::fs;
 use tracing::{debug, info, warn};
+use std::path::PathBuf;
 
 const HISTORY_FILE: &str = "history.json";
 const SNAPSHOT_FILE: &str = "snapshot.json";
@@ -142,6 +143,63 @@ impl HistoryTracker {
         if let Err(e) = self.save().await {
             warn!(error = %e, "Failed to save history after cleanup");
         }
+    }
+
+    pub async fn enqueue_task(&mut self, entry: TaskQueueEntry) -> Result<()> {
+        self.history.task_queue.enqueue(entry);
+        self.save().await.context("Failed to save history after enqueueing task")
+    }
+
+    pub async fn claim_next_task(&mut self) -> Result<Option<TaskQueueEntry>> {
+        let entry = self
+            .history
+            .task_queue
+            .entries
+            .iter_mut()
+            .find(|entry| entry.status == TaskQueueStatus::Queued);
+
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+
+        entry.mark_running();
+        let entry_clone = entry.clone();
+        self.save()
+            .await
+            .context("Failed to save history after starting task")?;
+        Ok(Some(entry_clone))
+    }
+
+    pub async fn mark_task_completed(&mut self, entry_id: &str) -> Result<Option<TaskQueueEntry>> {
+        let entry = self.history.task_queue.get_mut(entry_id);
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+
+        entry.mark_completed();
+        let entry_clone = entry.clone();
+        self.save()
+            .await
+            .context("Failed to save history after completing task")?;
+        Ok(Some(entry_clone))
+    }
+
+    pub async fn mark_task_failed(
+        &mut self,
+        entry_id: &str,
+        error: String,
+    ) -> Result<Option<TaskQueueEntry>> {
+        let entry = self.history.task_queue.get_mut(entry_id);
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+
+        entry.mark_failed(error);
+        let entry_clone = entry.clone();
+        self.save()
+            .await
+            .context("Failed to save history after task failure")?;
+        Ok(Some(entry_clone))
     }
 
     pub fn detect_external_changes(&self, current_packages: &[Package]) -> Vec<HistoryEntry> {

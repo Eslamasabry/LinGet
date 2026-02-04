@@ -45,11 +45,174 @@ pub use traits::*;
 pub use zypper::ZypperBackend;
 
 use crate::backend::streaming::StreamLine;
-use crate::models::{FlatpakMetadata, FlatpakPermission, Package, PackageSource, Repository};
-use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use tokio::sync::mpsc;
+use crate::models::{
+    FlatpakMetadata, FlatpakPermission, Package, PackageSource, PackageStatus, Repository,
+    TaskQueueAction, TaskQueueEntry,
+};
+use anyhow::{Context, Result};
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, instrument, warn};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+#[derive(Debug, Clone)]
+pub enum TaskQueueEvent {
+    Started(TaskQueueEntry),
+    Log {
+        entry_id: String,
+        line: StreamLine,
+    },
+    Completed(TaskQueueEntry),
+    Failed(TaskQueueEntry),
+}
+
+#[derive(Clone)]
+pub struct TaskQueueExecutor {
+    package_manager: Arc<Mutex<PackageManager>>,
+    history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
+}
+
+impl TaskQueueExecutor {
+    pub fn new(
+        package_manager: Arc<Mutex<PackageManager>>,
+        history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
+    ) -> Self {
+        Self {
+            package_manager,
+            history_tracker,
+        }
+    }
+
+    pub async fn run(&self, event_sender: Option<mpsc::Sender<TaskQueueEvent>>) -> Result<()> {
+        loop {
+            let entry = {
+                let mut guard = self.history_tracker.lock().await;
+                let tracker = guard
+                    .as_mut()
+                    .context("History tracker must be initialized to run task queue")?;
+                tracker.claim_next_task().await?
+            };
+
+            let Some(entry) = entry else {
+                break;
+            };
+
+            if let Some(sender) = &event_sender {
+                let _ = sender.send(TaskQueueEvent::Started(entry.clone())).await;
+            }
+
+            let (log_sender, log_task) = Self::spawn_log_forwarder(&event_sender, &entry);
+            let result = {
+                let manager = self.package_manager.lock().await;
+                let pkg = Self::package_from_entry(&entry);
+                match entry.action {
+                    TaskQueueAction::Install => {
+                        manager.install_streaming(&pkg, log_sender).await
+                    }
+                    TaskQueueAction::Remove => manager.remove_streaming(&pkg, log_sender).await,
+                    TaskQueueAction::Update => manager.update_streaming(&pkg, log_sender).await,
+                }
+            };
+
+            if let Some(task) = log_task {
+                let _ = task.await;
+            }
+
+            match result {
+                Ok(()) => {
+                    let updated = {
+                        let mut guard = self.history_tracker.lock().await;
+                        let tracker = guard
+                            .as_mut()
+                            .context("History tracker missing after task completion")?;
+                        tracker.mark_task_completed(&entry.id).await?
+                    };
+
+                    let completed_entry = updated.unwrap_or_else(|| {
+                        let mut fallback = entry.clone();
+                        fallback.mark_completed();
+                        fallback
+                    });
+
+                    if let Some(sender) = &event_sender {
+                        let _ = sender.send(TaskQueueEvent::Completed(completed_entry)).await;
+                    }
+                }
+                Err(e) => {
+                    let error = e.to_string();
+                    let updated = {
+                        let mut guard = self.history_tracker.lock().await;
+                        let tracker = guard
+                            .as_mut()
+                            .context("History tracker missing after task failure")?;
+                        tracker.mark_task_failed(&entry.id, error.clone()).await?
+                    };
+
+                    let failed_entry = updated.unwrap_or_else(|| {
+                        let mut fallback = entry.clone();
+                        fallback.mark_failed(error.clone());
+                        fallback
+                    });
+
+                    if let Some(sender) = &event_sender {
+                        let _ = sender.send(TaskQueueEvent::Failed(failed_entry)).await;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn spawn_log_forwarder(
+        event_sender: &Option<mpsc::Sender<TaskQueueEvent>>,
+        entry: &TaskQueueEntry,
+    ) -> (Option<mpsc::Sender<StreamLine>>, Option<tokio::task::JoinHandle<()>>) {
+        let Some(sender) = event_sender.as_ref().cloned() else {
+            return (None, None);
+        };
+
+        let (log_tx, mut log_rx) = mpsc::channel(200);
+        let entry_id = entry.id.clone();
+        let log_task = tokio::spawn(async move {
+            while let Some(line) = log_rx.recv().await {
+                let _ = sender
+                    .send(TaskQueueEvent::Log {
+                        entry_id: entry_id.clone(),
+                        line,
+                    })
+                    .await;
+            }
+        });
+
+        (Some(log_tx), Some(log_task))
+    }
+
+    fn package_from_entry(entry: &TaskQueueEntry) -> Package {
+        let status = match entry.action {
+            TaskQueueAction::Install => PackageStatus::NotInstalled,
+            TaskQueueAction::Remove => PackageStatus::Installed,
+            TaskQueueAction::Update => PackageStatus::UpdateAvailable,
+        };
+
+        Package {
+            name: entry.package_name.clone(),
+            version: String::new(),
+            available_version: None,
+            description: String::new(),
+            source: entry.package_source,
+            status,
+            size: None,
+            homepage: None,
+            license: None,
+            maintainer: None,
+            dependencies: Vec::new(),
+            install_date: None,
+            update_category: None,
+            enrichment: None,
+        }
+    }
+}
 
 /// Manager that coordinates all package backends
 pub struct PackageManager {
