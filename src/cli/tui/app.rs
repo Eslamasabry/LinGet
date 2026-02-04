@@ -26,6 +26,7 @@ pub enum ActivePanel {
     Sources,
     Packages,
     Details,
+    Queue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +53,7 @@ pub struct App {
     pub selected_source: Option<PackageSource>,
     pub source_index: usize,
     pub package_index: usize,
+    pub queue_index: usize,
     pub active_panel: ActivePanel,
     pub mode: AppMode,
     pub search_query: String,
@@ -77,6 +79,7 @@ impl App {
             selected_source: None,
             source_index: 0,
             package_index: 0,
+            queue_index: 0,
             active_panel: ActivePanel::Sources,
             mode: AppMode::Normal,
             search_query: String::new(),
@@ -282,6 +285,10 @@ impl App {
         self.filtered_packages.get(self.package_index)
     }
 
+    pub fn selected_queue_task(&self) -> Option<&ScheduledTask> {
+        self.queued_tasks.get(self.queue_index)
+    }
+
     pub fn next_source(&mut self) {
         // Index 0 is "All", rest are sources
         let total = self.available_sources.len() + 1;
@@ -321,6 +328,22 @@ impl App {
                 self.filtered_packages.len() - 1
             } else {
                 self.package_index - 1
+            };
+        }
+    }
+
+    pub fn next_queue_task(&mut self) {
+        if !self.queued_tasks.is_empty() {
+            self.queue_index = (self.queue_index + 1) % self.queued_tasks.len();
+        }
+    }
+
+    pub fn prev_queue_task(&mut self) {
+        if !self.queued_tasks.is_empty() {
+            self.queue_index = if self.queue_index == 0 {
+                self.queued_tasks.len() - 1
+            } else {
+                self.queue_index - 1
             };
         }
     }
@@ -390,7 +413,16 @@ impl App {
             .collect();
         let count = tasks.len();
         self.queued_tasks.extend(tasks);
+        self.clamp_queue_index();
         count
+    }
+
+    fn clamp_queue_index(&mut self) {
+        if self.queued_tasks.is_empty() {
+            self.queue_index = 0;
+        } else if self.queue_index >= self.queued_tasks.len() {
+            self.queue_index = self.queued_tasks.len() - 1;
+        }
     }
 }
 
@@ -474,25 +506,28 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 "Help displayed - keyboard shortcuts available",
             ));
             app.status_message = String::from(
-                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:queue updates (filtered) | I:queue installs (selected) | X:queue removals (selected) | r:refresh | i:install | x:remove | q:quit"
+                "j/k:nav | Tab:switch panel | Enter:focus details | /: search | u:updates | U:queue updates (filtered) | I:queue installs (selected) | X:queue removals (selected) | C:cancel task | R:retry failed | r:refresh | i:install | x:remove | q:quit"
             );
         }
         KeyCode::Tab => {
             app.active_panel = match app.active_panel {
                 ActivePanel::Sources => ActivePanel::Packages,
                 ActivePanel::Packages => ActivePanel::Details,
-                ActivePanel::Details => ActivePanel::Sources,
+                ActivePanel::Details => ActivePanel::Queue,
+                ActivePanel::Queue => ActivePanel::Sources,
             };
         }
         KeyCode::Char('j') | KeyCode::Down => match app.active_panel {
             ActivePanel::Sources => app.next_source(),
             ActivePanel::Packages => app.next_package(),
             ActivePanel::Details => app.next_package(),
+            ActivePanel::Queue => app.next_queue_task(),
         },
         KeyCode::Char('k') | KeyCode::Up => match app.active_panel {
             ActivePanel::Sources => app.prev_source(),
             ActivePanel::Packages => app.prev_package(),
             ActivePanel::Details => app.prev_package(),
+            ActivePanel::Queue => app.prev_queue_task(),
         },
         KeyCode::Char('g') | KeyCode::Home => {
             app.package_index = 0;
@@ -594,6 +629,79 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             ));
             app.start_loading();
         }
+        KeyCode::Char('C') => {
+            if app.active_panel != ActivePanel::Queue {
+                return;
+            }
+            let task = app.selected_queue_task().cloned();
+            match task {
+                Some(task) => {
+                    if task.completed {
+                        app.status_message = String::from("Cannot cancel completed task");
+                        return;
+                    }
+
+                    if let Some(pos) = app.queued_tasks.iter().position(|t| t.id == task.id) {
+                        app.queued_tasks.remove(pos);
+                        app.status_message = format!(
+                            "Cancelled {} for {}",
+                            task.operation.display_name(),
+                            task.package_name
+                        );
+                        app.append_to_console(format!(
+                            "[{}] CANCELLED: {} {}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            task.operation.display_name(),
+                            task.package_name
+                        ));
+                        app.clamp_queue_index();
+                    } else {
+                        app.status_message = String::from("Task no longer in queue");
+                    }
+                }
+                None => {
+                    app.status_message = String::from("No queued task selected");
+                }
+            }
+        }
+        KeyCode::Char('R') => {
+            if app.active_panel != ActivePanel::Queue {
+                return;
+            }
+            let task = app.selected_queue_task().cloned();
+            match task {
+                Some(task) => {
+                    if task.error.is_none() {
+                        app.status_message = String::from("Only failed tasks can be retried");
+                        return;
+                    }
+
+                    let retry_task = ScheduledTask::new(
+                        task.package_id.clone(),
+                        task.package_name.clone(),
+                        task.source,
+                        task.operation,
+                        chrono::Utc::now(),
+                    );
+                    app.queued_tasks.push(retry_task);
+                    app.status_message = format!(
+                        "Re-queued {} for {}",
+                        task.operation.display_name(),
+                        task.package_name
+                    );
+                    app.append_to_console(format!(
+                        "[{}] RETRY: {} {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        task.operation.display_name(),
+                        task.package_name
+                    ));
+                    app.clamp_queue_index();
+                }
+                None => {
+                    app.status_message = String::from("No queued task selected");
+                }
+            }
+        }
         KeyCode::Char(' ') => {
             if let Some(pkg) = app.selected_package().cloned() {
                 app.toggle_selection(&pkg);
@@ -637,15 +745,38 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 app.mode = AppMode::Confirm;
             }
         }
-        KeyCode::Enter => {
-            if let Some(pkg) = app.selected_package() {
-                app.status_message = format!(
-                    "{} v{} ({:?}) - {}",
-                    pkg.name, pkg.version, pkg.source, pkg.description
-                );
-                app.active_panel = ActivePanel::Details;
+        KeyCode::Enter => match app.active_panel {
+            ActivePanel::Queue => {
+                if let Some(task) = app.selected_queue_task() {
+                    let status = if task.completed {
+                        if task.error.is_some() {
+                            "Failed"
+                        } else {
+                            "Completed"
+                        }
+                    } else if task.is_due() {
+                        "Running"
+                    } else {
+                        "Queued"
+                    };
+                    app.status_message = format!(
+                        "{} {} - {}",
+                        task.operation.display_name(),
+                        task.package_name,
+                        status
+                    );
+                }
             }
-        }
+            _ => {
+                if let Some(pkg) = app.selected_package() {
+                    app.status_message = format!(
+                        "{} v{} ({:?}) - {}",
+                        pkg.name, pkg.version, pkg.source, pkg.description
+                    );
+                    app.active_panel = ActivePanel::Details;
+                }
+            }
+        },
         _ => {}
     }
 }

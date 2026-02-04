@@ -111,15 +111,17 @@ fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(30),
-                Constraint::Percentage(40),
-                Constraint::Percentage(30),
+                Constraint::Percentage(25),
+                Constraint::Percentage(35),
+                Constraint::Percentage(25),
+                Constraint::Percentage(15),
             ])
             .split(area);
 
         draw_sources_panel(f, app, chunks[0]);
         draw_packages_panel(f, app, chunks[1]);
         draw_details_panel(f, app, chunks[2]);
+        draw_queue_panel(f, app, chunks[3]);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -132,7 +134,12 @@ fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
 
         draw_sources_panel(f, app, chunks[0]);
         draw_packages_panel(f, app, chunks[1]);
-        draw_details_panel(f, app, chunks[2]);
+        let right_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(chunks[2]);
+        draw_details_panel(f, app, right_chunks[0]);
+        draw_queue_panel(f, app, right_chunks[1]);
     }
 }
 
@@ -381,6 +388,100 @@ fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
+fn draw_queue_panel(f: &mut Frame, app: &App, area: Rect) {
+    let is_active = app.active_panel == ActivePanel::Queue;
+
+    let border_style = if is_active {
+        border_active()
+    } else {
+        border_inactive()
+    };
+
+    let title = format!(" Queue ({}) ", app.queued_tasks.len());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(title)
+        .title_style(if is_active {
+            panel_title_active()
+        } else {
+            panel_title()
+        });
+
+    if app.queued_tasks.is_empty() {
+        let empty = Paragraph::new("No queued tasks").block(block).style(dim());
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let rows: Vec<Row> = app
+        .queued_tasks
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let is_selected = i == app.queue_index;
+            let style = if is_selected { selection() } else { panel() };
+
+            let status = if task.completed {
+                if task.error.is_some() {
+                    "Failed"
+                } else {
+                    "Completed"
+                }
+            } else if task.is_due() {
+                "Running"
+            } else {
+                "Queued"
+            };
+
+            let status_style = if task.completed {
+                if task.error.is_some() {
+                    status_removing()
+                } else {
+                    status_installed()
+                }
+            } else if task.is_due() {
+                status_loading()
+            } else {
+                status_update()
+            };
+
+            Row::new(vec![
+                Span::styled(task.operation.display_name(), style),
+                Span::styled(truncate_string(&task.package_name, 20), style),
+                Span::styled(status, status_style),
+                Span::styled(truncate_string(&task.time_until(), 16), style),
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let header = Row::new(vec!["Op", "Package", "Status", "When"]).style(table_header());
+
+    let widths = if app.compact {
+        [
+            Constraint::Length(6),
+            Constraint::Min(10),
+            Constraint::Length(8),
+            Constraint::Length(10),
+        ]
+    } else {
+        [
+            Constraint::Length(8),
+            Constraint::Min(18),
+            Constraint::Length(10),
+            Constraint::Length(12),
+        ]
+    };
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block)
+        .row_highlight_style(selection_focused());
+
+    f.render_widget(table, area);
+}
+
 fn status_style_for_status(status: PackageStatus) -> Style {
     match status {
         PackageStatus::Installed => status_installed(),
@@ -579,7 +680,7 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                 "updates"
             };
             if app.compact {
-                vec![
+                let mut commands = vec![
                     Span::styled("↑↓/jk", key_hint()),
                     Span::styled("n", description()),
                     Span::styled("│", separator()),
@@ -612,9 +713,20 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("│", separator()),
                     Span::styled(" q", key_hint()),
                     Span::styled("q", description()),
-                ]
+                ];
+                if app.active_panel == ActivePanel::Queue {
+                    commands.extend(vec![
+                        Span::styled("│", separator()),
+                        Span::styled(" C", key_hint()),
+                        Span::styled("can", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" R", key_hint()),
+                        Span::styled("ret", description()),
+                    ]);
+                }
+                commands
             } else {
-                vec![
+                let mut commands = vec![
                     Span::styled("↑↓/jk", key_hint()),
                     Span::styled(" nav ", description()),
                     Span::styled("│", separator()),
@@ -647,7 +759,18 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("│", separator()),
                     Span::styled(" q", key_hint()),
                     Span::styled(" quit", description()),
-                ]
+                ];
+                if app.active_panel == ActivePanel::Queue {
+                    commands.extend(vec![
+                        Span::styled("│", separator()),
+                        Span::styled(" C", key_hint()),
+                        Span::styled(" cancel ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" R", key_hint()),
+                        Span::styled(" retry", description()),
+                    ]);
+                }
+                commands
             }
         }
         AppMode::Search => {
