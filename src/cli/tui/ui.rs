@@ -13,13 +13,18 @@ use unicode_width::UnicodeWidthStr;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let console_height = if app.compact { 3 } else { 6 };
+    let commands_height = if app.mode == AppMode::Normal && !app.compact {
+        2
+    } else {
+        1
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),                             // Title bar
             Constraint::Min(if app.compact { 8 } else { 10 }), // Main content
             Constraint::Length(console_height),                // Console panel
-            Constraint::Length(1),                             // Commands bar
+            Constraint::Length(commands_height),               // Commands bar
             Constraint::Length(3),                             // Status bar
         ])
         .split(f.area());
@@ -746,59 +751,10 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
-    let commands = match app.mode {
+    let lines = match app.mode {
         AppMode::Normal => {
-            let updates_label = if app.show_updates_only {
-                "all"
-            } else {
-                "updates"
-            };
             if app.compact {
-                vec![
-                    Span::styled("↑↓/jk", key_hint()),
-                    Span::styled("n", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" Tab", key_hint()),
-                    Span::styled("p", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" /", key_hint()),
-                    Span::styled("s", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" u", key_hint()),
-                    Span::styled(updates_label, description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" U", key_hint()),
-                    Span::styled("updF", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" sp", key_hint()),
-                    Span::styled("sel", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" a", key_hint()),
-                    Span::styled("all", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" c", key_hint()),
-                    Span::styled("clr", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" I", key_hint()),
-                    Span::styled("instF", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" X", key_hint()),
-                    Span::styled("rmF", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" r", key_hint()),
-                    Span::styled("ref", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" i", key_hint()),
-                    Span::styled("ins", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" x", key_hint()),
-                    Span::styled("rm", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" q", key_hint()),
-                    Span::styled("q", description()),
-                ]
-            } else {
-                vec![
+                vec![Line::from(vec![
                     Span::styled("↑↓/jk", key_hint()),
                     Span::styled(" nav ", description()),
                     Span::styled("│", separator()),
@@ -808,83 +764,84 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" /", key_hint()),
                     Span::styled(" search ", description()),
                     Span::styled("│", separator()),
-                    Span::styled(" u", key_hint()),
-                    Span::styled(format!(" {} ", updates_label), description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" U", key_hint()),
-                    Span::styled(" update-all ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" Space", key_hint()),
-                    Span::styled(" select ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" a", key_hint()),
-                    Span::styled(" select-all ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" c", key_hint()),
-                    Span::styled(" clear ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" I", key_hint()),
-                    Span::styled(" install-all ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" X", key_hint()),
-                    Span::styled(" remove-all ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" r", key_hint()),
-                    Span::styled(" refresh ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" i", key_hint()),
-                    Span::styled(" install ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" x", key_hint()),
-                    Span::styled(" remove ", description()),
+                    Span::styled(" h", key_hint()),
+                    Span::styled(" help ", description()),
                     Span::styled("│", separator()),
                     Span::styled(" q", key_hint()),
                     Span::styled(" quit", description()),
-                ]
-            }
-        }
-        AppMode::Search => {
-            if app.compact {
-                vec![
-                    Span::styled("Enter", key_hint()),
-                    Span::styled("ok", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" Esc", key_hint()),
-                    Span::styled("ca", description()),
-                ]
+                ])]
             } else {
                 vec![
-                    Span::styled("Enter", key_hint()),
-                    Span::styled(" confirm ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" Esc", key_hint()),
-                    Span::styled(" cancel", description()),
+                    Line::from(vec![
+                        Span::styled("↑↓/jk", key_hint()),
+                        Span::styled(" nav ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" Tab", key_hint()),
+                        Span::styled(" panel ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" /", key_hint()),
+                        Span::styled(" search ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" Space", key_hint()),
+                        Span::styled(" select ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" a", key_hint()),
+                        Span::styled(" select-all ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" c", key_hint()),
+                        Span::styled(" clear ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" h", key_hint()),
+                        Span::styled(" help ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" q", key_hint()),
+                        Span::styled(" quit", description()),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(" u", key_hint()),
+                        Span::styled(" updates ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" U", key_hint()),
+                        Span::styled(" queue-updates ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" I", key_hint()),
+                        Span::styled(" queue-installs ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" X", key_hint()),
+                        Span::styled(" queue-removals ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" C", key_hint()),
+                        Span::styled(" cancel-task ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" R", key_hint()),
+                        Span::styled(" retry-task ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" r", key_hint()),
+                        Span::styled(" refresh ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" i/x", key_hint()),
+                        Span::styled(" install/remove", description()),
+                    ]),
                 ]
             }
         }
-        AppMode::Confirm => {
-            if app.compact {
-                vec![
-                    Span::styled("y", key_hint()),
-                    Span::styled("y", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" n", key_hint()),
-                    Span::styled("n", description()),
-                ]
-            } else {
-                vec![
-                    Span::styled("y", key_hint()),
-                    Span::styled(" yes ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" n", key_hint()),
-                    Span::styled(" no", description()),
-                ]
-            }
-        }
+        AppMode::Search => vec![Line::from(vec![
+            Span::styled("Enter", key_hint()),
+            Span::styled(" confirm ", description()),
+            Span::styled("│", separator()),
+            Span::styled(" Esc", key_hint()),
+            Span::styled(" cancel", description()),
+        ])],
+        AppMode::Confirm => vec![Line::from(vec![
+            Span::styled("y", key_hint()),
+            Span::styled(" yes ", description()),
+            Span::styled("│", separator()),
+            Span::styled(" n", key_hint()),
+            Span::styled(" no", description()),
+        ])],
     };
 
-    let line = Line::from(commands);
-    let paragraph = Paragraph::new(line).style(panel());
+    let paragraph = Paragraph::new(lines).style(panel());
     f.render_widget(paragraph, area);
 }
 

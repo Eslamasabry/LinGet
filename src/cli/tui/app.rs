@@ -694,7 +694,7 @@ async fn handle_normal_mode(app: &mut App, key: KeyCode) {
                 "Help displayed - keyboard shortcuts available",
             ));
             app.status_message = String::from(
-                "j/k:nav | Tab:switch panel | Enter:focus details | /:search | Space:select | a:select-all | c:clear | u:updates | U:queue updates (filtered) | I:queue installs (selected) | X:queue removals (selected) | C:cancel task | R:retry failed | r:refresh | i:install | x:remove | q:quit"
+                "Shortcuts are shown above status bar. Use Tab to switch panels, / to search, Space to select, U/I/X to queue, C/R in Queue panel."
             );
         }
         KeyCode::Tab => {

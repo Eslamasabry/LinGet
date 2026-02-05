@@ -9,6 +9,7 @@ pub mod palette {
     pub const GREEN: Color = Color::Rgb(0, 255, 0);
     pub const RED: Color = Color::Rgb(255, 0, 0);
     pub const WHITE: Color = Color::Rgb(255, 255, 255);
+    pub const LIGHT_GRAY: Color = Color::Rgb(185, 185, 185);
     pub const DARK_GRAY: Color = Color::Rgb(100, 100, 100);
     pub const INACTIVE_BORDER: Color = Color::Rgb(60, 60, 60);
 }
@@ -106,11 +107,11 @@ pub fn key_hint() -> Style {
 }
 
 pub fn description() -> Style {
-    Style::default().fg(palette::DARK_GRAY)
+    Style::default().fg(palette::LIGHT_GRAY)
 }
 
 pub fn separator() -> Style {
-    Style::default().fg(palette::DARK_GRAY)
+    Style::default().fg(palette::LIGHT_GRAY)
 }
 
 pub fn mode_normal() -> Style {
