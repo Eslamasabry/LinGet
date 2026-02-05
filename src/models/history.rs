@@ -368,6 +368,11 @@ impl TaskQueueEntry {
         self.completed_at = Some(Local::now());
         self.error = Some(error);
     }
+
+    pub fn mark_cancelled(&mut self) {
+        self.status = TaskQueueStatus::Cancelled;
+        self.completed_at = Some(Local::now());
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

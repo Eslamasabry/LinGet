@@ -2,8 +2,8 @@
 
 use crate::models::{
     HistoryEntry, HistoryOperation, OperationHistory, Package, PackageSnapshot, PackageSource,
-    TaskQueueEntry, TaskQueueStatus,
 };
+use crate::models::history::{TaskQueueEntry, TaskQueueStatus};
 use anyhow::{Context, Result};
 use tokio::fs;
 use tracing::{debug, info, warn};
@@ -199,6 +199,23 @@ impl HistoryTracker {
         self.save()
             .await
             .context("Failed to save history after task failure")?;
+        Ok(Some(entry_clone))
+    }
+
+    pub async fn mark_task_cancelled(
+        &mut self,
+        entry_id: &str,
+    ) -> Result<Option<TaskQueueEntry>> {
+        let entry = self.history.task_queue.get_mut(entry_id);
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+
+        entry.mark_cancelled();
+        let entry_clone = entry.clone();
+        self.save()
+            .await
+            .context("Failed to save history after task cancellation")?;
         Ok(Some(entry_clone))
     }
 

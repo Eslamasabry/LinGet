@@ -47,8 +47,8 @@ pub use zypper::ZypperBackend;
 use crate::backend::streaming::StreamLine;
 use crate::models::{
     FlatpakMetadata, FlatpakPermission, Package, PackageSource, PackageStatus, Repository,
-    TaskQueueAction, TaskQueueEntry,
 };
+use crate::models::history::{TaskQueueAction, TaskQueueEntry};
 use anyhow::{Context, Result};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, instrument, warn};

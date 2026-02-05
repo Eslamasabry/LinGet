@@ -405,7 +405,7 @@ fn draw_task_queue_panel(f: &mut Frame, app: &App, area: Rect) {
 
     let inner = block.inner(area);
     let content_width = inner.width as usize;
-    let (active, queued, completed) = task_queue_counts(&app.task_queue.entries);
+    let (active, queued, completed) = task_queue_counts(&app.queued_tasks);
 
     let mut lines: Vec<Line> = Vec::new();
     let summary = Line::from(vec![
@@ -424,11 +424,11 @@ fn draw_task_queue_panel(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(""));
     }
 
-    if app.task_queue.entries.is_empty() {
+    if app.queued_tasks.is_empty() {
         lines.push(Line::from(Span::styled("No queued tasks", dim())));
     } else {
         let mut available = inner.height.saturating_sub(lines.len() as u16) as usize;
-        for entry in app.task_queue.entries.iter().rev() {
+        for entry in app.queued_tasks.iter().rev() {
             if available == 0 {
                 break;
             }
@@ -470,12 +470,13 @@ fn task_queue_counts(entries: &[TaskQueueEntry]) -> (usize, usize, usize) {
 }
 
 fn task_queue_line(entry: &TaskQueueEntry, max_width: usize) -> Line<'static> {
-    let status_label = task_status_label(entry.status);
+    let status = entry.status;
+    let status_label = task_status_label(status);
     let action_label = task_action_label(entry.action);
     let status_prefix = format!("[{}] ", status_label);
     let action_text = format!("{} ", action_label);
 
-    let info = match entry.status {
+    let info = match status {
         TaskQueueStatus::Failed => {
             if let Some(error) = &entry.error {
                 format!(
@@ -495,7 +496,7 @@ fn task_queue_line(entry: &TaskQueueEntry, max_width: usize) -> Line<'static> {
     let info_text = truncate_to_width(&info, remaining);
 
     Line::from(vec![
-        Span::styled(status_prefix, task_status_style(entry.status)),
+        Span::styled(status_prefix, task_status_style(status)),
         Span::styled(action_text, hud_action()),
         Span::styled(info_text, panel()),
     ])
@@ -889,6 +890,12 @@ fn draw_confirm_popup(f: &mut Frame, app: &App) {
             PendingAction::Install(pkg) => format!("Install {}?", pkg.name),
             PendingAction::Remove(pkg) => format!("Remove {}?", pkg.name),
             PendingAction::UpdateAll(pkgs) => format!("Update {} packages?", pkgs.len()),
+            PendingAction::InstallSelected(pkgs) => {
+                format!("Queue installs for {} packages?", pkgs.len())
+            }
+            PendingAction::RemoveSelected(pkgs) => {
+                format!("Queue removals for {} packages?", pkgs.len())
+            }
         }
     } else {
         app.status_message.clone()

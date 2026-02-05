@@ -1,7 +1,7 @@
-use crate::backend::PackageManager;
-use crate::models::{
-    Package, PackageSource, PackageStatus, ScheduledOperation, ScheduledTask,
-};
+use super::ui;
+use crate::backend::{HistoryTracker, PackageManager, TaskQueueEvent, TaskQueueExecutor};
+use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
+use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::Result;
 use chrono;
 use crossterm::{
@@ -10,12 +10,12 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use tokio::sync::{mpsc, Mutex};
+use tracing::error;
 use std::collections::HashSet;
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-
-use super::ui;
 
 const MAX_CONSOLE_LINES: usize = 100;
 const COMPACT_WIDTH: u16 = 100;
@@ -47,6 +47,7 @@ pub enum PendingAction {
 
 pub struct App {
     pub pm: Arc<Mutex<PackageManager>>,
+    pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
     pub packages: Vec<Package>,
     pub filtered_packages: Vec<Package>,
     pub available_sources: Vec<PackageSource>,
@@ -66,13 +67,23 @@ pub struct App {
     pub pending_action: Option<PendingAction>,
     pub compact: bool,
     pub selected_packages: HashSet<String>,
-    pub queued_tasks: Vec<ScheduledTask>,
+    pub queued_tasks: Vec<TaskQueueEntry>,
+    pub refresh_after_queue_idle: bool,
+    pub task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
+    pub task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
+    pub task_executor_running: Arc<AtomicBool>,
 }
 
 impl App {
-    pub fn new(pm: Arc<Mutex<PackageManager>>) -> Self {
+    pub fn new(
+        pm: Arc<Mutex<PackageManager>>,
+        history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
+        task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
+        task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
+    ) -> Self {
         Self {
             pm,
+            history_tracker,
             packages: Vec::new(),
             filtered_packages: Vec::new(),
             available_sources: Vec::new(),
@@ -93,6 +104,10 @@ impl App {
             compact: false,
             selected_packages: HashSet::new(),
             queued_tasks: Vec::new(),
+            refresh_after_queue_idle: false,
+            task_events_rx,
+            task_events_tx,
+            task_executor_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -108,6 +123,41 @@ impl App {
         self.available_sources = manager.available_sources().into_iter().collect();
         self.available_sources
             .sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+    }
+
+    pub async fn initialize_history_tracker(&mut self) {
+        match HistoryTracker::load().await {
+            Ok(tracker) => {
+                {
+                    let mut guard = self.history_tracker.lock().await;
+                    *guard = Some(tracker);
+                }
+                self.append_to_console(format!(
+                    "[{}] History tracker initialized",
+                    chrono::Local::now().format("%H:%M:%S")
+                ));
+            }
+            Err(e) => {
+                self.append_to_console(format!(
+                    "[{}] WARN: failed to load history tracker - {}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    e
+                ));
+            }
+        }
+    }
+
+    pub async fn sync_task_queue_from_history(&mut self) {
+        let entries = {
+            let guard = self.history_tracker.lock().await;
+            guard
+                .as_ref()
+                .map(|tracker| tracker.history().task_queue.entries.clone())
+                .unwrap_or_default()
+        };
+
+        self.queued_tasks = entries;
+        self.clamp_queue_index();
     }
 
     /// Start loading packages in the background (non-blocking)
@@ -202,6 +252,81 @@ impl App {
         }
     }
 
+    pub fn poll_task_events(&mut self) {
+        let Some(mut rx) = self.task_events_rx.take() else {
+            return;
+        };
+
+        let mut changed = false;
+        loop {
+            match rx.try_recv() {
+                Ok(event) => {
+                    self.apply_task_event(event);
+                    changed = true;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    self.task_events_rx = Some(rx);
+                    break;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.task_events_rx = None;
+                    break;
+                }
+            }
+        }
+
+        if changed
+            && self.refresh_after_queue_idle
+            && !self.loading
+            && !self
+                .queued_tasks
+                .iter()
+                .any(|task| task.status == TaskQueueStatus::Running)
+        {
+            self.refresh_after_queue_idle = false;
+            self.append_to_console(format!(
+                "[{}] Queue idle - refreshing package state",
+                chrono::Local::now().format("%H:%M:%S")
+            ));
+            self.start_loading();
+        }
+    }
+
+    fn apply_task_event(&mut self, event: TaskQueueEvent) {
+        match event {
+            TaskQueueEvent::Started(entry)
+            | TaskQueueEvent::Completed(entry)
+            | TaskQueueEvent::Failed(entry) => {
+                if matches!(
+                    entry.status,
+                    TaskQueueStatus::Completed | TaskQueueStatus::Failed
+                ) {
+                    self.refresh_after_queue_idle = true;
+                }
+                if let Some(pos) = self.queued_tasks.iter().position(|t| t.id == entry.id) {
+                    self.queued_tasks[pos] = entry;
+                } else {
+                    self.queued_tasks.push(entry);
+                    self.clamp_queue_index();
+                }
+            }
+            TaskQueueEvent::Log { entry_id, line } => {
+                let (label, content) = match line {
+                    crate::backend::streaming::StreamLine::Stdout(text) => ("LOG", text),
+                    crate::backend::streaming::StreamLine::Stderr(text) => ("ERR", text),
+                };
+                let short_id: String = entry_id.chars().take(8).collect();
+                self.append_to_console(format!(
+                    "[{}] {} {}: {}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    short_id,
+                    label,
+                    content
+                ));
+            }
+        }
+    }
+
     /// Blocking load for initial startup
     pub async fn load_packages(&mut self) {
         self.loading = true;
@@ -285,7 +410,7 @@ impl App {
         self.filtered_packages.get(self.package_index)
     }
 
-    pub fn selected_queue_task(&self) -> Option<&ScheduledTask> {
+    pub fn selected_queue_task(&self) -> Option<&TaskQueueEntry> {
         self.queued_tasks.get(self.queue_index)
     }
 
@@ -403,18 +528,70 @@ impl App {
         self.selected_packages.retain(|id| valid_ids.contains(id));
     }
 
-    fn queue_tasks(&mut self, packages: Vec<Package>, operation: ScheduledOperation) -> usize {
-        let scheduled_at = chrono::Utc::now();
-        let tasks: Vec<ScheduledTask> = packages
-            .into_iter()
-            .map(|pkg| {
-                ScheduledTask::new(pkg.id(), pkg.name, pkg.source, operation, scheduled_at)
-            })
-            .collect();
-        let count = tasks.len();
-        self.queued_tasks.extend(tasks);
+    async fn queue_tasks(&mut self, packages: Vec<Package>, action: TaskQueueAction) -> usize {
+        let mut queued = 0;
+
+        for pkg in packages {
+            let entry = TaskQueueEntry::new(action, pkg.id(), pkg.name.clone(), pkg.source);
+            self.enqueue_task_entry(entry).await;
+            queued += 1;
+        }
+
+        if queued > 0 {
+            self.spawn_task_executor();
+        }
+
+        queued
+    }
+
+    async fn enqueue_task_entry(&mut self, entry: TaskQueueEntry) {
+        let enqueue_result = {
+            let mut guard = self.history_tracker.lock().await;
+            if let Some(tracker) = guard.as_mut() {
+                tracker.enqueue_task(entry.clone()).await.map(|_| true)
+            } else {
+                Ok(false)
+            }
+        };
+
+        match enqueue_result {
+            Ok(true) => {}
+            Ok(false) => {
+                self.append_to_console(format!(
+                    "[{}] WARN: history tracker unavailable; queue not persisted",
+                    chrono::Local::now().format("%H:%M:%S")
+                ));
+            }
+            Err(e) => {
+                self.append_to_console(format!(
+                    "[{}] ERROR: failed to persist task - {}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    e
+                ));
+            }
+        }
+
+        self.queued_tasks.push(entry);
         self.clamp_queue_index();
-        count
+    }
+
+    fn spawn_task_executor(&self) {
+        if self.task_executor_running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let running = self.task_executor_running.clone();
+        let pm = self.pm.clone();
+        let history_tracker = self.history_tracker.clone();
+        let sender = self.task_events_tx.clone();
+
+        tokio::spawn(async move {
+            let executor = TaskQueueExecutor::new(pm, history_tracker);
+            if let Err(e) = executor.run(sender).await {
+                error!(error = %e, "Task queue executor stopped");
+            }
+            running.store(false, Ordering::SeqCst);
+        });
     }
 
     fn clamp_queue_index(&mut self) {
@@ -436,11 +613,22 @@ pub async fn run() -> Result<()> {
 
     // Create app state
     let pm = Arc::new(Mutex::new(PackageManager::new()));
-    let mut app = App::new(pm);
+    let history_tracker = Arc::new(Mutex::new(None));
+    let (task_tx, task_rx) = mpsc::channel(200);
+    let mut app = App::new(
+        pm.clone(),
+        history_tracker.clone(),
+        Some(task_rx),
+        Some(task_tx.clone()),
+    );
 
     // Initial load
+    app.initialize_history_tracker().await;
+    app.sync_task_queue_from_history().await;
     app.load_sources().await;
     app.load_packages().await;
+
+    app.spawn_task_executor();
 
     // Main loop
     let result = run_app(&mut terminal, &mut app).await;
@@ -467,6 +655,7 @@ async fn run_app(
 
         // Check for completed background loading
         app.poll_loading();
+        app.poll_task_events();
 
         terminal.draw(|f| ui::draw(f, app))?;
 
@@ -475,7 +664,7 @@ async fn run_app(
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match app.mode {
-                        AppMode::Normal => handle_normal_mode(app, key.code),
+                        AppMode::Normal => handle_normal_mode(app, key.code).await,
                         AppMode::Search => handle_search_mode(app, key.code),
                         AppMode::Confirm => handle_confirm_mode(app, key.code).await,
                     }
@@ -491,7 +680,7 @@ async fn run_app(
     Ok(())
 }
 
-fn handle_normal_mode(app: &mut App, key: KeyCode) {
+async fn handle_normal_mode(app: &mut App, key: KeyCode) {
     // Don't process keys while loading (except quit)
     if app.loading && key != KeyCode::Char('q') && key != KeyCode::Esc {
         return;
@@ -636,27 +825,53 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             let task = app.selected_queue_task().cloned();
             match task {
                 Some(task) => {
-                    if task.completed {
-                        app.status_message = String::from("Cannot cancel completed task");
-                        return;
-                    }
+                    match task.status {
+                        TaskQueueStatus::Queued => {
+                            if let Some(pos) =
+                                app.queued_tasks.iter().position(|t| t.id == task.id)
+                            {
+                                app.queued_tasks[pos].mark_cancelled();
+                                app.clamp_queue_index();
+                            }
 
-                    if let Some(pos) = app.queued_tasks.iter().position(|t| t.id == task.id) {
-                        app.queued_tasks.remove(pos);
-                        app.status_message = format!(
-                            "Cancelled {} for {}",
-                            task.operation.display_name(),
-                            task.package_name
-                        );
-                        app.append_to_console(format!(
-                            "[{}] CANCELLED: {} {}",
-                            chrono::Local::now().format("%H:%M:%S"),
-                            task.operation.display_name(),
-                            task.package_name
-                        ));
-                        app.clamp_queue_index();
-                    } else {
-                        app.status_message = String::from("Task no longer in queue");
+                            let cancel_result = {
+                                let mut guard = app.history_tracker.lock().await;
+                                if let Some(tracker) = guard.as_mut() {
+                                    tracker.mark_task_cancelled(&task.id).await
+                                } else {
+                                    Ok(None)
+                                }
+                            };
+
+                            if let Err(e) = cancel_result {
+                                app.append_to_console(format!(
+                                    "[{}] ERROR: failed to cancel task - {}",
+                                    chrono::Local::now().format("%H:%M:%S"),
+                                    e
+                                ));
+                            }
+
+                            app.status_message = format!(
+                                "Cancelled {} for {}",
+                                action_display_name(task.action),
+                                task.package_name
+                            );
+                            app.append_to_console(format!(
+                                "[{}] CANCELLED: {} {}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                action_display_name(task.action),
+                                task.package_name
+                            ));
+                        }
+                        TaskQueueStatus::Running => {
+                            app.status_message = String::from("Cannot cancel running task");
+                        }
+                        TaskQueueStatus::Completed | TaskQueueStatus::Failed => {
+                            app.status_message = String::from("Cannot cancel completed task");
+                        }
+                        TaskQueueStatus::Cancelled => {
+                            app.status_message = String::from("Task already cancelled");
+                        }
                     }
                 }
                 None => {
@@ -671,31 +886,30 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             let task = app.selected_queue_task().cloned();
             match task {
                 Some(task) => {
-                    if task.error.is_none() {
+                    if task.status != TaskQueueStatus::Failed {
                         app.status_message = String::from("Only failed tasks can be retried");
                         return;
                     }
 
-                    let retry_task = ScheduledTask::new(
+                    let retry_task = TaskQueueEntry::new(
+                        task.action,
                         task.package_id.clone(),
                         task.package_name.clone(),
-                        task.source,
-                        task.operation,
-                        chrono::Utc::now(),
+                        task.package_source,
                     );
-                    app.queued_tasks.push(retry_task);
+                    app.enqueue_task_entry(retry_task).await;
+                    app.spawn_task_executor();
                     app.status_message = format!(
                         "Re-queued {} for {}",
-                        task.operation.display_name(),
+                        action_display_name(task.action),
                         task.package_name
                     );
                     app.append_to_console(format!(
                         "[{}] RETRY: {} {}",
                         chrono::Local::now().format("%H:%M:%S"),
-                        task.operation.display_name(),
+                        action_display_name(task.action),
                         task.package_name
                     ));
-                    app.clamp_queue_index();
                 }
                 None => {
                     app.status_message = String::from("No queued task selected");
@@ -748,20 +962,16 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         KeyCode::Enter => match app.active_panel {
             ActivePanel::Queue => {
                 if let Some(task) = app.selected_queue_task() {
-                    let status = if task.completed {
-                        if task.error.is_some() {
-                            "Failed"
-                        } else {
-                            "Completed"
-                        }
-                    } else if task.is_due() {
-                        "Running"
-                    } else {
-                        "Queued"
+                    let status = match task.status {
+                        TaskQueueStatus::Queued => "Queued",
+                        TaskQueueStatus::Running => "Running",
+                        TaskQueueStatus::Completed => "Completed",
+                        TaskQueueStatus::Failed => "Failed",
+                        TaskQueueStatus::Cancelled => "Cancelled",
                     };
                     app.status_message = format!(
                         "{} {} - {}",
-                        task.operation.display_name(),
+                        action_display_name(task.action),
                         task.package_name,
                         status
                     );
@@ -778,6 +988,14 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
             }
         },
         _ => {}
+    }
+}
+
+fn action_display_name(action: TaskQueueAction) -> &'static str {
+    match action {
+        TaskQueueAction::Install => "Install",
+        TaskQueueAction::Remove => "Remove",
+        TaskQueueAction::Update => "Update",
     }
 }
 
@@ -872,7 +1090,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                     should_refresh = true;
                 }
                 Some(PendingAction::UpdateAll(packages)) => {
-                    let queued = app.queue_tasks(packages, ScheduledOperation::Update);
+                    let queued = app.queue_tasks(packages, TaskQueueAction::Update).await;
                     app.status_message = format!("Queued {} update tasks", queued);
                     app.append_to_console(format!(
                         "[{}] QUEUED: {} update tasks",
@@ -881,7 +1099,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                     ));
                 }
                 Some(PendingAction::InstallSelected(packages)) => {
-                    let queued = app.queue_tasks(packages, ScheduledOperation::Install);
+                    let queued = app.queue_tasks(packages, TaskQueueAction::Install).await;
                     app.status_message = format!("Queued {} install tasks", queued);
                     app.append_to_console(format!(
                         "[{}] QUEUED: {} install tasks",
@@ -890,7 +1108,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                     ));
                 }
                 Some(PendingAction::RemoveSelected(packages)) => {
-                    let queued = app.queue_tasks(packages, ScheduledOperation::Remove);
+                    let queued = app.queue_tasks(packages, TaskQueueAction::Remove).await;
                     app.status_message = format!("Queued {} remove tasks", queued);
                     app.append_to_console(format!(
                         "[{}] QUEUED: {} remove tasks",
@@ -945,7 +1163,8 @@ mod tests {
     #[test]
     fn test_selection_methods() {
         let pm = Arc::new(Mutex::new(PackageManager::new()));
-        let mut app = App::new(pm);
+        let history_tracker = Arc::new(Mutex::new(None));
+        let mut app = App::new(pm, history_tracker, None, None);
 
         let pkg1 = create_test_package("pkg1", PackageSource::Apt);
         let pkg2 = create_test_package("pkg2", PackageSource::Apt);
@@ -982,7 +1201,8 @@ mod tests {
     #[test]
     fn test_cleanup_stale_selections() {
         let pm = Arc::new(Mutex::new(PackageManager::new()));
-        let mut app = App::new(pm);
+        let history_tracker = Arc::new(Mutex::new(None));
+        let mut app = App::new(pm, history_tracker, None, None);
 
         let pkg1 = create_test_package("pkg1", PackageSource::Apt);
         let pkg2 = create_test_package("pkg2", PackageSource::Apt);
