@@ -121,8 +121,7 @@ impl App {
     pub async fn load_sources(&mut self) {
         let manager = self.pm.lock().await;
         self.available_sources = manager.available_sources().into_iter().collect();
-        self.available_sources
-            .sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+        self.available_sources.sort_by_key(|source| source.to_string());
     }
 
     pub async fn initialize_history_tracker(&mut self) {

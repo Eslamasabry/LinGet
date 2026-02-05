@@ -55,7 +55,7 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let source_name = app
         .selected_source
-        .map(|s| format!("{:?}", s))
+        .map(|s| s.to_string())
         .unwrap_or_else(|| "All".to_string());
 
     let selected_count = app.selected_count();
@@ -170,24 +170,26 @@ fn draw_sources_panel(f: &mut Frame, app: &App, area: Rect) {
             panel_title()
         });
 
-    let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
-        Span::styled(if app.source_index == 0 { "▶ " } else { "  " }, accent()),
-        Span::styled(
-            "All",
-            if app.source_index == 0 {
-                panel_title_active()
-            } else {
-                panel()
-            },
-        ),
-    ]))];
+    let inner = block.inner(area);
+    let total_sources = app.available_sources.len() + 1;
+    let selected = app.source_index.min(total_sources.saturating_sub(1));
+    let visible = inner.height as usize;
+    let start = queue_window_start(total_sources, visible, selected);
+    let end = (start + visible).min(total_sources);
 
-    for (i, source) in app.available_sources.iter().enumerate() {
-        let is_selected = app.source_index == i + 1;
+    let mut items: Vec<ListItem> = Vec::new();
+    for idx in start..end {
+        let is_selected = idx == app.source_index;
+        let label = if idx == 0 {
+            String::from("All")
+        } else {
+            app.available_sources[idx - 1].to_string()
+        };
+
         items.push(ListItem::new(Line::from(vec![
             Span::styled(if is_selected { "▶ " } else { "  " }, accent()),
             Span::styled(
-                format!("{:?}", source),
+                label,
                 if is_selected {
                     panel_title_active()
                 } else {
@@ -273,7 +275,7 @@ fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(mark, accent()),
                 Span::styled(truncate_string(&pkg.name, 23), style),
                 Span::styled(truncate_string(&version, 20), style),
-                Span::styled(format!("{:?}", pkg.source), style),
+                Span::styled(pkg.source.to_string(), style),
                 Span::styled(status_icon, status_style),
             ])
             .style(style)
