@@ -427,13 +427,20 @@ fn draw_task_queue_panel(f: &mut Frame, app: &App, area: Rect) {
     if app.queued_tasks.is_empty() {
         lines.push(Line::from(Span::styled("No queued tasks", dim())));
     } else {
-        let mut available = inner.height.saturating_sub(lines.len() as u16) as usize;
-        for entry in app.queued_tasks.iter().rev() {
-            if available == 0 {
-                break;
-            }
-            lines.push(task_queue_line(entry, content_width));
-            available = available.saturating_sub(1);
+        let available = inner.height.saturating_sub(lines.len() as u16) as usize;
+        let total = app.queued_tasks.len();
+        let selected = app.queue_index.min(total.saturating_sub(1));
+        let start = queue_window_start(total, available, selected);
+        let end = (start + available).min(total);
+
+        for idx in start..end {
+            let is_selected = idx == selected;
+            lines.push(task_queue_line(
+                &app.queued_tasks[idx],
+                content_width,
+                is_selected,
+                app.active_panel == ActivePanel::Queue,
+            ));
         }
     }
 
@@ -469,10 +476,16 @@ fn task_queue_counts(entries: &[TaskQueueEntry]) -> (usize, usize, usize) {
     (active, queued, completed)
 }
 
-fn task_queue_line(entry: &TaskQueueEntry, max_width: usize) -> Line<'static> {
+fn task_queue_line(
+    entry: &TaskQueueEntry,
+    max_width: usize,
+    is_selected: bool,
+    queue_is_active: bool,
+) -> Line<'static> {
     let status = entry.status;
     let status_label = task_status_label(status);
     let action_label = task_action_label(entry.action);
+    let selection_prefix = if is_selected { "▶ " } else { "  " };
     let status_prefix = format!("[{}] ", status_label);
     let action_text = format!("{} ", action_label);
 
@@ -490,16 +503,37 @@ fn task_queue_line(entry: &TaskQueueEntry, max_width: usize) -> Line<'static> {
         _ => format!("{} ({:?})", entry.package_name, entry.package_source),
     };
 
-    let prefix_width = UnicodeWidthStr::width(status_prefix.as_str())
+    let prefix_width = UnicodeWidthStr::width(selection_prefix)
+        + UnicodeWidthStr::width(status_prefix.as_str())
         + UnicodeWidthStr::width(action_text.as_str());
     let remaining = max_width.saturating_sub(prefix_width);
     let info_text = truncate_to_width(&info, remaining);
+    let info_style = if is_selected && queue_is_active {
+        selection()
+    } else {
+        panel()
+    };
+    let marker_style = if is_selected { accent() } else { dim() };
 
     Line::from(vec![
+        Span::styled(selection_prefix, marker_style),
         Span::styled(status_prefix, task_status_style(status)),
         Span::styled(action_text, hud_action()),
-        Span::styled(info_text, panel()),
+        Span::styled(info_text, info_style),
     ])
+}
+
+fn queue_window_start(total: usize, visible: usize, selected: usize) -> usize {
+    if total <= visible || visible == 0 {
+        return 0;
+    }
+
+    let half = visible / 2;
+    let mut start = selected.saturating_sub(half);
+    if start + visible > total {
+        start = total - visible;
+    }
+    start
 }
 
 fn task_status_label(status: TaskQueueStatus) -> &'static str {
@@ -734,6 +768,15 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" U", key_hint()),
                     Span::styled("updF", description()),
                     Span::styled("│", separator()),
+                    Span::styled(" sp", key_hint()),
+                    Span::styled("sel", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" a", key_hint()),
+                    Span::styled("all", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" c", key_hint()),
+                    Span::styled("clr", description()),
+                    Span::styled("│", separator()),
                     Span::styled(" I", key_hint()),
                     Span::styled("instF", description()),
                     Span::styled("│", separator()),
@@ -768,6 +811,15 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("│", separator()),
                     Span::styled(" U", key_hint()),
                     Span::styled(" update-all ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" Space", key_hint()),
+                    Span::styled(" select ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" a", key_hint()),
+                    Span::styled(" select-all ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" c", key_hint()),
+                    Span::styled(" clear ", description()),
                     Span::styled("│", separator()),
                     Span::styled(" I", key_hint()),
                     Span::styled(" install-all ", description()),
