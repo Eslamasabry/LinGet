@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
+use crate::models::history::{TaskQueueEntry, TaskQueueStatus};
 use crate::models::{
     HistoryEntry, HistoryOperation, OperationHistory, Package, PackageSnapshot, PackageSource,
 };
-use crate::models::history::{TaskQueueEntry, TaskQueueStatus};
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 use tokio::fs;
 use tracing::{debug, info, warn};
-use std::path::PathBuf;
 
 const HISTORY_FILE: &str = "history.json";
 const SNAPSHOT_FILE: &str = "snapshot.json";
@@ -147,7 +147,9 @@ impl HistoryTracker {
 
     pub async fn enqueue_task(&mut self, entry: TaskQueueEntry) -> Result<()> {
         self.history.task_queue.enqueue(entry);
-        self.save().await.context("Failed to save history after enqueueing task")
+        self.save()
+            .await
+            .context("Failed to save history after enqueueing task")
     }
 
     pub async fn claim_next_task(&mut self) -> Result<Option<TaskQueueEntry>> {
@@ -202,10 +204,7 @@ impl HistoryTracker {
         Ok(Some(entry_clone))
     }
 
-    pub async fn mark_task_cancelled(
-        &mut self,
-        entry_id: &str,
-    ) -> Result<Option<TaskQueueEntry>> {
+    pub async fn mark_task_cancelled(&mut self, entry_id: &str) -> Result<Option<TaskQueueEntry>> {
         let entry = self.history.task_queue.get_mut(entry_id);
         let Some(entry) = entry else {
             return Ok(None);

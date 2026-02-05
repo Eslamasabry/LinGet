@@ -126,6 +126,10 @@ pub fn mode_confirm() -> Style {
     Style::default().fg(palette::RED)
 }
 
+pub fn mode_update_center() -> Style {
+    Style::default().fg(palette::CYAN)
+}
+
 pub fn label() -> Style {
     Style::default()
         .fg(palette::DARK_GRAY)

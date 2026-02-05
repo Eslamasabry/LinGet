@@ -45,23 +45,20 @@ pub use traits::*;
 pub use zypper::ZypperBackend;
 
 use crate::backend::streaming::StreamLine;
+use crate::models::history::{TaskQueueAction, TaskQueueEntry};
 use crate::models::{
     FlatpakMetadata, FlatpakPermission, Package, PackageSource, PackageStatus, Repository,
 };
-use crate::models::history::{TaskQueueAction, TaskQueueEntry};
 use anyhow::{Context, Result};
-use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info, instrument, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use tracing::{debug, error, info, instrument, warn};
 
 #[derive(Debug, Clone)]
 pub enum TaskQueueEvent {
     Started(TaskQueueEntry),
-    Log {
-        entry_id: String,
-        line: StreamLine,
-    },
+    Log { entry_id: String, line: StreamLine },
     Completed(TaskQueueEntry),
     Failed(TaskQueueEntry),
 }
@@ -106,9 +103,7 @@ impl TaskQueueExecutor {
                 let manager = self.package_manager.lock().await;
                 let pkg = Self::package_from_entry(&entry);
                 match entry.action {
-                    TaskQueueAction::Install => {
-                        manager.install_streaming(&pkg, log_sender).await
-                    }
+                    TaskQueueAction::Install => manager.install_streaming(&pkg, log_sender).await,
                     TaskQueueAction::Remove => manager.remove_streaming(&pkg, log_sender).await,
                     TaskQueueAction::Update => manager.update_streaming(&pkg, log_sender).await,
                 }
@@ -135,7 +130,9 @@ impl TaskQueueExecutor {
                     });
 
                     if let Some(sender) = &event_sender {
-                        let _ = sender.send(TaskQueueEvent::Completed(completed_entry)).await;
+                        let _ = sender
+                            .send(TaskQueueEvent::Completed(completed_entry))
+                            .await;
                     }
                 }
                 Err(e) => {
@@ -167,7 +164,10 @@ impl TaskQueueExecutor {
     fn spawn_log_forwarder(
         event_sender: &Option<mpsc::Sender<TaskQueueEvent>>,
         entry: &TaskQueueEntry,
-    ) -> (Option<mpsc::Sender<StreamLine>>, Option<tokio::task::JoinHandle<()>>) {
+    ) -> (
+        Option<mpsc::Sender<StreamLine>>,
+        Option<tokio::task::JoinHandle<()>>,
+    ) {
         let Some(sender) = event_sender.as_ref().cloned() else {
             return (None, None);
         };

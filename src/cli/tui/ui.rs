@@ -1,5 +1,6 @@
 use super::app::{ActivePanel, App, AppMode, PendingAction};
 use super::theme::*;
+use super::update_center::UpdateLane;
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
 use crate::models::PackageStatus;
 use ratatui::{
@@ -13,11 +14,12 @@ use unicode_width::UnicodeWidthStr;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let console_height = if app.compact { 3 } else { 6 };
-    let commands_height = if app.mode == AppMode::Normal && !app.compact {
-        2
-    } else {
-        1
-    };
+    let commands_height =
+        if matches!(app.mode, AppMode::Normal | AppMode::UpdateCenter) && !app.compact {
+            2
+        } else {
+            1
+        };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -43,9 +45,18 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 }
 
+fn is_update_context(app: &App) -> bool {
+    app.mode == AppMode::UpdateCenter
+        || (app.mode == AppMode::Search && app.search_return_mode == AppMode::UpdateCenter)
+        || (app.mode == AppMode::Confirm && app.confirm_return_mode == AppMode::UpdateCenter)
+}
+
 fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
+    let update_context = is_update_context(app);
     let (title, title_color) = if app.compact {
         (" LinGet ", title_color())
+    } else if update_context {
+        (" LinGet TUI - Update Center ", accent_color())
     } else if app.show_updates_only {
         (" LinGet TUI - Updates Available ", accent_color())
     } else {
@@ -63,46 +74,87 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
         .map(|s| s.to_string())
         .unwrap_or_else(|| "All".to_string());
 
-    let selected_count = app.selected_count();
-    let pkg_count = if app.compact {
-        if selected_count > 0 {
+    let pkg_count = if update_context {
+        let selected_count = app.selected_update_count();
+        if app.compact {
+            if selected_count > 0 {
+                format!(
+                    " {} upd | sec {} rec {} | {} sel ",
+                    app.update_summary.total,
+                    app.update_summary.security,
+                    app.update_summary.recommended,
+                    selected_count
+                )
+            } else {
+                format!(
+                    " {} upd | sec {} rec {} ",
+                    app.update_summary.total,
+                    app.update_summary.security,
+                    app.update_summary.recommended
+                )
+            }
+        } else if selected_count > 0 {
             format!(
-                " {} | {} | {} sel ",
-                app.filtered_packages.len(),
-                source_name,
+                " {} updates | security {} | recommended {} | optional {} | risky {} | {} selected ",
+                app.update_summary.total,
+                app.update_summary.security,
+                app.update_summary.recommended,
+                app.update_summary.optional,
+                app.update_summary.risky,
                 selected_count
             )
         } else {
-            format!(" {} | {} ", app.filtered_packages.len(), source_name)
+            format!(
+                " {} updates | security {} | recommended {} | optional {} | risky {} ",
+                app.update_summary.total,
+                app.update_summary.security,
+                app.update_summary.recommended,
+                app.update_summary.optional,
+                app.update_summary.risky
+            )
         }
-    } else if app.show_updates_only {
-        if selected_count > 0 {
+    } else {
+        let selected_count = app.selected_count();
+        if app.compact {
+            if selected_count > 0 {
+                format!(
+                    " {} | {} | {} sel ",
+                    app.filtered_packages.len(),
+                    source_name,
+                    selected_count
+                )
+            } else {
+                format!(" {} | {} ", app.filtered_packages.len(), source_name)
+            }
+        } else if app.show_updates_only {
+            if selected_count > 0 {
+                format!(
+                    " {} updates available | Source: {} | {} selected ",
+                    app.filtered_packages.len(),
+                    source_name,
+                    selected_count
+                )
+            } else {
+                format!(
+                    " {} updates available | Source: {} ",
+                    app.filtered_packages.len(),
+                    source_name
+                )
+            }
+        } else if selected_count > 0 {
             format!(
-                " {} updates available | Source: {} | {} selected ",
+                " {} packages | Source: {} | {} selected ",
                 app.filtered_packages.len(),
                 source_name,
                 selected_count
             )
         } else {
             format!(
-                " {} updates available | Source: {} ",
+                " {} packages | Source: {} ",
                 app.filtered_packages.len(),
                 source_name
             )
         }
-    } else if selected_count > 0 {
-        format!(
-            " {} packages | Source: {} | {} selected ",
-            app.filtered_packages.len(),
-            source_name,
-            selected_count
-        )
-    } else {
-        format!(
-            " {} packages | Source: {} ",
-            app.filtered_packages.len(),
-            source_name
-        )
     };
 
     let paragraph = Paragraph::new(pkg_count)
@@ -113,6 +165,11 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
+    if is_update_context(app) {
+        draw_update_center(f, app, area);
+        return;
+    }
+
     if app.compact {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -153,6 +210,246 @@ fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
 
         draw_details_panel(f, app, detail_chunks[0]);
         draw_task_queue_panel(f, app, detail_chunks[1]);
+    }
+}
+
+fn draw_update_center(f: &mut Frame, app: &App, area: Rect) {
+    if app.compact {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(6),
+                Constraint::Min(8),
+                Constraint::Min(8),
+            ])
+            .split(area);
+        draw_update_summary_panel(f, app, chunks[0]);
+        draw_update_packages_panel(f, app, chunks[1]);
+        draw_update_details_panel(f, app, chunks[2]);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .split(area);
+
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(8), Constraint::Min(10)])
+        .split(chunks[0]);
+
+    draw_update_summary_panel(f, app, left[0]);
+    draw_update_packages_panel(f, app, left[1]);
+    draw_update_details_panel(f, app, chunks[1]);
+}
+
+fn draw_update_summary_panel(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_active())
+        .title(" Update Summary ")
+        .title_style(panel_title_active());
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Security: ", label()),
+            Span::styled(app.update_summary.security.to_string(), status_removing()),
+            Span::styled("  Recommended: ", label()),
+            Span::styled(app.update_summary.recommended.to_string(), status_update()),
+            Span::styled("  Optional: ", label()),
+            Span::styled(app.update_summary.optional.to_string(), panel()),
+            Span::styled("  Risky: ", label()),
+            Span::styled(app.update_summary.risky.to_string(), status_not_installed()),
+        ]),
+        Line::from(vec![
+            Span::styled("Total updates: ", label()),
+            Span::styled(app.update_summary.total.to_string(), panel_title_active()),
+            Span::styled("  Selected: ", label()),
+            Span::styled(app.selected_update_count().to_string(), accent()),
+        ]),
+    ];
+
+    if app.update_summary.by_source.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Sources: ", label()),
+            Span::styled("No updates detected", dim()),
+        ]));
+    } else {
+        let source_text = app
+            .update_summary
+            .by_source
+            .iter()
+            .map(|(source, count)| format!("{}: {}", source, count))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        lines.push(Line::from(vec![
+            Span::styled("Sources: ", label()),
+            Span::styled(source_text, panel()),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines).block(block).style(panel());
+    f.render_widget(paragraph, area);
+}
+
+fn draw_update_packages_panel(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_active())
+        .title(" Update Candidates ")
+        .title_style(panel_title_active());
+
+    if app.loading {
+        let loading = Paragraph::new("Refreshing update data...")
+            .block(block)
+            .style(status_loading());
+        f.render_widget(loading, area);
+        return;
+    }
+
+    if app.update_candidates.is_empty() {
+        let empty = Paragraph::new("No updates available")
+            .block(block)
+            .style(dim());
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let rows: Vec<Row> = app
+        .update_candidates
+        .iter()
+        .enumerate()
+        .map(|(idx, candidate)| {
+            let is_selected = idx == app.update_index;
+            let is_marked = app.is_update_selected(&candidate.package);
+            let base_style = if is_selected { selection() } else { panel() };
+            let mark = if is_marked { "☑ " } else { "☐ " };
+            let lane_tag = lane_short_label(candidate.lane);
+            let lane_style = lane_style(candidate.lane);
+            let version = candidate
+                .package
+                .available_version
+                .as_ref()
+                .map(|available| format!("{} -> {}", candidate.package.version, available))
+                .unwrap_or_else(|| candidate.package.version.clone());
+
+            Row::new(vec![
+                Span::styled(mark, accent()),
+                Span::styled(lane_tag, lane_style),
+                Span::styled(truncate_string(&candidate.package.name, 26), base_style),
+                Span::styled(truncate_string(&version, 20), base_style),
+                Span::styled(candidate.package.source.to_string(), base_style),
+            ])
+            .style(base_style)
+        })
+        .collect();
+
+    let header = Row::new(vec!["", "Lane", "Package", "Version", "Source"])
+        .style(table_header())
+        .bottom_margin(1);
+    let widths = [
+        Constraint::Length(3),
+        Constraint::Length(6),
+        Constraint::Min(22),
+        Constraint::Min(18),
+        Constraint::Length(10),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block)
+        .row_highlight_style(selection_focused());
+    f.render_widget(table, area);
+}
+
+fn draw_update_details_panel(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_active())
+        .title(" Update Details ")
+        .title_style(panel_title_active());
+
+    if app.loading {
+        let loading = Paragraph::new("Loading update details...")
+            .block(block)
+            .style(status_loading());
+        f.render_widget(loading, area);
+        return;
+    }
+
+    let Some(candidate) = app.selected_update_candidate() else {
+        let empty = Paragraph::new("Select an update to inspect")
+            .block(block)
+            .style(dim());
+        f.render_widget(empty, area);
+        return;
+    };
+
+    let package = &candidate.package;
+    let content_width = area.width.saturating_sub(2) as usize;
+    let available = package.available_version.as_deref().unwrap_or("unknown");
+    let version_text = format!("{} -> {}", package.version, available);
+    let lane_text = candidate.lane.label();
+    let category_text = format!("{:?}", candidate.category);
+
+    let mut lines: Vec<Line> = vec![
+        labeled_line("Name: ", &package.name, panel_title_active(), content_width),
+        labeled_line(
+            "Source: ",
+            &package.source.to_string(),
+            panel(),
+            content_width,
+        ),
+        labeled_line(
+            "Lane: ",
+            lane_text,
+            lane_style(candidate.lane),
+            content_width,
+        ),
+        labeled_line("Category: ", &category_text, panel(), content_width),
+        labeled_line("Version: ", &version_text, panel(), content_width),
+        Line::from(""),
+        Line::from(vec![Span::styled("Description:", label())]),
+    ];
+
+    let wrapped = wrap_text(&package.description, content_width);
+    lines.extend(
+        wrapped
+            .into_iter()
+            .map(|line| Line::from(Span::styled(line, panel()))),
+    );
+
+    if candidate.lane == UpdateLane::Risky {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Caution: ", status_not_installed()),
+            Span::styled(
+                "risky update, review before queueing all",
+                status_not_installed(),
+            ),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines).block(block).style(panel());
+    f.render_widget(paragraph, area);
+}
+
+fn lane_short_label(lane: UpdateLane) -> &'static str {
+    match lane {
+        UpdateLane::Security => "SEC",
+        UpdateLane::Recommended => "REC",
+        UpdateLane::Optional => "OPT",
+        UpdateLane::Risky => "RSK",
+    }
+}
+
+fn lane_style(lane: UpdateLane) -> Style {
+    match lane {
+        UpdateLane::Security => status_removing(),
+        UpdateLane::Recommended => status_update(),
+        UpdateLane::Optional => panel(),
+        UpdateLane::Risky => status_not_installed(),
     }
 }
 
@@ -764,6 +1061,9 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" /", key_hint()),
                     Span::styled(" search ", description()),
                     Span::styled("│", separator()),
+                    Span::styled(" u", key_hint()),
+                    Span::styled(" updates ", description()),
+                    Span::styled("│", separator()),
                     Span::styled(" h", key_hint()),
                     Span::styled(" help ", description()),
                     Span::styled("│", separator()),
@@ -791,6 +1091,9 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" c", key_hint()),
                         Span::styled(" clear ", description()),
                         Span::styled("│", separator()),
+                        Span::styled(" u", key_hint()),
+                        Span::styled(" update-center ", description()),
+                        Span::styled("│", separator()),
                         Span::styled(" h", key_hint()),
                         Span::styled(" help ", description()),
                         Span::styled("│", separator()),
@@ -798,12 +1101,6 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" quit", description()),
                     ]),
                     Line::from(vec![
-                        Span::styled(" u", key_hint()),
-                        Span::styled(" updates ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" U", key_hint()),
-                        Span::styled(" queue-updates ", description()),
-                        Span::styled("│", separator()),
                         Span::styled(" I", key_hint()),
                         Span::styled(" queue-installs ", description()),
                         Span::styled("│", separator()),
@@ -821,6 +1118,61 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled("│", separator()),
                         Span::styled(" i/x", key_hint()),
                         Span::styled(" install/remove", description()),
+                    ]),
+                ]
+            }
+        }
+        AppMode::UpdateCenter => {
+            if app.compact {
+                vec![Line::from(vec![
+                    Span::styled("↑↓/jk", key_hint()),
+                    Span::styled(" nav ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" Space", key_hint()),
+                    Span::styled(" select ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" U/S/A", key_hint()),
+                    Span::styled(" queue ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" Esc", key_hint()),
+                    Span::styled(" back", description()),
+                ])]
+            } else {
+                vec![
+                    Line::from(vec![
+                        Span::styled("↑↓/jk", key_hint()),
+                        Span::styled(" nav ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" Space", key_hint()),
+                        Span::styled(" toggle ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" m", key_hint()),
+                        Span::styled(" mark-recommended ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" a/c", key_hint()),
+                        Span::styled(" select-all/clear ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" /", key_hint()),
+                        Span::styled(" search ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" Esc", key_hint()),
+                        Span::styled(" back", description()),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(" U", key_hint()),
+                        Span::styled(" queue-recommended ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" S", key_hint()),
+                        Span::styled(" queue-selected ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" A", key_hint()),
+                        Span::styled(" queue-all ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" r", key_hint()),
+                        Span::styled(" refresh ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" q", key_hint()),
+                        Span::styled(" quit", description()),
                     ]),
                 ]
             }
@@ -850,12 +1202,14 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         AppMode::Normal => "NORMAL",
         AppMode::Search => "SEARCH",
         AppMode::Confirm => "CONFIRM",
+        AppMode::UpdateCenter => "UPDATE",
     };
 
     let status_style = match app.mode {
         AppMode::Normal => mode_normal(),
         AppMode::Search => mode_search(),
         AppMode::Confirm => mode_confirm(),
+        AppMode::UpdateCenter => mode_update_center(),
     };
 
     let block = Block::default()
@@ -901,6 +1255,12 @@ fn draw_confirm_popup(f: &mut Frame, app: &App) {
             PendingAction::Install(pkg) => format!("Install {}?", pkg.name),
             PendingAction::Remove(pkg) => format!("Remove {}?", pkg.name),
             PendingAction::UpdateAll(pkgs) => format!("Update {} packages?", pkgs.len()),
+            PendingAction::UpdateRecommended(pkgs) => {
+                format!("Queue recommended updates for {} packages?", pkgs.len())
+            }
+            PendingAction::UpdateSelected(pkgs) => {
+                format!("Queue selected updates for {} packages?", pkgs.len())
+            }
             PendingAction::InstallSelected(pkgs) => {
                 format!("Queue installs for {} packages?", pkgs.len())
             }
