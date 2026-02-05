@@ -41,6 +41,10 @@ pub struct Config {
     #[serde(default)]
     pub ignored_packages: Vec<String>,
 
+    /// Snoozed update IDs with unix timestamp expiry (format: "Source:Name" -> epoch seconds)
+    #[serde(default)]
+    pub snoozed_updates: HashMap<String, i64>,
+
     /// Compact list density (smaller rows)
     #[serde(default)]
     pub ui_compact: bool,
@@ -385,6 +389,7 @@ impl Default for Config {
             window_height: 700,
             window_maximized: false,
             ignored_packages: Vec::new(),
+            snoozed_updates: HashMap::new(),
             ui_compact: false,
             ui_show_icons: default_ui_show_icons(),
             layout_mode: LayoutMode::default(),

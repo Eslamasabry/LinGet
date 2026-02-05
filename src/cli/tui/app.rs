@@ -2,7 +2,9 @@ use super::ui;
 use super::update_center::{self, UpdateCandidate, UpdateSummary};
 use crate::backend::{HistoryTracker, PackageManager, TaskQueueEvent, TaskQueueExecutor};
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
-use crate::models::{Package, PackageSource, PackageStatus};
+use crate::models::{Config, Package, PackageSource, PackageStatus};
+#[cfg(not(test))]
+use anyhow::Context;
 use anyhow::Result;
 use chrono;
 use crossterm::{
@@ -11,7 +13,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -43,10 +45,29 @@ pub enum PendingAction {
     Install(Package),
     Remove(Package),
     UpdateAll(Vec<Package>),
+    UpdateBySource(PackageSource, Vec<Package>),
     UpdateRecommended(Vec<Package>),
     UpdateSelected(Vec<Package>),
     InstallSelected(Vec<Package>),
     RemoveSelected(Vec<Package>),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct QueueRunSummary {
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub cancelled: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct QueueProgress {
+    pub total: usize,
+    pub done: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub cancelled: usize,
+    pub active_task: Option<String>,
 }
 
 pub struct App {
@@ -75,11 +96,18 @@ pub struct App {
     pub update_summary: UpdateSummary,
     pub update_index: usize,
     pub update_selected_ids: HashSet<String>,
+    pub ignored_update_ids: HashSet<String>,
+    pub snoozed_update_ids: HashMap<String, i64>,
+    pub show_hidden_updates: bool,
     pub queued_tasks: Vec<TaskQueueEntry>,
     pub refresh_after_queue_idle: bool,
     pub task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
     pub task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
     pub task_executor_running: Arc<AtomicBool>,
+    pub queue_show_logs: bool,
+    pub queue_was_running: bool,
+    pub queue_run_started_at: Option<chrono::DateTime<chrono::Local>>,
+    pub last_queue_summary: Option<QueueRunSummary>,
     pub search_return_mode: AppMode,
     pub confirm_return_mode: AppMode,
 }
@@ -91,6 +119,10 @@ impl App {
         task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
         task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
     ) -> Self {
+        let config = Config::load();
+        let ignored_update_ids: HashSet<String> = config.ignored_packages.into_iter().collect();
+        let snoozed_update_ids = config.snoozed_updates;
+
         Self {
             pm,
             history_tracker,
@@ -117,11 +149,18 @@ impl App {
             update_summary: UpdateSummary::default(),
             update_index: 0,
             update_selected_ids: HashSet::new(),
+            ignored_update_ids,
+            snoozed_update_ids,
+            show_hidden_updates: false,
             queued_tasks: Vec::new(),
             refresh_after_queue_idle: false,
             task_events_rx,
             task_events_tx,
             task_executor_running: Arc::new(AtomicBool::new(false)),
+            queue_show_logs: true,
+            queue_was_running: false,
+            queue_run_started_at: None,
+            last_queue_summary: None,
             search_return_mode: AppMode::Normal,
             confirm_return_mode: AppMode::Normal,
         }
@@ -291,14 +330,18 @@ impl App {
             }
         }
 
-        if changed
-            && self.refresh_after_queue_idle
-            && !self.loading
-            && !self
-                .queued_tasks
-                .iter()
-                .any(|task| task.status == TaskQueueStatus::Running)
-        {
+        let queue_running = self
+            .queued_tasks
+            .iter()
+            .any(|task| task.status == TaskQueueStatus::Running);
+
+        if changed && self.queue_was_running && !queue_running {
+            self.queue_was_running = false;
+            self.capture_queue_run_summary();
+            self.queue_run_started_at = None;
+        }
+
+        if changed && self.refresh_after_queue_idle && !self.loading && !queue_running {
             self.refresh_after_queue_idle = false;
             self.append_to_console(format!(
                 "[{}] Queue idle - refreshing package state",
@@ -310,9 +353,19 @@ impl App {
 
     fn apply_task_event(&mut self, event: TaskQueueEvent) {
         match event {
-            TaskQueueEvent::Started(entry)
-            | TaskQueueEvent::Completed(entry)
-            | TaskQueueEvent::Failed(entry) => {
+            TaskQueueEvent::Started(entry) => {
+                self.queue_was_running = true;
+                if self.queue_run_started_at.is_none() {
+                    self.queue_run_started_at = Some(chrono::Local::now());
+                }
+                if let Some(pos) = self.queued_tasks.iter().position(|t| t.id == entry.id) {
+                    self.queued_tasks[pos] = entry;
+                } else {
+                    self.queued_tasks.push(entry);
+                    self.clamp_queue_index();
+                }
+            }
+            TaskQueueEvent::Completed(entry) | TaskQueueEvent::Failed(entry) => {
                 if matches!(
                     entry.status,
                     TaskQueueStatus::Completed | TaskQueueStatus::Failed
@@ -327,6 +380,9 @@ impl App {
                 }
             }
             TaskQueueEvent::Log { entry_id, line } => {
+                if !self.queue_show_logs {
+                    return;
+                }
                 let (label, content) = match line {
                     crate::backend::streaming::StreamLine::Stdout(text) => ("LOG", text),
                     crate::backend::streaming::StreamLine::Stderr(text) => ("ERR", text),
@@ -425,11 +481,80 @@ impl App {
     }
 
     fn refresh_update_candidates(&mut self) {
-        self.update_candidates = update_center::classify_updates(&self.filtered_packages);
+        self.cleanup_expired_snoozes();
+        let now = chrono::Local::now().timestamp();
+        self.update_candidates = update_center::classify_updates(&self.filtered_packages)
+            .into_iter()
+            .filter(|candidate| {
+                let id = candidate.package.id();
+                let hidden = self.is_update_hidden_id(&id, now);
+                if self.show_hidden_updates {
+                    hidden
+                } else {
+                    !hidden
+                }
+            })
+            .collect();
         self.update_summary = update_center::build_summary(&self.update_candidates);
         self.cleanup_stale_update_selections();
         if self.update_index >= self.update_candidates.len() {
             self.update_index = self.update_candidates.len().saturating_sub(1);
+        }
+    }
+
+    fn cleanup_expired_snoozes(&mut self) {
+        let now = chrono::Local::now().timestamp();
+        self.snoozed_update_ids.retain(|_, until| *until > now);
+    }
+
+    fn is_update_hidden_id(&self, id: &str, now: i64) -> bool {
+        if self.ignored_update_ids.contains(id) {
+            return true;
+        }
+        self.snoozed_update_ids
+            .get(id)
+            .map(|until| *until > now)
+            .unwrap_or(false)
+    }
+
+    pub fn hidden_state_for_package(&self, package: &Package) -> Option<String> {
+        let id = package.id();
+        if self.ignored_update_ids.contains(&id) {
+            return Some(String::from("Ignored"));
+        }
+        if let Some(until) = self.snoozed_update_ids.get(&id) {
+            if let Some(until_dt) = chrono::DateTime::<chrono::Utc>::from_timestamp(*until, 0) {
+                return Some(format!(
+                    "Snoozed until {}",
+                    until_dt
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M")
+                ));
+            }
+            return Some(String::from("Snoozed"));
+        }
+        None
+    }
+
+    fn persist_update_preferences(&mut self) {
+        #[cfg(not(test))]
+        {
+            let mut config = Config::load();
+            let mut ignored: Vec<String> = self.ignored_update_ids.iter().cloned().collect();
+            ignored.sort();
+            config.ignored_packages = ignored;
+            config.snoozed_updates = self.snoozed_update_ids.clone();
+
+            if let Err(e) = config
+                .save()
+                .context("Failed to save update ignore/snooze preferences")
+            {
+                self.append_to_console(format!(
+                    "[{}] WARN: {}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    e
+                ));
+            }
         }
     }
 
@@ -637,6 +762,212 @@ impl App {
 
     pub fn get_all_update_packages(&self) -> Vec<Package> {
         update_center::all_packages(&self.update_candidates)
+    }
+
+    pub fn get_update_packages_for_source(&self, source: PackageSource) -> Vec<Package> {
+        update_center::by_source_packages(&self.update_candidates, source)
+    }
+
+    pub fn failed_update_count(&self) -> usize {
+        self.queued_tasks
+            .iter()
+            .filter(|task| {
+                task.action == TaskQueueAction::Update && task.status == TaskQueueStatus::Failed
+            })
+            .count()
+    }
+
+    pub fn failed_update_names(&self, limit: usize) -> Vec<String> {
+        self.queued_tasks
+            .iter()
+            .filter(|task| {
+                task.action == TaskQueueAction::Update && task.status == TaskQueueStatus::Failed
+            })
+            .take(limit)
+            .map(|task| task.package_name.clone())
+            .collect()
+    }
+
+    pub async fn retry_failed_updates(&mut self) -> usize {
+        let failed_entries: Vec<TaskQueueEntry> = self
+            .queued_tasks
+            .iter()
+            .filter(|task| {
+                task.action == TaskQueueAction::Update && task.status == TaskQueueStatus::Failed
+            })
+            .cloned()
+            .collect();
+
+        let mut queued = 0;
+        for failed in failed_entries {
+            let retry_task = TaskQueueEntry::new(
+                TaskQueueAction::Update,
+                failed.package_id.clone(),
+                failed.package_name.clone(),
+                failed.package_source,
+            );
+            self.enqueue_task_entry(retry_task).await;
+            queued += 1;
+        }
+
+        if queued > 0 {
+            self.spawn_task_executor();
+            self.append_to_console(format!(
+                "[{}] RETRY: queued {} failed update tasks",
+                chrono::Local::now().format("%H:%M:%S"),
+                queued
+            ));
+        }
+
+        queued
+    }
+
+    pub fn toggle_update_logs(&mut self) {
+        self.queue_show_logs = !self.queue_show_logs;
+        let state = if self.queue_show_logs {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        self.status_message = format!("Detailed queue logs {}", state);
+        self.append_to_console(format!(
+            "[{}] Queue logs {}",
+            chrono::Local::now().format("%H:%M:%S"),
+            state
+        ));
+    }
+
+    pub fn toggle_hidden_updates_view(&mut self) {
+        self.show_hidden_updates = !self.show_hidden_updates;
+        self.update_index = 0;
+        self.update_selected_ids.clear();
+        self.filter_packages();
+        if self.show_hidden_updates {
+            self.status_message = String::from("Viewing hidden updates (ignored + snoozed)");
+        } else {
+            self.status_message = String::from("Viewing active updates");
+        }
+    }
+
+    pub fn toggle_ignore_selected_update(&mut self) -> bool {
+        let Some(candidate) = self.selected_update_candidate() else {
+            return false;
+        };
+        let id = candidate.package.id();
+        let pkg_name = candidate.package.name.clone();
+
+        if self.ignored_update_ids.contains(&id) {
+            self.ignored_update_ids.remove(&id);
+            self.status_message = format!("Unignored {}", pkg_name);
+        } else {
+            self.ignored_update_ids.insert(id.clone());
+            self.snoozed_update_ids.remove(&id);
+            self.status_message = format!("Ignored {}", pkg_name);
+        }
+        self.persist_update_preferences();
+        self.filter_packages();
+        true
+    }
+
+    pub fn snooze_selected_update(&mut self, hours: i64) -> bool {
+        let Some(candidate) = self.selected_update_candidate() else {
+            return false;
+        };
+        let id = candidate.package.id();
+        let pkg_name = candidate.package.name.clone();
+        let until = chrono::Local::now() + chrono::Duration::hours(hours);
+        self.snoozed_update_ids
+            .insert(id.clone(), until.timestamp());
+        self.ignored_update_ids.remove(&id);
+        self.persist_update_preferences();
+        self.filter_packages();
+        self.status_message = format!("Snoozed {} for {}h", pkg_name, hours);
+        true
+    }
+
+    pub fn clear_snooze_selected_update(&mut self) -> bool {
+        let Some(candidate) = self.selected_update_candidate() else {
+            return false;
+        };
+        let id = candidate.package.id();
+        let pkg_name = candidate.package.name.clone();
+        if self.snoozed_update_ids.remove(&id).is_some() {
+            self.persist_update_preferences();
+            self.filter_packages();
+            self.status_message = format!("Cleared snooze for {}", pkg_name);
+        } else {
+            self.status_message = String::from("Selected update is not snoozed");
+        }
+        true
+    }
+
+    pub fn queue_progress(&self) -> QueueProgress {
+        let mut progress = QueueProgress {
+            total: self.queued_tasks.len(),
+            ..QueueProgress::default()
+        };
+
+        for entry in &self.queued_tasks {
+            match entry.status {
+                TaskQueueStatus::Completed => progress.succeeded += 1,
+                TaskQueueStatus::Failed => progress.failed += 1,
+                TaskQueueStatus::Cancelled => progress.cancelled += 1,
+                TaskQueueStatus::Running => {
+                    progress.active_task = Some(format!(
+                        "{} {} ({})",
+                        action_display_name(entry.action),
+                        entry.package_name,
+                        entry.package_source
+                    ));
+                }
+                TaskQueueStatus::Queued => {}
+            }
+        }
+
+        progress.done = progress.succeeded + progress.failed + progress.cancelled;
+        progress
+    }
+
+    fn capture_queue_run_summary(&mut self) {
+        let Some(run_started_at) = self.queue_run_started_at else {
+            return;
+        };
+
+        let mut summary = QueueRunSummary::default();
+        for entry in &self.queued_tasks {
+            let Some(started_at) = entry.started_at else {
+                continue;
+            };
+            if started_at < run_started_at {
+                continue;
+            }
+
+            summary.total += 1;
+            match entry.status {
+                TaskQueueStatus::Completed => summary.succeeded += 1,
+                TaskQueueStatus::Failed => summary.failed += 1,
+                TaskQueueStatus::Cancelled => summary.cancelled += 1,
+                TaskQueueStatus::Queued | TaskQueueStatus::Running => {}
+            }
+        }
+
+        if summary.total == 0 {
+            return;
+        }
+
+        self.last_queue_summary = Some(summary.clone());
+        self.status_message = format!(
+            "Batch done: {}/{} succeeded, {} failed, {} cancelled",
+            summary.succeeded, summary.total, summary.failed, summary.cancelled
+        );
+        self.append_to_console(format!(
+            "[{}] BATCH SUMMARY: total={} succeeded={} failed={} cancelled={}",
+            chrono::Local::now().format("%H:%M:%S"),
+            summary.total,
+            summary.succeeded,
+            summary.failed,
+            summary.cancelled
+        ));
     }
 
     pub fn open_update_center(&mut self) {
@@ -955,6 +1286,9 @@ async fn handle_normal_mode(app: &mut App, key: KeyCode) {
             ));
             app.start_loading();
         }
+        KeyCode::Char('l') => {
+            app.toggle_update_logs();
+        }
         KeyCode::Char('C') => {
             if app.active_panel != ActivePanel::Queue {
                 return;
@@ -1141,7 +1475,7 @@ async fn handle_update_center_mode(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('h') => {
             app.status_message = String::from(
-                "Update Center: Space toggle, m mark recommended, S selected update, U recommended update, A update all, Esc back",
+                "Update Center: Space toggle, m mark rec, B source, S selected, U rec, A all, F retry failed, i ignore, z snooze, v hidden view, l logs",
             );
         }
         KeyCode::Char('/') => {
@@ -1194,6 +1528,27 @@ async fn handle_update_center_mode(app: &mut App, key: KeyCode) {
             ));
             app.start_loading();
         }
+        KeyCode::Char('l') => {
+            app.toggle_update_logs();
+        }
+        KeyCode::Char('v') => {
+            app.toggle_hidden_updates_view();
+        }
+        KeyCode::Char('i') => {
+            if !app.toggle_ignore_selected_update() {
+                app.status_message = String::from("No update selected");
+            }
+        }
+        KeyCode::Char('z') => {
+            if !app.snooze_selected_update(24) {
+                app.status_message = String::from("No update selected");
+            }
+        }
+        KeyCode::Char('Z') => {
+            if !app.clear_snooze_selected_update() {
+                app.status_message = String::from("No update selected");
+            }
+        }
         KeyCode::Char('U') => {
             let packages = app.get_recommended_update_packages();
             if packages.is_empty() {
@@ -1206,6 +1561,26 @@ async fn handle_update_center_mode(app: &mut App, key: KeyCode) {
                 app.pending_action = Some(PendingAction::UpdateRecommended(packages));
                 app.confirm_return_mode = AppMode::UpdateCenter;
                 app.mode = AppMode::Confirm;
+            }
+        }
+        KeyCode::Char('B') => {
+            if let Some(candidate) = app.selected_update_candidate() {
+                let source = candidate.package.source;
+                let packages = app.get_update_packages_for_source(source);
+                if packages.is_empty() {
+                    app.status_message = format!("No updates available from {}", source);
+                } else {
+                    app.status_message = format!(
+                        "Queue updates from {} for {} packages? (y/n)",
+                        source,
+                        packages.len()
+                    );
+                    app.pending_action = Some(PendingAction::UpdateBySource(source, packages));
+                    app.confirm_return_mode = AppMode::UpdateCenter;
+                    app.mode = AppMode::Confirm;
+                }
+            } else {
+                app.status_message = String::from("No update selected");
             }
         }
         KeyCode::Char('S') => {
@@ -1232,6 +1607,14 @@ async fn handle_update_center_mode(app: &mut App, key: KeyCode) {
                 app.pending_action = Some(PendingAction::UpdateAll(packages));
                 app.confirm_return_mode = AppMode::UpdateCenter;
                 app.mode = AppMode::Confirm;
+            }
+        }
+        KeyCode::Char('F') => {
+            let retried = app.retry_failed_updates().await;
+            if retried == 0 {
+                app.status_message = String::from("No failed update tasks to retry");
+            } else {
+                app.status_message = format!("Re-queued {} failed update tasks", retried);
             }
         }
         KeyCode::Enter => {
@@ -1363,6 +1746,16 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
                         queued
                     ));
                 }
+                Some(PendingAction::UpdateBySource(source, packages)) => {
+                    let queued = app.queue_tasks(packages, TaskQueueAction::Update).await;
+                    app.status_message = format!("Queued {} updates from {}", queued, source);
+                    app.append_to_console(format!(
+                        "[{}] QUEUED: {} update tasks from {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        queued,
+                        source
+                    ));
+                }
                 Some(PendingAction::UpdateRecommended(packages)) => {
                     let queued = app.queue_tasks(packages, TaskQueueAction::Update).await;
                     app.status_message = format!("Queued {} recommended updates", queued);
@@ -1427,6 +1820,7 @@ async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
 mod tests {
     use super::*;
     use crate::models::PackageStatus;
+    use crate::models::UpdateCategory;
 
     fn create_test_package(name: &str, source: PackageSource) -> Package {
         Package {
@@ -1443,6 +1837,29 @@ mod tests {
             dependencies: vec![],
             install_date: None,
             update_category: None,
+            enrichment: None,
+        }
+    }
+
+    fn create_update_package(
+        name: &str,
+        source: PackageSource,
+        category: Option<UpdateCategory>,
+    ) -> Package {
+        Package {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            available_version: Some("1.1.0".to_string()),
+            description: "Updatable package".to_string(),
+            source,
+            status: PackageStatus::UpdateAvailable,
+            size: None,
+            homepage: None,
+            license: None,
+            maintainer: None,
+            dependencies: vec![],
+            install_date: None,
+            update_category: category,
             enrichment: None,
         }
     }
@@ -1504,5 +1921,83 @@ mod tests {
         app.cleanup_stale_selections();
         assert_eq!(app.selected_count(), 1);
         assert!(app.is_selected(&pkg1));
+    }
+
+    #[tokio::test]
+    async fn test_open_update_center_switches_mode() {
+        let pm = Arc::new(Mutex::new(PackageManager::new()));
+        let history_tracker = Arc::new(Mutex::new(None));
+        let mut app = App::new(pm, history_tracker, None, None);
+
+        app.open_update_center();
+
+        assert_eq!(app.mode, AppMode::UpdateCenter);
+        assert!(app.show_updates_only);
+        assert!(app.load_rx.is_some());
+    }
+
+    #[test]
+    fn test_recommended_update_packages_filter() {
+        let pm = Arc::new(Mutex::new(PackageManager::new()));
+        let history_tracker = Arc::new(Mutex::new(None));
+        let mut app = App::new(pm, history_tracker, None, None);
+
+        let security = create_update_package(
+            "openssl",
+            PackageSource::Apt,
+            Some(UpdateCategory::Security),
+        );
+        let recommended = create_update_package(
+            "ripgrep",
+            PackageSource::Cargo,
+            Some(UpdateCategory::Bugfix),
+        );
+        let optional =
+            create_update_package("bat", PackageSource::Cargo, Some(UpdateCategory::Feature));
+
+        app.packages = vec![security, recommended, optional];
+        app.show_updates_only = true;
+        app.filter_packages();
+
+        let recommended = app.get_recommended_update_packages();
+        assert_eq!(recommended.len(), 2);
+        assert!(recommended.iter().any(|pkg| pkg.name == "openssl"));
+        assert!(recommended.iter().any(|pkg| pkg.name == "ripgrep"));
+    }
+
+    #[tokio::test]
+    async fn test_retry_failed_updates_only_requeues_failed_updates() {
+        use std::sync::atomic::Ordering;
+
+        let pm = Arc::new(Mutex::new(PackageManager::new()));
+        let history_tracker = Arc::new(Mutex::new(None));
+        let mut app = App::new(pm, history_tracker, None, None);
+
+        let mut failed_update = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:openssl".to_string(),
+            "openssl".to_string(),
+            PackageSource::Apt,
+        );
+        failed_update.mark_failed("network".to_string());
+
+        let mut failed_install = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "cargo:bat".to_string(),
+            "bat".to_string(),
+            PackageSource::Cargo,
+        );
+        failed_install.mark_failed("permission".to_string());
+
+        app.queued_tasks.push(failed_update);
+        app.queued_tasks.push(failed_install);
+        app.task_executor_running.store(true, Ordering::SeqCst);
+
+        let retried = app.retry_failed_updates().await;
+        assert_eq!(retried, 1);
+
+        let last = app.queued_tasks.last().expect("expected retried task");
+        assert_eq!(last.action, TaskQueueAction::Update);
+        assert_eq!(last.package_name, "openssl");
     }
 }

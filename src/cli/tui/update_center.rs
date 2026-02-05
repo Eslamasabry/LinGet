@@ -172,6 +172,14 @@ pub fn all_packages(candidates: &[UpdateCandidate]) -> Vec<Package> {
     candidates.iter().map(|item| item.package.clone()).collect()
 }
 
+pub fn by_source_packages(candidates: &[UpdateCandidate], source: PackageSource) -> Vec<Package> {
+    candidates
+        .iter()
+        .filter(|item| item.package.source == source)
+        .map(|item| item.package.clone())
+        .collect()
+}
+
 pub fn selected_packages(
     candidates: &[UpdateCandidate],
     selected_ids: &HashSet<String>,
@@ -280,5 +288,28 @@ mod tests {
         assert_eq!(picked.len(), 2);
         assert!(picked.iter().any(|p| p.name == "openssl"));
         assert!(picked.iter().any(|p| p.name == "ripgrep"));
+    }
+
+    #[test]
+    fn source_filter_only_returns_matching_source() {
+        let apt = make_pkg(
+            "openssl",
+            PackageSource::Apt,
+            "3.0.0",
+            "3.0.1",
+            Some(UpdateCategory::Security),
+        );
+        let cargo = make_pkg(
+            "ripgrep",
+            PackageSource::Cargo,
+            "14.0.0",
+            "14.1.0",
+            Some(UpdateCategory::Bugfix),
+        );
+
+        let candidates = classify_updates(&[apt, cargo]);
+        let apt_only = by_source_packages(&candidates, PackageSource::Apt);
+        assert_eq!(apt_only.len(), 1);
+        assert_eq!(apt_only[0].source, PackageSource::Apt);
     }
 }

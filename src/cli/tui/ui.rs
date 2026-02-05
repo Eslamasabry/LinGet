@@ -218,7 +218,7 @@ fn draw_update_center(f: &mut Frame, app: &App, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(6),
+                Constraint::Length(8),
                 Constraint::Min(8),
                 Constraint::Min(8),
             ])
@@ -236,7 +236,7 @@ fn draw_update_center(f: &mut Frame, app: &App, area: Rect) {
 
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(10)])
+        .constraints([Constraint::Length(10), Constraint::Min(10)])
         .split(chunks[0]);
 
     draw_update_summary_panel(f, app, left[0]);
@@ -270,6 +270,24 @@ fn draw_update_summary_panel(f: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
 
+    lines.push(Line::from(vec![
+        Span::styled("View: ", label()),
+        Span::styled(
+            if app.show_hidden_updates {
+                "Hidden updates"
+            } else {
+                "Active updates"
+            },
+            if app.show_hidden_updates {
+                status_not_installed()
+            } else {
+                panel()
+            },
+        ),
+        Span::styled("  Failed in queue: ", label()),
+        Span::styled(app.failed_update_count().to_string(), task_status_failed()),
+    ]));
+
     if app.update_summary.by_source.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("Sources: ", label()),
@@ -286,6 +304,23 @@ fn draw_update_summary_panel(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled("Sources: ", label()),
             Span::styled(source_text, panel()),
+        ]));
+    }
+
+    if let Some(summary) = &app.last_queue_summary {
+        lines.push(Line::from(vec![
+            Span::styled("Last run: ", label()),
+            Span::styled(
+                format!(
+                    "{}/{} ok, {} failed, {} cancelled",
+                    summary.succeeded, summary.total, summary.failed, summary.cancelled
+                ),
+                if summary.failed > 0 {
+                    task_status_failed()
+                } else {
+                    status_installed()
+                },
+            ),
         ]));
     }
 
@@ -327,6 +362,17 @@ fn draw_update_packages_panel(f: &mut Frame, app: &App, area: Rect) {
             let mark = if is_marked { "☑ " } else { "☐ " };
             let lane_tag = lane_short_label(candidate.lane);
             let lane_style = lane_style(candidate.lane);
+            let hidden_tag = app
+                .hidden_state_for_package(&candidate.package)
+                .map(|state| {
+                    if state.starts_with("Ignored") {
+                        "[IGN] "
+                    } else {
+                        "[SNZ] "
+                    }
+                })
+                .unwrap_or("");
+            let package_name = format!("{}{}", hidden_tag, candidate.package.name);
             let version = candidate
                 .package
                 .available_version
@@ -337,7 +383,7 @@ fn draw_update_packages_panel(f: &mut Frame, app: &App, area: Rect) {
             Row::new(vec![
                 Span::styled(mark, accent()),
                 Span::styled(lane_tag, lane_style),
-                Span::styled(truncate_string(&candidate.package.name, 26), base_style),
+                Span::styled(truncate_string(&package_name, 26), base_style),
                 Span::styled(truncate_string(&version, 20), base_style),
                 Span::styled(candidate.package.source.to_string(), base_style),
             ])
@@ -392,6 +438,9 @@ fn draw_update_details_panel(f: &mut Frame, app: &App, area: Rect) {
     let version_text = format!("{} -> {}", package.version, available);
     let lane_text = candidate.lane.label();
     let category_text = format!("{:?}", candidate.category);
+    let hidden_state = app
+        .hidden_state_for_package(package)
+        .unwrap_or_else(|| String::from("Visible"));
 
     let mut lines: Vec<Line> = vec![
         labeled_line("Name: ", &package.name, panel_title_active(), content_width),
@@ -409,6 +458,16 @@ fn draw_update_details_panel(f: &mut Frame, app: &App, area: Rect) {
         ),
         labeled_line("Category: ", &category_text, panel(), content_width),
         labeled_line("Version: ", &version_text, panel(), content_width),
+        labeled_line(
+            "Visibility: ",
+            &hidden_state,
+            if hidden_state == "Visible" {
+                status_installed()
+            } else {
+                status_not_installed()
+            },
+            content_width,
+        ),
         Line::from(""),
         Line::from(vec![Span::styled("Description:", label())]),
     ];
@@ -430,6 +489,32 @@ fn draw_update_details_panel(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]));
     }
+
+    let failed_updates = app.failed_update_names(3);
+    if !failed_updates.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Failed updates: ", label()),
+            Span::styled(failed_updates.join(", "), task_status_failed()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Press ", dim()),
+            Span::styled("F", key_hint()),
+            Span::styled(" to retry failed update tasks", dim()),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Controls: ", label()),
+        Span::styled("i ignore/unignore", dim()),
+        Span::styled(" | ", dim()),
+        Span::styled("z snooze 24h", dim()),
+        Span::styled(" | ", dim()),
+        Span::styled("Z clear snooze", dim()),
+        Span::styled(" | ", dim()),
+        Span::styled("v hidden view", dim()),
+    ]));
 
     let paragraph = Paragraph::new(lines).block(block).style(panel());
     f.render_widget(paragraph, area);
@@ -710,6 +795,7 @@ fn draw_task_queue_panel(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     let content_width = inner.width as usize;
     let (active, queued, completed) = task_queue_counts(&app.queued_tasks);
+    let progress = app.queue_progress();
 
     let mut lines: Vec<Line> = Vec::new();
     let summary = Line::from(vec![
@@ -723,6 +809,43 @@ fn draw_task_queue_panel(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("{}", completed), hud_value_completed()),
     ]);
     lines.push(summary);
+
+    lines.push(Line::from(vec![
+        Span::styled("PROGRESS ", hud_label()),
+        Span::styled(
+            format!("{}/{}", progress.done, progress.total),
+            hud_value_completed(),
+        ),
+        Span::styled(" | ", hud_separator()),
+        Span::styled("OK ", hud_label()),
+        Span::styled(progress.succeeded.to_string(), status_installed()),
+        Span::styled(" | ", hud_separator()),
+        Span::styled("FAIL ", hud_label()),
+        Span::styled(progress.failed.to_string(), task_status_failed()),
+    ]));
+
+    if let Some(active_task) = progress.active_task {
+        let active_text = truncate_to_width(
+            &format!("Active: {}", active_task),
+            content_width.saturating_sub(2),
+        );
+        lines.push(Line::from(vec![
+            Span::styled("▶ ", accent()),
+            Span::styled(active_text, status_loading()),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("Logs: ", label()),
+        Span::styled(
+            if app.queue_show_logs {
+                "verbose (l to toggle)"
+            } else {
+                "quiet (l to toggle)"
+            },
+            if app.queue_show_logs { panel() } else { dim() },
+        ),
+    ]));
 
     if inner.height > 1 {
         lines.push(Line::from(""));
@@ -1064,6 +1187,9 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" u", key_hint()),
                     Span::styled(" updates ", description()),
                     Span::styled("│", separator()),
+                    Span::styled(" l", key_hint()),
+                    Span::styled(" logs ", description()),
+                    Span::styled("│", separator()),
                     Span::styled(" h", key_hint()),
                     Span::styled(" help ", description()),
                     Span::styled("│", separator()),
@@ -1116,6 +1242,9 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" r", key_hint()),
                         Span::styled(" refresh ", description()),
                         Span::styled("│", separator()),
+                        Span::styled(" l", key_hint()),
+                        Span::styled(" logs ", description()),
+                        Span::styled("│", separator()),
                         Span::styled(" i/x", key_hint()),
                         Span::styled(" install/remove", description()),
                     ]),
@@ -1131,8 +1260,14 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" Space", key_hint()),
                     Span::styled(" select ", description()),
                     Span::styled("│", separator()),
-                    Span::styled(" U/S/A", key_hint()),
+                    Span::styled(" U/B/S/A", key_hint()),
                     Span::styled(" queue ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" F", key_hint()),
+                    Span::styled(" retry ", description()),
+                    Span::styled("│", separator()),
+                    Span::styled(" l", key_hint()),
+                    Span::styled(" logs ", description()),
                     Span::styled("│", separator()),
                     Span::styled(" Esc", key_hint()),
                     Span::styled(" back", description()),
@@ -1152,6 +1287,15 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" a/c", key_hint()),
                         Span::styled(" select-all/clear ", description()),
                         Span::styled("│", separator()),
+                        Span::styled(" i", key_hint()),
+                        Span::styled(" ignore ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" z/Z", key_hint()),
+                        Span::styled(" snooze/clear ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" v", key_hint()),
+                        Span::styled(" hidden-view ", description()),
+                        Span::styled("│", separator()),
                         Span::styled(" /", key_hint()),
                         Span::styled(" search ", description()),
                         Span::styled("│", separator()),
@@ -1162,14 +1306,23 @@ fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" U", key_hint()),
                         Span::styled(" queue-recommended ", description()),
                         Span::styled("│", separator()),
+                        Span::styled(" B", key_hint()),
+                        Span::styled(" queue-by-source ", description()),
+                        Span::styled("│", separator()),
                         Span::styled(" S", key_hint()),
                         Span::styled(" queue-selected ", description()),
                         Span::styled("│", separator()),
                         Span::styled(" A", key_hint()),
                         Span::styled(" queue-all ", description()),
                         Span::styled("│", separator()),
+                        Span::styled(" F", key_hint()),
+                        Span::styled(" retry-failed ", description()),
+                        Span::styled("│", separator()),
                         Span::styled(" r", key_hint()),
                         Span::styled(" refresh ", description()),
+                        Span::styled("│", separator()),
+                        Span::styled(" l", key_hint()),
+                        Span::styled(" logs ", description()),
                         Span::styled("│", separator()),
                         Span::styled(" q", key_hint()),
                         Span::styled(" quit", description()),
@@ -1255,6 +1408,9 @@ fn draw_confirm_popup(f: &mut Frame, app: &App) {
             PendingAction::Install(pkg) => format!("Install {}?", pkg.name),
             PendingAction::Remove(pkg) => format!("Remove {}?", pkg.name),
             PendingAction::UpdateAll(pkgs) => format!("Update {} packages?", pkgs.len()),
+            PendingAction::UpdateBySource(source, pkgs) => {
+                format!("Queue {} updates from {}?", pkgs.len(), source)
+            }
             PendingAction::UpdateRecommended(pkgs) => {
                 format!("Queue recommended updates for {} packages?", pkgs.len())
             }
