@@ -1,960 +1,820 @@
-use super::app::{ActivePanel, App, AppMode, PendingAction};
+use super::app::{action_label, App, Filter, Focus, MIN_HEIGHT, MIN_WIDTH};
 use super::theme::*;
-use super::update_center::UpdateLane;
+use super::update_center;
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
-use crate::models::PackageStatus;
+use crate::models::{Package, PackageStatus};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
 
-pub fn draw(f: &mut Frame, app: &App) {
-    let console_height = if app.compact { 3 } else { 6 };
-    let commands_height =
-        if matches!(app.mode, AppMode::Normal | AppMode::UpdateCenter) && !app.compact {
-            2
-        } else {
-            1
-        };
+pub fn draw(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        draw_too_small(frame, area);
+        return;
+    }
+
+    let queue_height = if app.should_show_queue_bar() { 1 } else { 0 };
+    let constraints = vec![
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(queue_height),
+        Constraint::Length(1),
+    ];
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),                             // Title bar
-            Constraint::Min(if app.compact { 8 } else { 10 }), // Main content
-            Constraint::Length(console_height),                // Console panel
-            Constraint::Length(commands_height),               // Commands bar
-            Constraint::Length(3),                             // Status bar
-        ])
-        .split(f.area());
-
-    draw_title_bar(f, app, chunks[0]);
-    draw_main_content(f, app, chunks[1]);
-    draw_console_panel(f, app, chunks[2]);
-    draw_commands_bar(f, app, chunks[3]);
-    draw_status_bar(f, app, chunks[4]);
-
-    if app.mode == AppMode::Search {
-        draw_search_popup(f, app);
-    }
-    if app.mode == AppMode::Confirm {
-        draw_confirm_popup(f, app);
-    }
-}
-
-fn is_update_context(app: &App) -> bool {
-    app.mode == AppMode::UpdateCenter
-        || (app.mode == AppMode::Search && app.search_return_mode == AppMode::UpdateCenter)
-        || (app.mode == AppMode::Confirm && app.confirm_return_mode == AppMode::UpdateCenter)
-}
-
-fn draw_title_bar(f: &mut Frame, app: &App, area: Rect) {
-    let update_context = is_update_context(app);
-    let (title, title_color) = if app.compact {
-        (" LinGet ", title_color())
-    } else if update_context {
-        (" LinGet TUI - Update Center ", accent_color())
-    } else if app.show_updates_only {
-        (" LinGet TUI - Updates Available ", accent_color())
-    } else {
-        (" LinGet TUI - Installed Packages ", title_color())
-    };
-
-    let title_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(title_color))
-        .title(title)
-        .title_style(title_style());
-
-    let source_name = app
-        .selected_source
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "All".to_string());
-
-    let pkg_count = if update_context {
-        let selected_count = app.selected_update_count();
-        if app.compact {
-            if selected_count > 0 {
-                format!(
-                    " {} upd | sec {} rec {} | {} sel ",
-                    app.update_summary.total,
-                    app.update_summary.security,
-                    app.update_summary.recommended,
-                    selected_count
-                )
-            } else {
-                format!(
-                    " {} upd | sec {} rec {} ",
-                    app.update_summary.total,
-                    app.update_summary.security,
-                    app.update_summary.recommended
-                )
-            }
-        } else if selected_count > 0 {
-            format!(
-                " {} updates | security {} | recommended {} | optional {} | risky {} | {} selected ",
-                app.update_summary.total,
-                app.update_summary.security,
-                app.update_summary.recommended,
-                app.update_summary.optional,
-                app.update_summary.risky,
-                selected_count
-            )
-        } else {
-            format!(
-                " {} updates | security {} | recommended {} | optional {} | risky {} ",
-                app.update_summary.total,
-                app.update_summary.security,
-                app.update_summary.recommended,
-                app.update_summary.optional,
-                app.update_summary.risky
-            )
-        }
-    } else {
-        let selected_count = app.selected_count();
-        if app.compact {
-            if selected_count > 0 {
-                format!(
-                    " {} | {} | {} sel ",
-                    app.filtered_packages.len(),
-                    source_name,
-                    selected_count
-                )
-            } else {
-                format!(" {} | {} ", app.filtered_packages.len(), source_name)
-            }
-        } else if app.show_updates_only {
-            if selected_count > 0 {
-                format!(
-                    " {} updates available | Source: {} | {} selected ",
-                    app.filtered_packages.len(),
-                    source_name,
-                    selected_count
-                )
-            } else {
-                format!(
-                    " {} updates available | Source: {} ",
-                    app.filtered_packages.len(),
-                    source_name
-                )
-            }
-        } else if selected_count > 0 {
-            format!(
-                " {} packages | Source: {} | {} selected ",
-                app.filtered_packages.len(),
-                source_name,
-                selected_count
-            )
-        } else {
-            format!(
-                " {} packages | Source: {} ",
-                app.filtered_packages.len(),
-                source_name
-            )
-        }
-    };
-
-    let paragraph = Paragraph::new(pkg_count)
-        .block(title_block)
-        .style(title_bar());
-
-    f.render_widget(paragraph, area);
-}
-
-fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
-    if is_update_context(app) {
-        draw_update_center(f, app, area);
-        return;
-    }
-
-    if app.compact {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(30),
-                Constraint::Percentage(40),
-                Constraint::Percentage(30),
-            ])
-            .split(area);
-
-        draw_sources_panel(f, app, chunks[0]);
-        draw_packages_panel(f, app, chunks[1]);
-
-        let detail_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(chunks[2]);
-
-        draw_details_panel(f, app, detail_chunks[0]);
-        draw_task_queue_panel(f, app, detail_chunks[1]);
-    } else {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(22),
-                Constraint::Percentage(50),
-                Constraint::Min(35),
-            ])
-            .split(area);
-
-        draw_sources_panel(f, app, chunks[0]);
-        draw_packages_panel(f, app, chunks[1]);
-
-        let detail_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-            .split(chunks[2]);
-
-        draw_details_panel(f, app, detail_chunks[0]);
-        draw_task_queue_panel(f, app, detail_chunks[1]);
-    }
-}
-
-fn draw_update_center(f: &mut Frame, app: &App, area: Rect) {
-    if app.compact {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(8),
-                Constraint::Min(8),
-                Constraint::Min(8),
-            ])
-            .split(area);
-        draw_update_summary_panel(f, app, chunks[0]);
-        draw_update_packages_panel(f, app, chunks[1]);
-        draw_update_details_panel(f, app, chunks[2]);
-        return;
-    }
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .constraints(constraints)
         .split(area);
 
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(10)])
-        .split(chunks[0]);
+    draw_filter_bar(frame, app, chunks[0]);
+    draw_main_content(frame, app, chunks[1]);
 
-    draw_update_summary_panel(f, app, left[0]);
-    draw_update_packages_panel(f, app, left[1]);
-    draw_update_details_panel(f, app, chunks[1]);
-}
-
-fn draw_update_summary_panel(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_active())
-        .title(" Update Summary ")
-        .title_style(panel_title_active());
-
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Security: ", label()),
-            Span::styled(app.update_summary.security.to_string(), status_removing()),
-            Span::styled("  Recommended: ", label()),
-            Span::styled(app.update_summary.recommended.to_string(), status_update()),
-            Span::styled("  Optional: ", label()),
-            Span::styled(app.update_summary.optional.to_string(), panel()),
-            Span::styled("  Risky: ", label()),
-            Span::styled(app.update_summary.risky.to_string(), status_not_installed()),
-        ]),
-        Line::from(vec![
-            Span::styled("Total updates: ", label()),
-            Span::styled(app.update_summary.total.to_string(), panel_title_active()),
-            Span::styled("  Selected: ", label()),
-            Span::styled(app.selected_update_count().to_string(), accent()),
-        ]),
-    ];
-
-    lines.push(Line::from(vec![
-        Span::styled("View: ", label()),
-        Span::styled(
-            if app.show_hidden_updates {
-                "Hidden updates"
-            } else {
-                "Active updates"
-            },
-            if app.show_hidden_updates {
-                status_not_installed()
-            } else {
-                panel()
-            },
-        ),
-        Span::styled("  Failed in queue: ", label()),
-        Span::styled(app.failed_update_count().to_string(), task_status_failed()),
-    ]));
-
-    if app.update_summary.by_source.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("Sources: ", label()),
-            Span::styled("No updates detected", dim()),
-        ]));
+    let footer_chunk = if queue_height == 1 {
+        draw_queue_bar(frame, app, chunks[2]);
+        chunks[3]
     } else {
-        let source_text = app
-            .update_summary
-            .by_source
-            .iter()
-            .map(|(source, count)| format!("{}: {}", source, count))
-            .collect::<Vec<_>>()
-            .join(" | ");
-        lines.push(Line::from(vec![
-            Span::styled("Sources: ", label()),
-            Span::styled(source_text, panel()),
-        ]));
-    }
-
-    if let Some(summary) = &app.last_queue_summary {
-        lines.push(Line::from(vec![
-            Span::styled("Last run: ", label()),
-            Span::styled(
-                format!(
-                    "{}/{} ok, {} failed, {} cancelled",
-                    summary.succeeded, summary.total, summary.failed, summary.cancelled
-                ),
-                if summary.failed > 0 {
-                    task_status_failed()
-                } else {
-                    status_installed()
-                },
-            ),
-        ]));
-    }
-
-    let paragraph = Paragraph::new(lines).block(block).style(panel());
-    f.render_widget(paragraph, area);
-}
-
-fn draw_update_packages_panel(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_active())
-        .title(" Update Candidates ")
-        .title_style(panel_title_active());
-
-    if app.loading {
-        let loading = Paragraph::new("Refreshing update data...")
-            .block(block)
-            .style(status_loading());
-        f.render_widget(loading, area);
-        return;
-    }
-
-    if app.update_candidates.is_empty() {
-        let empty = Paragraph::new("No updates available")
-            .block(block)
-            .style(dim());
-        f.render_widget(empty, area);
-        return;
-    }
-
-    let rows: Vec<Row> = app
-        .update_candidates
-        .iter()
-        .enumerate()
-        .map(|(idx, candidate)| {
-            let is_selected = idx == app.update_index;
-            let is_marked = app.is_update_selected(&candidate.package);
-            let base_style = if is_selected { selection() } else { panel() };
-            let mark = if is_marked { "☑ " } else { "☐ " };
-            let lane_tag = lane_short_label(candidate.lane);
-            let lane_style = lane_style(candidate.lane);
-            let hidden_tag = app
-                .hidden_state_for_package(&candidate.package)
-                .map(|state| {
-                    if state.starts_with("Ignored") {
-                        "[IGN] "
-                    } else {
-                        "[SNZ] "
-                    }
-                })
-                .unwrap_or("");
-            let package_name = format!("{}{}", hidden_tag, candidate.package.name);
-            let version = candidate
-                .package
-                .available_version
-                .as_ref()
-                .map(|available| format!("{} -> {}", candidate.package.version, available))
-                .unwrap_or_else(|| candidate.package.version.clone());
-
-            Row::new(vec![
-                Span::styled(mark, accent()),
-                Span::styled(lane_tag, lane_style),
-                Span::styled(truncate_string(&package_name, 26), base_style),
-                Span::styled(truncate_string(&version, 20), base_style),
-                Span::styled(candidate.package.source.to_string(), base_style),
-            ])
-            .style(base_style)
-        })
-        .collect();
-
-    let header = Row::new(vec!["", "Lane", "Package", "Version", "Source"])
-        .style(table_header())
-        .bottom_margin(1);
-    let widths = [
-        Constraint::Length(3),
-        Constraint::Length(6),
-        Constraint::Min(22),
-        Constraint::Min(18),
-        Constraint::Length(10),
-    ];
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(block)
-        .row_highlight_style(selection_focused());
-    f.render_widget(table, area);
-}
-
-fn draw_update_details_panel(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_active())
-        .title(" Update Details ")
-        .title_style(panel_title_active());
-
-    if app.loading {
-        let loading = Paragraph::new("Loading update details...")
-            .block(block)
-            .style(status_loading());
-        f.render_widget(loading, area);
-        return;
-    }
-
-    let Some(candidate) = app.selected_update_candidate() else {
-        let empty = Paragraph::new("Select an update to inspect")
-            .block(block)
-            .style(dim());
-        f.render_widget(empty, area);
-        return;
+        chunks[2]
     };
+    draw_footer(frame, app, footer_chunk);
 
-    let package = &candidate.package;
-    let content_width = area.width.saturating_sub(2) as usize;
-    let available = package.available_version.as_deref().unwrap_or("unknown");
-    let version_text = format!("{} -> {}", package.version, available);
-    let lane_text = candidate.lane.label();
-    let category_text = format!("{:?}", candidate.category);
-    let hidden_state = app
-        .hidden_state_for_package(package)
-        .unwrap_or_else(|| String::from("Visible"));
-
-    let mut lines: Vec<Line> = vec![
-        labeled_line("Name: ", &package.name, panel_title_active(), content_width),
-        labeled_line(
-            "Source: ",
-            &package.source.to_string(),
-            panel(),
-            content_width,
-        ),
-        labeled_line(
-            "Lane: ",
-            lane_text,
-            lane_style(candidate.lane),
-            content_width,
-        ),
-        labeled_line("Category: ", &category_text, panel(), content_width),
-        labeled_line("Version: ", &version_text, panel(), content_width),
-        labeled_line(
-            "Visibility: ",
-            &hidden_state,
-            if hidden_state == "Visible" {
-                status_installed()
-            } else {
-                status_not_installed()
-            },
-            content_width,
-        ),
-        Line::from(""),
-        Line::from(vec![Span::styled("Description:", label())]),
-    ];
-
-    let wrapped = wrap_text(&package.description, content_width);
-    lines.extend(
-        wrapped
-            .into_iter()
-            .map(|line| Line::from(Span::styled(line, panel()))),
-    );
-
-    if candidate.lane == UpdateLane::Risky {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("Caution: ", status_not_installed()),
-            Span::styled(
-                "risky update, review before queueing all",
-                status_not_installed(),
-            ),
-        ]));
-    }
-
-    let failed_updates = app.failed_update_names(3);
-    if !failed_updates.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("Failed updates: ", label()),
-            Span::styled(failed_updates.join(", "), task_status_failed()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("Press ", dim()),
-            Span::styled("F", key_hint()),
-            Span::styled(" to retry failed update tasks", dim()),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("Controls: ", label()),
-        Span::styled("i ignore/unignore", dim()),
-        Span::styled(" | ", dim()),
-        Span::styled("z snooze 24h", dim()),
-        Span::styled(" | ", dim()),
-        Span::styled("Z clear snooze", dim()),
-        Span::styled(" | ", dim()),
-        Span::styled("v hidden view", dim()),
-    ]));
-
-    let paragraph = Paragraph::new(lines).block(block).style(panel());
-    f.render_widget(paragraph, area);
-}
-
-fn lane_short_label(lane: UpdateLane) -> &'static str {
-    match lane {
-        UpdateLane::Security => "SEC",
-        UpdateLane::Recommended => "REC",
-        UpdateLane::Optional => "OPT",
-        UpdateLane::Risky => "RSK",
+    if app.showing_help {
+        draw_help_overlay(frame);
     }
 }
 
-fn lane_style(lane: UpdateLane) -> Style {
-    match lane {
-        UpdateLane::Security => status_removing(),
-        UpdateLane::Recommended => status_update(),
-        UpdateLane::Optional => panel(),
-        UpdateLane::Risky => status_not_installed(),
-    }
-}
-
-fn draw_sources_panel(f: &mut Frame, app: &App, area: Rect) {
-    let is_active = app.active_panel == ActivePanel::Sources;
-
-    let border_style = if is_active {
-        border_active()
-    } else {
-        border_inactive()
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(" Sources ")
-        .title_style(if is_active {
-            panel_title_active()
-        } else {
-            panel_title()
-        });
-
+fn draw_too_small(frame: &mut Frame, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(" LinGet ");
     let inner = block.inner(area);
-    let total_sources = app.available_sources.len() + 1;
-    let selected = app.source_index.min(total_sources.saturating_sub(1));
-    let visible = inner.height as usize;
-    let start = queue_window_start(total_sources, visible, selected);
-    let end = (start + visible).min(total_sources);
+    frame.render_widget(block, area);
 
-    let mut items: Vec<ListItem> = Vec::new();
+    let lines = vec![
+        Line::from(Span::styled("Terminal too small", error())),
+        Line::from(Span::styled(
+            format!("Minimum size: {}x{}", MIN_WIDTH, MIN_HEIGHT),
+            muted(),
+        )),
+    ];
+    let paragraph = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, inner);
+}
+
+fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let mut left: Vec<Span> = vec![Span::styled("LinGet  ", accent())];
+
+    left.extend(render_filter_tab(
+        "1",
+        "All",
+        app.filter_counts[0],
+        app.filter == Filter::All,
+        app.searching,
+    ));
+    left.push(Span::raw(" "));
+    left.extend(render_filter_tab(
+        "2",
+        "Installed",
+        app.filter_counts[1],
+        app.filter == Filter::Installed,
+        app.searching,
+    ));
+    left.push(Span::raw(" "));
+    left.extend(render_filter_tab(
+        "3",
+        "Updates",
+        app.filter_counts[2],
+        app.filter == Filter::Updates,
+        app.searching,
+    ));
+
+    let right = if app.searching {
+        vec![Span::styled(
+            format!(
+                "/ {}█",
+                render_search_input(&app.search, area.width as usize / 3)
+            ),
+            accent(),
+        )]
+    } else if !app.search.is_empty() {
+        vec![Span::styled(format!("/ \"{}\"", app.search), muted())]
+    } else if app.loading {
+        vec![Span::styled(
+            format!("{} refreshing", app.spinner_frame()),
+            loading(),
+        )]
+    } else if !app.status.is_empty() {
+        vec![Span::styled(app.status.clone(), italic_status())]
+    } else {
+        Vec::new()
+    };
+
+    let line = compose_left_right(left, right, area.width as usize);
+    let paragraph = Paragraph::new(line).style(text());
+    frame.render_widget(paragraph, area);
+}
+
+fn render_filter_tab(
+    key: &str,
+    label: &str,
+    count: usize,
+    active: bool,
+    searching: bool,
+) -> Vec<Span<'static>> {
+    let key_style = if active && !searching {
+        key_hint()
+    } else {
+        dim()
+    };
+    let label_style = if active && !searching {
+        accent()
+    } else {
+        dim()
+    };
+
+    vec![
+        Span::styled("[", dim()),
+        Span::styled(key.to_string(), key_style),
+        Span::raw(" "),
+        Span::styled(label.to_string(), label_style),
+        Span::raw(" "),
+        Span::styled(count.to_string(), label_style),
+        Span::styled("]", dim()),
+    ]
+}
+
+fn compose_left_right<'a>(mut left: Vec<Span<'a>>, right: Vec<Span<'a>>, width: usize) -> Line<'a> {
+    let left_width = spans_width(&left);
+    let right_width = spans_width(&right);
+
+    if right.is_empty() {
+        return Line::from(left);
+    }
+
+    if left_width + right_width + 1 > width {
+        return Line::from(left);
+    }
+
+    let padding = width.saturating_sub(left_width + right_width);
+    left.push(Span::raw(" ".repeat(padding)));
+    left.extend(right);
+
+    Line::from(left)
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum()
+}
+
+fn render_search_input(query: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(query) <= max_width {
+        return query.to_string();
+    }
+    if max_width <= 3 {
+        return "...".to_string();
+    }
+
+    let mut out = String::new();
+    let mut width = 0usize;
+    let target = max_width - 3;
+
+    for ch in query.chars().rev() {
+        let char_width = UnicodeWidthStr::width(ch.to_string().as_str());
+        if width + char_width > target {
+            break;
+        }
+        out.insert(0, ch);
+        width += char_width;
+    }
+
+    format!("...{}", out)
+}
+
+fn draw_main_content(frame: &mut Frame, app: &App, area: Rect) {
+    if app.compact {
+        draw_compact_content(frame, app, area);
+    } else {
+        draw_full_content(frame, app, area);
+    }
+}
+
+fn draw_full_content(frame: &mut Frame, app: &App, area: Rect) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(18), Constraint::Min(1)])
+        .split(area);
+
+    draw_sources_panel(frame, app, columns[0]);
+
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(columns[1]);
+
+    draw_packages_panel(frame, app, right[0], false);
+
+    if app.queue_expanded {
+        draw_expanded_queue(frame, app, right[1]);
+    } else {
+        draw_details_panel(frame, app, right[1]);
+    }
+}
+
+fn draw_compact_content(frame: &mut Frame, app: &App, area: Rect) {
+    if app.queue_expanded {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(area);
+        draw_packages_panel(frame, app, chunks[0], true);
+        draw_expanded_queue(frame, app, chunks[1]);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(area);
+    draw_packages_panel(frame, app, chunks[0], true);
+    draw_compact_details_summary(frame, app, chunks[1]);
+}
+
+fn panel_block(title: String, focused: bool) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(if focused {
+            border_focused()
+        } else {
+            border_unfocused()
+        })
+        .title(title)
+        .title_style(if focused { accent() } else { text() })
+}
+
+fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let focused = app.focus == Focus::Sources && !app.queue_expanded;
+    let block = panel_block(" Sources ".to_string(), focused);
+    let inner = block.inner(area);
+
+    let total = app.source_count();
+    let selected = app.source_index();
+    let visible = inner.height as usize;
+    let start = window_start(total, visible, selected);
+    let end = (start + visible).min(total);
+
+    let mut items = Vec::new();
     for idx in start..end {
-        let is_selected = idx == app.source_index;
+        let selected_row = idx == selected;
         let label = if idx == 0 {
-            String::from("All")
+            "All".to_string()
         } else {
             app.available_sources[idx - 1].to_string()
         };
-
         items.push(ListItem::new(Line::from(vec![
-            Span::styled(if is_selected { "▶ " } else { "  " }, accent()),
-            Span::styled(
-                label,
-                if is_selected {
-                    panel_title_active()
-                } else {
-                    panel()
-                },
-            ),
+            Span::styled(if selected_row { "▸ " } else { "  " }, row_selected()),
+            Span::styled(label, if selected_row { accent() } else { text() }),
         ])));
     }
 
     let list = List::new(items).block(block);
-    f.render_widget(list, area);
+    frame.render_widget(list, area);
 }
 
-fn draw_packages_panel(f: &mut Frame, app: &App, area: Rect) {
-    let is_active = app.active_panel == ActivePanel::Packages;
-
-    let border_style = if is_active {
-        border_active()
+fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) {
+    let focused = app.focus == Focus::Packages && !app.queue_expanded;
+    let position = if app.filtered.is_empty() {
+        0
     } else {
-        border_inactive()
+        app.cursor + 1
     };
+    let title = format!(" Packages ({}/{}) ", position, app.filtered.len());
+    let block = panel_block(title, focused);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(" Packages ")
-        .title_style(if is_active {
-            panel_title_active()
+    if app.loading && app.filtered.is_empty() {
+        let paragraph = Paragraph::new(format!("{} Loading packages...", app.spinner_frame()))
+            .block(block)
+            .style(loading());
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    if app.filtered.is_empty() {
+        let lines = if !app.search.is_empty() {
+            vec![
+                Line::from(Span::styled(
+                    format!("No results for '{}'", app.search),
+                    muted(),
+                )),
+                Line::from(Span::styled("Press Esc to clear search", dim())),
+            ]
+        } else if app.filter == Filter::Updates {
+            vec![
+                Line::from(Span::styled("No updates available", muted())),
+                Line::from(Span::styled("All packages are current", dim())),
+            ]
         } else {
-            panel_title()
-        });
-
-    if app.loading {
-        let loading = Paragraph::new("Loading packages...")
-            .block(block)
-            .style(status_loading());
-        f.render_widget(loading, area);
+            vec![Line::from(Span::styled(
+                "No packages match this filter",
+                muted(),
+            ))]
+        };
+        let paragraph = Paragraph::new(lines).block(block).style(text());
+        frame.render_widget(paragraph, area);
         return;
     }
 
-    if app.filtered_packages.is_empty() {
-        let empty = Paragraph::new("No packages found (use / to search)")
-            .block(block)
-            .style(dim());
-        f.render_widget(empty, area);
-        return;
-    }
+    let inner = block.inner(area);
+    let visible_rows = inner.height.saturating_sub(2) as usize;
+    let start = window_start(app.filtered.len(), visible_rows.max(1), app.cursor);
+    let end = (start + visible_rows.max(1)).min(app.filtered.len());
 
-    let rows: Vec<Row> = app
-        .filtered_packages
-        .iter()
-        .enumerate()
-        .map(|(i, pkg)| {
-            let is_selected = i == app.package_index;
-            let is_marked = app.is_selected(pkg);
-            let style = if is_selected { selection() } else { panel() };
+    let mut rows = Vec::new();
+    for row_index in start..end {
+        let Some(package_index) = app.filtered.get(row_index).copied() else {
+            continue;
+        };
+        let Some(package) = app.packages.get(package_index) else {
+            continue;
+        };
 
-            let status_style = match pkg.status {
-                PackageStatus::Installed => status_installed(),
-                PackageStatus::UpdateAvailable => status_update(),
-                PackageStatus::NotInstalled => status_not_installed(),
-                PackageStatus::Installing | PackageStatus::Updating => status_loading(),
-                PackageStatus::Removing => status_removing(),
-            };
+        let package_id = package.id();
+        let is_cursor = row_index == app.cursor;
+        let is_selected = app.selected.contains(&package_id);
+        let row_style = if is_cursor { row_cursor() } else { text() };
 
-            let status_icon = match pkg.status {
-                PackageStatus::Installed => "✓",
-                PackageStatus::UpdateAvailable => "↑",
-                PackageStatus::NotInstalled => "○",
-                PackageStatus::Installing | PackageStatus::Updating => "⟳",
-                PackageStatus::Removing => "✗",
-            };
+        let marker = if is_selected { "☑" } else { " " };
+        let version = format_package_version(package);
+        let source = package.source.to_string();
+        let status = package_status_short(package.status);
 
-            let version = if let Some(ref avail) = pkg.available_version {
-                format!("{} → {}", pkg.version, avail)
-            } else {
-                pkg.version.clone()
-            };
-
-            let mark = if is_marked { "☑ " } else { "☐ " };
-
+        rows.push(
             Row::new(vec![
-                Span::styled(mark, accent()),
-                Span::styled(truncate_string(&pkg.name, 23), style),
-                Span::styled(truncate_string(&version, 20), style),
-                Span::styled(pkg.source.to_string(), style),
-                Span::styled(status_icon, status_style),
+                Cell::from(Span::styled(
+                    marker,
+                    if is_selected { row_selected() } else { text() },
+                )),
+                Cell::from(Span::styled(
+                    truncate_to_width(&package.name, if compact { 20 } else { 26 }),
+                    row_style,
+                )),
+                Cell::from(Span::styled(
+                    truncate_to_width(&version, if compact { 16 } else { 24 }),
+                    row_style,
+                )),
+                Cell::from(Span::styled(truncate_to_width(&source, 10), row_style)),
+                Cell::from(Span::styled(status.0, status.1)),
             ])
-            .style(style)
-        })
-        .collect();
+            .style(row_style),
+        );
+    }
 
-    let header = Row::new(vec!["", "Name", "Version", "Source", ""])
-        .style(table_header())
-        .bottom_margin(1);
-
+    let header = Row::new(vec!["", "Name", "Version", "Source", "Status"]).style(table_header());
     let widths = [
-        Constraint::Length(3),
-        Constraint::Min(23),
-        Constraint::Min(20),
-        Constraint::Length(10),
         Constraint::Length(2),
+        Constraint::Min(if compact { 12 } else { 22 }),
+        Constraint::Min(if compact { 10 } else { 18 }),
+        Constraint::Length(10),
+        Constraint::Length(6),
     ];
 
     let table = Table::new(rows, widths)
         .header(header)
         .block(block)
-        .row_highlight_style(selection_focused());
-
-    f.render_widget(table, area);
+        .column_spacing(1);
+    frame.render_widget(table, area);
 }
 
-fn draw_details_panel(f: &mut Frame, app: &App, area: Rect) {
-    let is_active = app.active_panel == ActivePanel::Details;
+fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let block = panel_block(" Details ".to_string(), false);
 
-    let border_style = if is_active {
-        border_active()
-    } else {
-        border_inactive()
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(" Details ")
-        .title_style(if is_active {
-            panel_title_active()
-        } else {
-            panel_title()
-        });
-
-    if app.loading {
-        let loading = Paragraph::new("Loading details...")
-            .block(block)
-            .style(status_loading());
-        f.render_widget(loading, area);
+    if app.loading && app.current_package().is_none() {
+        frame.render_widget(
+            Paragraph::new("Loading details...")
+                .block(block)
+                .style(loading()),
+            area,
+        );
         return;
     }
 
-    let pkg = match app.selected_package() {
-        Some(p) => p,
-        None => {
-            let empty = Paragraph::new("Select a package to view details")
-                .block(block)
-                .style(dim());
-            f.render_widget(empty, area);
-            return;
-        }
+    let Some(package) = app.current_package() else {
+        frame.render_widget(
+            Paragraph::new("Select a package").block(block).style(dim()),
+            area,
+        );
+        return;
     };
 
-    let status_text = match pkg.status {
-        PackageStatus::Installed => "Installed",
-        PackageStatus::UpdateAvailable => "Update Available",
-        PackageStatus::NotInstalled => "Not Installed",
-        PackageStatus::Installing => "Installing...",
-        PackageStatus::Removing => "Removing...",
-        PackageStatus::Updating => "Updating...",
-    };
-
-    let version_info = if let Some(ref avail) = pkg.available_version {
-        format!("{} → {}", pkg.version, avail)
-    } else {
-        pkg.version.clone()
-    };
-
-    let content_width = area.width.saturating_sub(2) as usize;
-
-    let name_line = labeled_line("Name: ", &pkg.name, panel_title_active(), content_width);
-    let source_line = labeled_line(
-        "Source: ",
-        &format!("{}", pkg.source),
-        panel(),
-        content_width,
-    );
-    let status_line = labeled_line(
-        "Status: ",
-        status_text,
-        status_style_for_status(pkg.status),
-        content_width,
-    );
-    let version_line = labeled_line("Version: ", &version_info, panel(), content_width);
-
-    let description_line = Line::from(vec![Span::styled("Description: ", label())]);
-
-    let wrapped_description = wrap_text(&pkg.description, content_width);
-
-    let lines: Vec<Line> = vec![
-        name_line,
-        source_line,
-        status_line,
-        version_line,
-        Line::from(""),
-        description_line,
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Name: ", dim()),
+            Span::styled(package.name.clone(), accent()),
+        ]),
+        Line::from(vec![
+            Span::styled("Version: ", dim()),
+            Span::styled(format_package_version(package), text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Source: ", dim()),
+            Span::styled(package.source.to_string(), text()),
+        ]),
     ];
 
-    let mut description_lines: Vec<Line> = wrapped_description
-        .iter()
-        .map(|s| Line::from(Span::styled(s, panel())))
-        .collect();
+    if package.status == PackageStatus::UpdateAvailable || package.status == PackageStatus::Updating
+    {
+        if let Some(priority) = update_priority_label(package) {
+            lines.push(Line::from(vec![
+                Span::styled("Priority: ", dim()),
+                Span::styled(priority, warning()),
+            ]));
+        }
+    }
 
-    let mut all_lines = lines;
-    all_lines.append(&mut description_lines);
-
-    let paragraph = Paragraph::new(all_lines).block(block).style(panel());
-
-    f.render_widget(paragraph, area);
-}
-
-fn draw_task_queue_panel(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(hud_border())
-        .title(" Task Queue ")
-        .title_style(hud_title());
-
-    let inner = block.inner(area);
-    let content_width = inner.width as usize;
-    let (active, queued, completed) = task_queue_counts(&app.queued_tasks);
-    let progress = app.queue_progress();
-
-    let mut lines: Vec<Line> = Vec::new();
-    let summary = Line::from(vec![
-        Span::styled("ACTIVE ", hud_label()),
-        Span::styled(format!("{}", active), hud_value_active()),
-        Span::styled(" | ", hud_separator()),
-        Span::styled("QUEUED ", hud_label()),
-        Span::styled(format!("{}", queued), hud_value_queued()),
-        Span::styled(" | ", hud_separator()),
-        Span::styled("COMPLETED ", hud_label()),
-        Span::styled(format!("{}", completed), hud_value_completed()),
-    ]);
-    lines.push(summary);
-
-    lines.push(Line::from(vec![
-        Span::styled("PROGRESS ", hud_label()),
-        Span::styled(
-            format!("{}/{}", progress.done, progress.total),
-            hud_value_completed(),
-        ),
-        Span::styled(" | ", hud_separator()),
-        Span::styled("OK ", hud_label()),
-        Span::styled(progress.succeeded.to_string(), status_installed()),
-        Span::styled(" | ", hud_separator()),
-        Span::styled("FAIL ", hud_label()),
-        Span::styled(progress.failed.to_string(), task_status_failed()),
-    ]));
-
-    if let Some(active_task) = progress.active_task {
-        let active_text = truncate_to_width(
-            &format!("Active: {}", active_task),
-            content_width.saturating_sub(2),
-        );
+    if matches!(
+        package.status,
+        PackageStatus::Installing | PackageStatus::Removing | PackageStatus::Updating
+    ) {
         lines.push(Line::from(vec![
-            Span::styled("▶ ", accent()),
-            Span::styled(active_text, status_loading()),
+            Span::styled("Status: ", dim()),
+            Span::styled("Operation in progress...", loading()),
         ]));
     }
 
-    lines.push(Line::from(vec![
-        Span::styled("Logs: ", label()),
-        Span::styled(
-            if app.queue_show_logs {
-                "verbose (l to toggle)"
-            } else {
-                "quiet (l to toggle)"
-            },
-            if app.queue_show_logs { panel() } else { dim() },
-        ),
-    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Description:", dim())));
 
-    if inner.height > 1 {
-        lines.push(Line::from(""));
+    let description_width = area.width.saturating_sub(4) as usize;
+    for line in wrap_text(&package.description, description_width) {
+        lines.push(Line::from(Span::styled(line, muted())));
     }
 
-    if app.queued_tasks.is_empty() {
-        lines.push(Line::from(Span::styled("No queued tasks", dim())));
-    } else {
-        let available = inner.height.saturating_sub(lines.len() as u16) as usize;
-        let total = app.queued_tasks.len();
-        let selected = app.queue_index.min(total.saturating_sub(1));
-        let start = queue_window_start(total, available, selected);
-        let end = (start + available).min(total);
-
-        for idx in start..end {
-            let is_selected = idx == selected;
-            lines.push(task_queue_line(
-                &app.queued_tasks[idx],
-                content_width,
-                is_selected,
-                app.active_panel == ActivePanel::Queue,
-            ));
-        }
-    }
-
-    let paragraph = Paragraph::new(lines).block(block).style(panel());
-    f.render_widget(paragraph, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
-fn status_style_for_status(status: PackageStatus) -> Style {
-    match status {
-        PackageStatus::Installed => status_installed(),
-        PackageStatus::UpdateAvailable => status_update(),
-        PackageStatus::NotInstalled => status_not_installed(),
-        PackageStatus::Installing | PackageStatus::Updating => status_loading(),
-        PackageStatus::Removing => status_removing(),
-    }
-}
-
-fn task_queue_counts(entries: &[TaskQueueEntry]) -> (usize, usize, usize) {
-    let mut active = 0;
-    let mut queued = 0;
-    let mut completed = 0;
-
-    for entry in entries {
-        match entry.status {
-            TaskQueueStatus::Running => active += 1,
-            TaskQueueStatus::Queued => queued += 1,
-            TaskQueueStatus::Completed | TaskQueueStatus::Failed | TaskQueueStatus::Cancelled => {
-                completed += 1
-            }
-        }
-    }
-
-    (active, queued, completed)
-}
-
-fn task_queue_line(
-    entry: &TaskQueueEntry,
-    max_width: usize,
-    is_selected: bool,
-    queue_is_active: bool,
-) -> Line<'static> {
-    let status = entry.status;
-    let status_label = task_status_label(status);
-    let action_label = task_action_label(entry.action);
-    let selection_prefix = if is_selected { "▶ " } else { "  " };
-    let status_prefix = format!("[{}] ", status_label);
-    let action_text = format!("{} ", action_label);
-
-    let info = match status {
-        TaskQueueStatus::Failed => {
-            if let Some(error) = &entry.error {
-                format!(
-                    "{} ({:?}) - {}",
-                    entry.package_name, entry.package_source, error
-                )
-            } else {
-                format!("{} ({:?})", entry.package_name, entry.package_source)
-            }
-        }
-        _ => format!("{} ({:?})", entry.package_name, entry.package_source),
+fn draw_compact_details_summary(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(package) = app.current_package() else {
+        frame.render_widget(Paragraph::new("No package selected").style(dim()), area);
+        return;
     };
 
-    let prefix_width = UnicodeWidthStr::width(selection_prefix)
-        + UnicodeWidthStr::width(status_prefix.as_str())
-        + UnicodeWidthStr::width(action_text.as_str());
-    let remaining = max_width.saturating_sub(prefix_width);
-    let info_text = truncate_to_width(&info, remaining);
-    let info_style = if is_selected && queue_is_active {
-        selection()
+    let first = format!(
+        "{} {} ({})",
+        package.name,
+        format_package_version(package),
+        package.source
+    );
+    let second = truncate_to_width(&package.description, area.width as usize);
+
+    let lines = vec![
+        Line::from(Span::styled(first, text())),
+        Line::from(Span::styled(second, muted())),
+    ];
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
+    if app.tasks.is_empty() {
+        return;
+    }
+
+    let (queued, running, completed, failed, cancelled) = app.queue_counts();
+    let total = app.tasks.len();
+    let done = completed + failed + cancelled;
+
+    let (message, style) = if running > 0 && failed > 0 {
+        (
+            format!("▶ {} running · {} failed  [l]", running, failed),
+            warning(),
+        )
+    } else if running > 0 {
+        let active_label = app
+            .tasks
+            .iter()
+            .find(|task| task.status == TaskQueueStatus::Running)
+            .map(|task| format!("{} {}", action_label(task.action), task.package_name))
+            .unwrap_or_else(|| "Working".to_string());
+        (
+            format!(
+                "▶ {} ({}/{}) {}  [l]",
+                active_label,
+                done + 1,
+                total,
+                progress_bar(done + 1, total, 10)
+            ),
+            loading(),
+        )
+    } else if queued > 0 {
+        (format!("◻ {} tasks queued  [l expand]", queued), muted())
+    } else if failed > 0 {
+        (
+            format!(
+                "⚠ {} done, {} failed  [l details]",
+                completed + cancelled,
+                failed
+            ),
+            error(),
+        )
     } else {
-        panel()
+        (
+            format!("✓ {}/{} complete  [l details]", done, total),
+            success(),
+        )
     };
-    let marker_style = if is_selected { accent() } else { dim() };
+
+    let line = truncate_to_width(&message, area.width as usize);
+    frame.render_widget(Paragraph::new(line).style(style), area);
+}
+
+fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some(confirming) = &app.confirming {
+        let verb_style = match confirming.action {
+            TaskQueueAction::Install => success(),
+            TaskQueueAction::Remove => error(),
+            TaskQueueAction::Update => warning(),
+        };
+        let line = Line::from(vec![
+            Span::styled(
+                confirming.label.clone(),
+                verb_style.add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled("[y]", key_hint()),
+            Span::styled(" yes  ", footer_label()),
+            Span::styled("[n]", key_hint()),
+            Span::styled(" cancel", footer_label()),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
+    let mut spans = Vec::new();
+    push_hint(&mut spans, "↑↓", "nav");
+    push_hint(&mut spans, "/", "search");
+    push_hint(&mut spans, "Space", "sel");
+    push_hint(&mut spans, "a", "all");
+    push_hint(&mut spans, "i", "inst");
+    push_hint(&mut spans, "x", "rm");
+    push_hint(&mut spans, "u", "upd");
+    push_hint(&mut spans, "q", "quit");
+
+    let selection = if app.hidden_selected_count() > 0 {
+        format!(
+            "{} selected ({} hidden)",
+            app.selected.len(),
+            app.hidden_selected_count()
+        )
+    } else {
+        format!("{} selected", app.selected.len())
+    };
+
+    let right = if app.compact && !app.status.is_empty() {
+        vec![Span::styled(app.status.clone(), italic_status())]
+    } else {
+        vec![Span::styled(selection, muted())]
+    };
+
+    let line = compose_left_right(spans, right, area.width as usize);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn push_hint(spans: &mut Vec<Span<'static>>, key: &'static str, label: &'static str) {
+    if !spans.is_empty() {
+        spans.push(Span::raw("  "));
+    }
+    spans.push(Span::styled(key, key_hint()));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(label, footer_label()));
+}
+
+fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
+    let focused = app.focus == Focus::Queue;
+    let block = panel_block(
+        format!(" Task Queue ({}) [l close] ", app.tasks.len()),
+        focused,
+    );
+
+    if app.tasks.is_empty() {
+        frame.render_widget(Paragraph::new("No tasks").block(block).style(dim()), area);
+        return;
+    }
+
+    let inner = block.inner(area);
+    let sections = if inner.height >= 8 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(55),
+                Constraint::Percentage(35),
+                Constraint::Length(1),
+            ])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner)
+    };
+
+    let visible = sections[0].height as usize;
+    let start = window_start(app.tasks.len(), visible.max(1), app.task_cursor);
+    let end = (start + visible.max(1)).min(app.tasks.len());
+
+    let mut task_lines = Vec::new();
+    for idx in start..end {
+        let task = &app.tasks[idx];
+        let selected = idx == app.task_cursor;
+        task_lines.push(render_task_line(task, selected));
+    }
+    frame.render_widget(Paragraph::new(task_lines), sections[0]);
+
+    if sections.len() == 3 {
+        if let Some(task) = app.tasks.get(app.task_cursor) {
+            let logs = app.task_logs.get(&task.id);
+            let mut lines = vec![Line::from(Span::styled("Logs:", dim()))];
+            if let Some(logs) = logs {
+                let max = sections[1].height.saturating_sub(1) as usize;
+                let start = logs.len().saturating_sub(max);
+                for line in logs.iter().skip(start) {
+                    lines.push(Line::from(Span::styled(
+                        truncate_to_width(line, sections[1].width as usize),
+                        muted(),
+                    )));
+                }
+            } else {
+                lines.push(Line::from(Span::styled("No logs yet", dim())));
+            }
+            frame.render_widget(Paragraph::new(lines), sections[1]);
+        }
+
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("C", key_hint()),
+                Span::styled(" cancel  ", footer_label()),
+                Span::styled("R", key_hint()),
+                Span::styled(" retry  ", footer_label()),
+                Span::styled("↑↓", key_hint()),
+                Span::styled(" navigate", footer_label()),
+            ])),
+            sections[2],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("C", key_hint()),
+                Span::styled(" cancel  ", footer_label()),
+                Span::styled("R", key_hint()),
+                Span::styled(" retry", footer_label()),
+            ])),
+            sections[1],
+        );
+    }
+
+    frame.render_widget(block, area);
+}
+
+fn render_task_line(task: &TaskQueueEntry, selected: bool) -> Line<'static> {
+    let (symbol, style, status_text) = match task.status {
+        TaskQueueStatus::Queued => ("◻", warning(), "queued"),
+        TaskQueueStatus::Running => ("▶", loading(), "running"),
+        TaskQueueStatus::Completed => ("✓", success(), "completed"),
+        TaskQueueStatus::Failed => ("✗", error(), "failed"),
+        TaskQueueStatus::Cancelled => ("-", dim(), "cancelled"),
+    };
+
+    let mut text_value = format!(
+        "{} {}  {}  {}",
+        symbol,
+        task.package_name,
+        action_label(task.action).to_lowercase(),
+        status_text
+    );
+    if task.status == TaskQueueStatus::Failed {
+        if let Some(error_text) = &task.error {
+            text_value.push_str(&format!(": {}", error_text));
+        }
+    }
 
     Line::from(vec![
-        Span::styled(selection_prefix, marker_style),
-        Span::styled(status_prefix, task_status_style(status)),
-        Span::styled(action_text, hud_action()),
-        Span::styled(info_text, info_style),
+        Span::styled(if selected { "▸ " } else { "  " }, row_selected()),
+        Span::styled(text_value, if selected { row_cursor() } else { style }),
     ])
 }
 
-fn queue_window_start(total: usize, visible: usize, selected: usize) -> usize {
+fn draw_help_overlay(frame: &mut Frame) {
+    let area = centered_rect(frame.area(), 50, 80, 40, 18);
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_focused())
+        .title(" Help ")
+        .title_style(accent());
+
+    let lines = vec![
+        Line::from("Navigation"),
+        Line::from("  ↑↓/jk  move      g/G top/bottom"),
+        Line::from("  ^d/^u  half-page  Tab switch panel"),
+        Line::from(""),
+        Line::from("Filters"),
+        Line::from("  1 All    2 Installed    3 Updates"),
+        Line::from(""),
+        Line::from("Actions"),
+        Line::from("  Space select   a select all"),
+        Line::from("  i install      x remove      u update"),
+        Line::from("  Esc clear / back"),
+        Line::from(""),
+        Line::from("Global"),
+        Line::from("  / search   r refresh   l queue log"),
+        Line::from("  ? help     q quit"),
+        Line::from(""),
+        Line::from("Queue (expanded)"),
+        Line::from("  C cancel queued   R retry failed"),
+        Line::from(""),
+        Line::from("  ? or Esc to close"),
+    ];
+
+    frame.render_widget(Paragraph::new(lines).block(block).style(text()), area);
+}
+
+fn centered_rect(
+    area: Rect,
+    width_percent: u16,
+    height_percent: u16,
+    min_width: u16,
+    min_height: u16,
+) -> Rect {
+    let width = ((area.width as u32 * width_percent as u32) / 100) as u16;
+    let height = ((area.height as u32 * height_percent as u32) / 100) as u16;
+    let width = width.max(min_width).min(area.width);
+    let height = height.max(min_height).min(area.height);
+
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn update_priority_label(package: &Package) -> Option<&'static str> {
+    let candidate = update_center::classify_updates(std::slice::from_ref(package))
+        .into_iter()
+        .next()?;
+    let _category = candidate.category;
+    Some(candidate.lane.label())
+}
+
+fn format_package_version(package: &Package) -> String {
+    match package.status {
+        PackageStatus::UpdateAvailable | PackageStatus::Updating => {
+            let available = package.available_version.as_deref().unwrap_or("?");
+            format!("{}→{}", package.version, available)
+        }
+        PackageStatus::NotInstalled => package
+            .available_version
+            .clone()
+            .unwrap_or_else(|| package.version.clone()),
+        _ => package.version.clone(),
+    }
+}
+
+fn package_status_short(status: PackageStatus) -> (&'static str, Style) {
+    match status {
+        PackageStatus::Installed => ("✓", success()),
+        PackageStatus::UpdateAvailable => ("↑", warning()),
+        PackageStatus::NotInstalled => ("○", dim()),
+        PackageStatus::Installing => ("⟳i", loading()),
+        PackageStatus::Removing => ("⟳x", error()),
+        PackageStatus::Updating => ("⟳u", loading()),
+    }
+}
+
+fn progress_bar(done: usize, total: usize, width: usize) -> String {
+    if total == 0 || width == 0 {
+        return String::new();
+    }
+    let filled = ((done as f32 / total as f32) * width as f32).round() as usize;
+    let filled = filled.min(width);
+    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+}
+
+pub fn window_start(total: usize, visible: usize, selected: usize) -> usize {
     if total <= visible || visible == 0 {
         return 0;
     }
-
     let half = visible / 2;
     let mut start = selected.saturating_sub(half);
     if start + visible > total {
@@ -963,525 +823,77 @@ fn queue_window_start(total: usize, visible: usize, selected: usize) -> usize {
     start
 }
 
-fn task_status_label(status: TaskQueueStatus) -> &'static str {
-    match status {
-        TaskQueueStatus::Queued => "QUE",
-        TaskQueueStatus::Running => "RUN",
-        TaskQueueStatus::Completed => "DONE",
-        TaskQueueStatus::Failed => "FAIL",
-        TaskQueueStatus::Cancelled => "CXL",
-    }
-}
-
-fn task_action_label(action: TaskQueueAction) -> &'static str {
-    match action {
-        TaskQueueAction::Install => "INSTALL",
-        TaskQueueAction::Remove => "REMOVE",
-        TaskQueueAction::Update => "UPDATE",
-    }
-}
-
-fn task_status_style(status: TaskQueueStatus) -> Style {
-    match status {
-        TaskQueueStatus::Queued => task_status_queued(),
-        TaskQueueStatus::Running => task_status_running(),
-        TaskQueueStatus::Completed => task_status_completed(),
-        TaskQueueStatus::Failed => task_status_failed(),
-        TaskQueueStatus::Cancelled => task_status_cancelled(),
-    }
-}
-
-fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
-    if text.is_empty() {
-        return vec![String::from("No description available")];
-    }
-
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-    let mut current_width = 0;
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let mut word_iter = words.into_iter();
-
-    if let Some(first_word) = word_iter.next() {
-        for chunk in split_long_word(first_word, max_width) {
-            if current_line.is_empty() {
-                current_line = chunk;
-                current_width = UnicodeWidthStr::width(current_line.as_str());
-            } else {
-                lines.push(current_line);
-                current_line = chunk;
-                current_width = UnicodeWidthStr::width(current_line.as_str());
-            }
-        }
-    }
-
-    for word in word_iter {
-        let word_width = UnicodeWidthStr::width(word);
-        if current_line.is_empty() {
-            for chunk in split_long_word(word, max_width) {
-                if current_line.is_empty() {
-                    current_line = chunk;
-                    current_width = UnicodeWidthStr::width(current_line.as_str());
-                } else {
-                    lines.push(current_line);
-                    current_line = chunk;
-                    current_width = UnicodeWidthStr::width(current_line.as_str());
-                }
-            }
-            continue;
-        }
-
-        let next_width = current_width + 1 + word_width;
-        if next_width <= max_width {
-            current_line.push(' ');
-            current_line.push_str(word);
-            current_width = next_width;
-        } else {
-            lines.push(current_line);
-            current_line = String::new();
-            current_width = 0;
-            for chunk in split_long_word(word, max_width) {
-                if current_line.is_empty() {
-                    current_line = chunk;
-                    current_width = UnicodeWidthStr::width(current_line.as_str());
-                } else {
-                    lines.push(current_line);
-                    current_line = chunk;
-                    current_width = UnicodeWidthStr::width(current_line.as_str());
-                }
-            }
-        }
-    }
-
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-
-    if lines.is_empty() {
-        vec![String::from("No description available")]
-    } else {
-        lines
-    }
-}
-
-fn labeled_line(
-    label_text: &str,
-    value: &str,
-    value_style: Style,
-    max_width: usize,
-) -> Line<'static> {
-    let label_width = UnicodeWidthStr::width(label_text);
-    let value_width = max_width.saturating_sub(label_width);
-    let value_text = truncate_to_width(value, value_width);
-    let label_owned = label_text.to_string();
-
-    Line::from(vec![
-        Span::styled(label_owned, label()),
-        Span::styled(value_text, value_style),
-    ])
-}
-
-fn truncate_to_width(text: &str, max_width: usize) -> String {
+pub fn truncate_to_width(text_value: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
     }
-
-    if UnicodeWidthStr::width(text) <= max_width {
-        return text.to_string();
+    if UnicodeWidthStr::width(text_value) <= max_width {
+        return text_value.to_string();
     }
-
     if max_width == 1 {
-        return String::from("…");
+        return "…".to_string();
     }
 
     let mut out = String::new();
-    let mut width = 0;
+    let mut width = 0usize;
     let target = max_width.saturating_sub(1);
-
-    for ch in text.chars() {
-        let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
-        if width + ch_width > target {
+    for ch in text_value.chars() {
+        let char_width = UnicodeWidthStr::width(ch.to_string().as_str());
+        if width + char_width > target {
             break;
         }
         out.push(ch);
-        width += ch_width;
+        width += char_width;
     }
-
     out.push('…');
     out
 }
 
-fn split_long_word(word: &str, max_width: usize) -> Vec<String> {
+fn wrap_text(text_value: &str, max_width: usize) -> Vec<String> {
+    if text_value.trim().is_empty() {
+        return vec!["No description available".to_string()];
+    }
     if max_width == 0 {
-        return vec![String::new()];
+        return vec![text_value.to_string()];
     }
 
-    let mut parts = Vec::new();
+    let mut lines = Vec::new();
     let mut current = String::new();
-    let mut width = 0;
+    let mut current_width = 0usize;
 
-    for ch in word.chars() {
-        let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
-        if width + ch_width > max_width && !current.is_empty() {
-            parts.push(current);
-            current = String::new();
-            width = 0;
+    for word in text_value.split_whitespace() {
+        let word_width = UnicodeWidthStr::width(word);
+
+        if current.is_empty() {
+            if word_width <= max_width {
+                current.push_str(word);
+                current_width = word_width;
+            } else {
+                lines.push(truncate_to_width(word, max_width));
+            }
+            continue;
         }
-        current.push(ch);
-        width += ch_width;
+
+        if current_width + 1 + word_width <= max_width {
+            current.push(' ');
+            current.push_str(word);
+            current_width += 1 + word_width;
+        } else {
+            lines.push(current);
+            if word_width <= max_width {
+                current = word.to_string();
+                current_width = word_width;
+            } else {
+                lines.push(truncate_to_width(word, max_width));
+                current = String::new();
+                current_width = 0;
+            }
+        }
     }
 
     if !current.is_empty() {
-        parts.push(current);
+        lines.push(current);
     }
 
-    parts
-}
-
-fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_inactive())
-        .title(" Console ")
-        .title_style(panel_title());
-
-    if app.console_buffer.is_empty() {
-        let empty = Paragraph::new("No recent actions yet")
-            .block(block)
-            .style(dim());
-        f.render_widget(empty, area);
-        return;
-    }
-
-    let max_lines = area.height.saturating_sub(2) as usize;
-    let start = app.console_buffer.len().saturating_sub(max_lines);
-    let lines: Vec<Line> = app
-        .console_buffer
-        .iter()
-        .skip(start)
-        .map(|s| Line::from(Span::styled(s, panel())))
-        .collect();
-
-    let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, area);
-}
-
-fn draw_commands_bar(f: &mut Frame, app: &App, area: Rect) {
-    let lines = match app.mode {
-        AppMode::Normal => {
-            if app.compact {
-                vec![Line::from(vec![
-                    Span::styled("↑↓/jk", key_hint()),
-                    Span::styled(" nav ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" Tab", key_hint()),
-                    Span::styled(" panel ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" /", key_hint()),
-                    Span::styled(" search ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" u", key_hint()),
-                    Span::styled(" updates ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" l", key_hint()),
-                    Span::styled(" logs ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" h", key_hint()),
-                    Span::styled(" help ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" q", key_hint()),
-                    Span::styled(" quit", description()),
-                ])]
-            } else {
-                vec![
-                    Line::from(vec![
-                        Span::styled("↑↓/jk", key_hint()),
-                        Span::styled(" nav ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" Tab", key_hint()),
-                        Span::styled(" panel ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" /", key_hint()),
-                        Span::styled(" search ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" Space", key_hint()),
-                        Span::styled(" select ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" a", key_hint()),
-                        Span::styled(" select-all ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" c", key_hint()),
-                        Span::styled(" clear ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" u", key_hint()),
-                        Span::styled(" update-center ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" h", key_hint()),
-                        Span::styled(" help ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" q", key_hint()),
-                        Span::styled(" quit", description()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled(" I", key_hint()),
-                        Span::styled(" queue-installs ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" X", key_hint()),
-                        Span::styled(" queue-removals ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" C", key_hint()),
-                        Span::styled(" cancel-task ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" R", key_hint()),
-                        Span::styled(" retry-task ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" r", key_hint()),
-                        Span::styled(" refresh ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" l", key_hint()),
-                        Span::styled(" logs ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" i/x", key_hint()),
-                        Span::styled(" install/remove", description()),
-                    ]),
-                ]
-            }
-        }
-        AppMode::UpdateCenter => {
-            if app.compact {
-                vec![Line::from(vec![
-                    Span::styled("↑↓/jk", key_hint()),
-                    Span::styled(" nav ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" Space", key_hint()),
-                    Span::styled(" select ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" U/B/S/A", key_hint()),
-                    Span::styled(" queue ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" F", key_hint()),
-                    Span::styled(" retry ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" l", key_hint()),
-                    Span::styled(" logs ", description()),
-                    Span::styled("│", separator()),
-                    Span::styled(" Esc", key_hint()),
-                    Span::styled(" back", description()),
-                ])]
-            } else {
-                vec![
-                    Line::from(vec![
-                        Span::styled("↑↓/jk", key_hint()),
-                        Span::styled(" nav ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" Space", key_hint()),
-                        Span::styled(" toggle ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" m", key_hint()),
-                        Span::styled(" mark-recommended ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" a/c", key_hint()),
-                        Span::styled(" select-all/clear ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" i", key_hint()),
-                        Span::styled(" ignore ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" z/Z", key_hint()),
-                        Span::styled(" snooze/clear ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" v", key_hint()),
-                        Span::styled(" hidden-view ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" /", key_hint()),
-                        Span::styled(" search ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" Esc", key_hint()),
-                        Span::styled(" back", description()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled(" U", key_hint()),
-                        Span::styled(" queue-recommended ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" B", key_hint()),
-                        Span::styled(" queue-by-source ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" S", key_hint()),
-                        Span::styled(" queue-selected ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" A", key_hint()),
-                        Span::styled(" queue-all ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" F", key_hint()),
-                        Span::styled(" retry-failed ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" r", key_hint()),
-                        Span::styled(" refresh ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" l", key_hint()),
-                        Span::styled(" logs ", description()),
-                        Span::styled("│", separator()),
-                        Span::styled(" q", key_hint()),
-                        Span::styled(" quit", description()),
-                    ]),
-                ]
-            }
-        }
-        AppMode::Search => vec![Line::from(vec![
-            Span::styled("Enter", key_hint()),
-            Span::styled(" confirm ", description()),
-            Span::styled("│", separator()),
-            Span::styled(" Esc", key_hint()),
-            Span::styled(" cancel", description()),
-        ])],
-        AppMode::Confirm => vec![Line::from(vec![
-            Span::styled("y", key_hint()),
-            Span::styled(" yes ", description()),
-            Span::styled("│", separator()),
-            Span::styled(" n", key_hint()),
-            Span::styled(" no", description()),
-        ])],
-    };
-
-    let paragraph = Paragraph::new(lines).style(panel());
-    f.render_widget(paragraph, area);
-}
-
-fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let mode_indicator = match app.mode {
-        AppMode::Normal => "NORMAL",
-        AppMode::Search => "SEARCH",
-        AppMode::Confirm => "CONFIRM",
-        AppMode::UpdateCenter => "UPDATE",
-    };
-
-    let status_style = match app.mode {
-        AppMode::Normal => mode_normal(),
-        AppMode::Search => mode_search(),
-        AppMode::Confirm => mode_confirm(),
-        AppMode::UpdateCenter => mode_update_center(),
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_inactive());
-
-    let status_text = Line::from(vec![
-        Span::styled(
-            format!(" [{}] ", mode_indicator),
-            status_style.add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(&app.status_message),
-    ]);
-
-    let paragraph = Paragraph::new(status_text).block(block).style(panel());
-    f.render_widget(paragraph, area);
-}
-
-fn draw_search_popup(f: &mut Frame, app: &App) {
-    let area = centered_rect(60, 5, f.area());
-
-    f.render_widget(Clear, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_active())
-        .title(" Search ")
-        .title_style(panel_title_active());
-
-    let search_text = format!("{}▏", app.search_query);
-    let lines = vec![
-        Line::from(vec![Span::styled("Query:", label())]),
-        Line::from(vec![Span::styled(search_text, panel())]),
-    ];
-    let paragraph = Paragraph::new(lines).block(block).style(panel());
-
-    f.render_widget(paragraph, area);
-}
-
-fn draw_confirm_popup(f: &mut Frame, app: &App) {
-    let message = if let Some(ref action) = app.pending_action {
-        match action {
-            PendingAction::Install(pkg) => format!("Install {}?", pkg.name),
-            PendingAction::Remove(pkg) => format!("Remove {}?", pkg.name),
-            PendingAction::UpdateAll(pkgs) => format!("Update {} packages?", pkgs.len()),
-            PendingAction::UpdateBySource(source, pkgs) => {
-                format!("Queue {} updates from {}?", pkgs.len(), source)
-            }
-            PendingAction::UpdateRecommended(pkgs) => {
-                format!("Queue recommended updates for {} packages?", pkgs.len())
-            }
-            PendingAction::UpdateSelected(pkgs) => {
-                format!("Queue selected updates for {} packages?", pkgs.len())
-            }
-            PendingAction::InstallSelected(pkgs) => {
-                format!("Queue installs for {} packages?", pkgs.len())
-            }
-            PendingAction::RemoveSelected(pkgs) => {
-                format!("Queue removals for {} packages?", pkgs.len())
-            }
-        }
-    } else {
-        app.status_message.clone()
-    };
-
-    let popup_height = if message.contains("packages") { 6 } else { 5 };
-    let area = centered_rect(60, popup_height, f.area());
-
-    f.render_widget(Clear, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_active())
-        .title(" Confirm ")
-        .title_style(panel_title_active());
-
-    let lines = vec![
-        Line::from(vec![Span::styled("Action:", label())]),
-        Line::from(vec![Span::styled(&message, panel())]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("y", key_hint()),
-            Span::styled(" yes ", description()),
-            Span::styled("│", separator()),
-            Span::styled(" n", key_hint()),
-            Span::styled(" no", description()),
-        ]),
-    ];
-
-    let paragraph = Paragraph::new(lines).block(block).style(panel());
-    f.render_widget(paragraph, area);
-}
-
-fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length((r.height.saturating_sub(height)) / 2),
-            Constraint::Length(height),
-            Constraint::Min(0),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
-}
-
-fn truncate_string(s: &str, max_len: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count <= max_len {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_len - 1).collect();
-        format!("{}…", truncated)
-    }
+    lines
 }

@@ -1,115 +1,95 @@
 use super::ui;
-use super::update_center::{self, UpdateCandidate, UpdateSummary};
+use super::update_center;
 use crate::backend::{HistoryTracker, PackageManager, TaskQueueEvent, TaskQueueExecutor};
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
-use crate::models::{Config, Package, PackageSource, PackageStatus};
-#[cfg(not(test))]
-use anyhow::Context;
+use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::Result;
-use chrono;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex};
-use tracing::error;
+use tracing::{debug, error};
 
-const MAX_CONSOLE_LINES: usize = 100;
-const COMPACT_WIDTH: u16 = 100;
-const COMPACT_HEIGHT: u16 = 28;
+const COMPACT_WIDTH: u16 = 90;
+const COMPACT_HEIGHT: u16 = 24;
+pub const MIN_WIDTH: u16 = 60;
+pub const MIN_HEIGHT: u16 = 15;
+const HALF_PAGE: usize = 10;
+const MAX_TASK_LOG_LINES: usize = 500;
+const QUEUE_AUTO_HIDE_AFTER: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActivePanel {
+pub enum Filter {
+    All,
+    Installed,
+    Updates,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
     Sources,
     Packages,
-    Details,
     Queue,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppMode {
-    Normal,
-    Search,
-    Confirm,
-    UpdateCenter,
+#[derive(Debug, Clone)]
+pub struct PendingAction {
+    pub label: String,
+    pub packages: Vec<Package>,
+    pub action: TaskQueueAction,
 }
 
-#[derive(Clone, Debug)]
-pub enum PendingAction {
-    Install(Package),
-    Remove(Package),
-    UpdateAll(Vec<Package>),
-    UpdateBySource(PackageSource, Vec<Package>),
-    UpdateRecommended(Vec<Package>),
-    UpdateSelected(Vec<Package>),
-    InstallSelected(Vec<Package>),
-    RemoveSelected(Vec<Package>),
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct QueueRunSummary {
-    pub total: usize,
-    pub succeeded: usize,
-    pub failed: usize,
-    pub cancelled: usize,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct QueueProgress {
-    pub total: usize,
-    pub done: usize,
-    pub succeeded: usize,
-    pub failed: usize,
-    pub cancelled: usize,
-    pub active_task: Option<String>,
-}
+type LoadResult = Result<Vec<Package>, String>;
 
 pub struct App {
-    pub pm: Arc<Mutex<PackageManager>>,
-    pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
     pub packages: Vec<Package>,
-    pub filtered_packages: Vec<Package>,
-    pub available_sources: Vec<PackageSource>,
-    pub selected_source: Option<PackageSource>,
-    pub source_index: usize,
-    pub package_index: usize,
-    pub queue_index: usize,
-    pub active_panel: ActivePanel,
-    pub mode: AppMode,
-    pub search_query: String,
-    pub status_message: String,
+    pub filtered: Vec<usize>,
+    pub filter_counts: [usize; 3],
+    pub cursor: usize,
+    pub selected: HashSet<String>,
+
+    pub filter: Filter,
+    pub source: Option<PackageSource>,
+    pub search: String,
+    pub searching: bool,
+
+    pub tasks: Vec<TaskQueueEntry>,
+    pub task_cursor: usize,
+    pub task_logs: HashMap<String, VecDeque<String>>,
+    pub previous_statuses: HashMap<String, PackageStatus>,
+    pub queue_expanded: bool,
+    pub queue_completed_at: Option<Instant>,
+    pub executor_running: Arc<AtomicBool>,
+    pub queue_failures_acknowledged: bool,
+
+    pub focus: Focus,
+    pub compact: bool,
+    pub confirming: Option<PendingAction>,
+    pub showing_help: bool,
+
+    pub status: String,
+    pub clear_status_on_key: bool,
     pub loading: bool,
     pub should_quit: bool,
-    pub show_updates_only: bool,
-    pub load_rx: Option<mpsc::Receiver<Result<Vec<Package>, String>>>,
-    pub console_buffer: Vec<String>,
-    pub pending_action: Option<PendingAction>,
-    pub compact: bool,
-    pub selected_packages: HashSet<String>,
-    pub update_candidates: Vec<UpdateCandidate>,
-    pub update_summary: UpdateSummary,
-    pub update_index: usize,
-    pub update_selected_ids: HashSet<String>,
-    pub ignored_update_ids: HashSet<String>,
-    pub snoozed_update_ids: HashMap<String, i64>,
-    pub show_hidden_updates: bool,
-    pub queued_tasks: Vec<TaskQueueEntry>,
-    pub refresh_after_queue_idle: bool,
+    pub tick: u64,
+
+    pub available_sources: Vec<PackageSource>,
+
+    pub pm: Arc<Mutex<PackageManager>>,
+    pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
+    pub load_rx: Option<mpsc::Receiver<LoadResult>>,
     pub task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
     pub task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
-    pub task_executor_running: Arc<AtomicBool>,
-    pub queue_show_logs: bool,
-    pub queue_was_running: bool,
-    pub queue_run_started_at: Option<chrono::DateTime<chrono::Local>>,
-    pub last_queue_summary: Option<QueueRunSummary>,
-    pub search_return_mode: AppMode,
-    pub confirm_return_mode: AppMode,
+    pub refresh_after_idle: bool,
+    pub cursor_anchor_id: Option<String>,
 }
 
 impl App {
@@ -119,85 +99,64 @@ impl App {
         task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
         task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
     ) -> Self {
-        let config = Config::load();
-        let ignored_update_ids: HashSet<String> = config.ignored_packages.into_iter().collect();
-        let snoozed_update_ids = config.snoozed_updates;
-
         Self {
-            pm,
-            history_tracker,
             packages: Vec::new(),
-            filtered_packages: Vec::new(),
-            available_sources: Vec::new(),
-            selected_source: None,
-            source_index: 0,
-            package_index: 0,
-            queue_index: 0,
-            active_panel: ActivePanel::Sources,
-            mode: AppMode::Normal,
-            search_query: String::new(),
-            status_message: String::from("Press 'h' for help, 'q' to quit"),
+            filtered: Vec::new(),
+            filter_counts: [0, 0, 0],
+            cursor: 0,
+            selected: HashSet::new(),
+            filter: Filter::All,
+            source: None,
+            search: String::new(),
+            searching: false,
+            tasks: Vec::new(),
+            task_cursor: 0,
+            task_logs: HashMap::new(),
+            previous_statuses: HashMap::new(),
+            queue_expanded: false,
+            queue_completed_at: None,
+            executor_running: Arc::new(AtomicBool::new(false)),
+            queue_failures_acknowledged: false,
+            focus: Focus::Sources,
+            compact: false,
+            confirming: None,
+            showing_help: false,
+            status: String::new(),
+            clear_status_on_key: false,
             loading: false,
             should_quit: false,
-            show_updates_only: false,
+            tick: 0,
+            available_sources: Vec::new(),
+            pm,
+            history_tracker,
             load_rx: None,
-            console_buffer: Vec::new(),
-            pending_action: None,
-            compact: false,
-            selected_packages: HashSet::new(),
-            update_candidates: Vec::new(),
-            update_summary: UpdateSummary::default(),
-            update_index: 0,
-            update_selected_ids: HashSet::new(),
-            ignored_update_ids,
-            snoozed_update_ids,
-            show_hidden_updates: false,
-            queued_tasks: Vec::new(),
-            refresh_after_queue_idle: false,
             task_events_rx,
             task_events_tx,
-            task_executor_running: Arc::new(AtomicBool::new(false)),
-            queue_show_logs: true,
-            queue_was_running: false,
-            queue_run_started_at: None,
-            last_queue_summary: None,
-            search_return_mode: AppMode::Normal,
-            confirm_return_mode: AppMode::Normal,
+            refresh_after_idle: false,
+            cursor_anchor_id: None,
         }
     }
 
-    pub fn append_to_console(&mut self, line: String) {
-        self.console_buffer.push(line);
-        if self.console_buffer.len() > MAX_CONSOLE_LINES {
-            self.console_buffer.remove(0);
-        }
+    pub fn set_status(&mut self, message: impl Into<String>, clear_on_next_key: bool) {
+        self.status = message.into();
+        self.clear_status_on_key = clear_on_next_key;
     }
 
-    pub async fn load_sources(&mut self) {
-        let manager = self.pm.lock().await;
-        self.available_sources = manager.available_sources().into_iter().collect();
-        self.available_sources
-            .sort_by_key(|source| source.to_string());
+    pub fn clear_status_if_needed(&mut self) {
+        if self.clear_status_on_key {
+            self.status.clear();
+            self.clear_status_on_key = false;
+        }
     }
 
     pub async fn initialize_history_tracker(&mut self) {
         match HistoryTracker::load().await {
             Ok(tracker) => {
-                {
-                    let mut guard = self.history_tracker.lock().await;
-                    *guard = Some(tracker);
-                }
-                self.append_to_console(format!(
-                    "[{}] History tracker initialized",
-                    chrono::Local::now().format("%H:%M:%S")
-                ));
+                let mut guard = self.history_tracker.lock().await;
+                *guard = Some(tracker);
             }
             Err(e) => {
-                self.append_to_console(format!(
-                    "[{}] WARN: failed to load history tracker - {}",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    e
-                ));
+                self.set_status(format!("History tracker unavailable: {}", e), true);
             }
         }
     }
@@ -210,107 +169,317 @@ impl App {
                 .map(|tracker| tracker.history().task_queue.entries.clone())
                 .unwrap_or_default()
         };
-
-        self.queued_tasks = entries;
-        self.clamp_queue_index();
+        self.tasks = entries;
+        self.clamp_task_cursor();
     }
 
-    /// Start loading packages in the background (non-blocking)
-    pub fn start_loading(&mut self) {
-        self.loading = true;
-        self.status_message = if self.show_updates_only {
-            String::from("Checking for updates...")
+    pub async fn load_sources(&mut self) {
+        let manager = self.pm.lock().await;
+        self.available_sources = manager.available_sources().into_iter().collect();
+        self.available_sources
+            .sort_by_key(|source| source.to_string());
+    }
+
+    pub fn source_count(&self) -> usize {
+        self.available_sources.len() + 1
+    }
+
+    pub fn source_index(&self) -> usize {
+        match self.source {
+            None => 0,
+            Some(source) => self
+                .available_sources
+                .iter()
+                .position(|s| *s == source)
+                .map(|idx| idx + 1)
+                .unwrap_or(0),
+        }
+    }
+
+    fn set_source_by_index(&mut self, index: usize) {
+        if index == 0 {
+            self.source = None;
+        } else if let Some(source) = self.available_sources.get(index.saturating_sub(1)).copied() {
+            self.source = Some(source);
+        }
+        self.apply_filters();
+    }
+
+    fn next_source(&mut self) {
+        let total = self.source_count();
+        if total == 0 {
+            return;
+        }
+        let idx = (self.source_index() + 1) % total;
+        self.set_source_by_index(idx);
+    }
+
+    fn prev_source(&mut self) {
+        let total = self.source_count();
+        if total == 0 {
+            return;
+        }
+        let idx = if self.source_index() == 0 {
+            total - 1
         } else {
-            String::from("Loading packages...")
+            self.source_index() - 1
         };
-        self.append_to_console(if self.show_updates_only {
-            format!(
-                "[{}] Checking for available updates...",
-                chrono::Local::now().format("%H:%M:%S")
-            )
-        } else {
-            format!(
-                "[{}] Loading installed packages from system...",
-                chrono::Local::now().format("%H:%M:%S")
-            )
+        self.set_source_by_index(idx);
+    }
+
+    pub fn current_package(&self) -> Option<&Package> {
+        self.filtered
+            .get(self.cursor)
+            .and_then(|idx| self.packages.get(*idx))
+    }
+
+    fn current_package_id(&self) -> Option<String> {
+        self.current_package().map(Package::id)
+    }
+
+    pub fn visible_selected_count(&self) -> usize {
+        self.filtered
+            .iter()
+            .filter(|idx| {
+                self.packages
+                    .get(**idx)
+                    .is_some_and(|p| self.selected.contains(&p.id()))
+            })
+            .count()
+    }
+
+    pub fn hidden_selected_count(&self) -> usize {
+        self.selected
+            .len()
+            .saturating_sub(self.visible_selected_count())
+    }
+
+    pub fn apply_filters(&mut self) {
+        let mut n_all = 0usize;
+        let mut n_installed = 0usize;
+        let mut n_updates = 0usize;
+
+        for package in &self.packages {
+            n_all += 1;
+            if matches!(
+                package.status,
+                PackageStatus::Installed
+                    | PackageStatus::UpdateAvailable
+                    | PackageStatus::Installing
+                    | PackageStatus::Removing
+                    | PackageStatus::Updating
+            ) {
+                n_installed += 1;
+            }
+            if matches!(
+                package.status,
+                PackageStatus::UpdateAvailable | PackageStatus::Updating
+            ) {
+                n_updates += 1;
+            }
+        }
+        self.filter_counts = [n_all, n_installed, n_updates];
+
+        let query = self.search.to_lowercase();
+        self.filtered = self
+            .packages
+            .iter()
+            .enumerate()
+            .filter(|(_, package)| {
+                Self::matches_filter(package, self.filter)
+                    && self.source.is_none_or(|source| package.source == source)
+                    && (query.is_empty()
+                        || package.name.to_lowercase().contains(&query)
+                        || package.description.to_lowercase().contains(&query))
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if self.filter == Filter::Updates {
+            self.sort_updates_by_priority();
+        }
+
+        self.cursor = self.cursor.min(self.filtered.len().saturating_sub(1));
+        self.clamp_task_cursor();
+    }
+
+    fn sort_updates_by_priority(&mut self) {
+        if self.filtered.len() < 2 {
+            return;
+        }
+        let packages: Vec<Package> = self
+            .filtered
+            .iter()
+            .filter_map(|idx| self.packages.get(*idx).cloned())
+            .collect();
+        let ranked = update_center::classify_updates(&packages);
+        let _summary = update_center::build_summary(&ranked);
+        let _selected_updates = update_center::selected_packages(&ranked, &self.selected);
+        let _all_updates = update_center::all_packages(&ranked);
+        let _recommended_updates = update_center::recommended_packages(&ranked);
+        if let Some(source) = self.source {
+            let _source_updates = update_center::by_source_packages(&ranked, source);
+        }
+        let rank: HashMap<String, usize> = ranked
+            .iter()
+            .enumerate()
+            .map(|(idx, candidate)| (candidate.package.id(), idx))
+            .collect();
+        self.filtered.sort_by_key(|idx| {
+            rank.get(&self.packages[*idx].id())
+                .copied()
+                .unwrap_or(usize::MAX)
         });
+    }
+
+    fn matches_filter(package: &Package, filter: Filter) -> bool {
+        match filter {
+            Filter::All => true,
+            Filter::Installed => matches!(
+                package.status,
+                PackageStatus::Installed
+                    | PackageStatus::UpdateAvailable
+                    | PackageStatus::Installing
+                    | PackageStatus::Removing
+                    | PackageStatus::Updating
+            ),
+            Filter::Updates => matches!(
+                package.status,
+                PackageStatus::UpdateAvailable | PackageStatus::Updating
+            ),
+        }
+    }
+
+    pub fn start_loading(&mut self) -> bool {
+        if self.loading {
+            return false;
+        }
+
+        self.loading = true;
+        self.cursor_anchor_id = self.current_package_id();
+        self.set_status("Refreshing packages...", false);
 
         let (tx, rx) = mpsc::channel(1);
         self.load_rx = Some(rx);
-
         let pm = self.pm.clone();
-        let show_updates = self.show_updates_only;
 
         tokio::spawn(async move {
-            let result = {
+            let result: LoadResult = {
                 let manager = pm.lock().await;
-                if show_updates {
-                    manager.check_all_updates().await
-                } else {
-                    manager.list_all_installed().await
+                match manager.list_all_installed().await {
+                    Ok(installed) => match manager.check_all_updates().await {
+                        Ok(updates) => Ok(Self::merge_installed_with_updates(installed, updates)),
+                        Err(error) => Err(error.to_string()),
+                    },
+                    Err(error) => Err(error.to_string()),
                 }
             };
-
-            let _ = tx.send(result.map_err(|e| e.to_string())).await;
+            let _ = tx.send(result).await;
         });
+
+        true
     }
 
-    /// Check if background loading is complete and process results
+    fn restore_cursor_anchor(&mut self) {
+        let Some(anchor_id) = self.cursor_anchor_id.take() else {
+            return;
+        };
+        if let Some((pos, _)) = self.filtered.iter().enumerate().find(|(_, idx)| {
+            self.packages
+                .get(**idx)
+                .is_some_and(|pkg| pkg.id() == anchor_id)
+        }) {
+            self.cursor = pos;
+        }
+    }
+
     pub fn poll_loading(&mut self) {
-        if let Some(ref mut rx) = self.load_rx {
-            match rx.try_recv() {
-                Ok(Ok(packages)) => {
-                    self.packages = packages;
-                    self.cleanup_stale_selections();
-                    self.filter_packages();
-                    self.status_message = if self.show_updates_only {
-                        format!("{} updates available", self.filtered_packages.len())
-                    } else {
-                        format!("Loaded {} packages", self.filtered_packages.len())
-                    };
-                    self.append_to_console(format!(
-                        "[{}] Loaded {} packages from {}",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        self.filtered_packages.len(),
-                        if self.show_updates_only {
-                            "update check"
-                        } else {
-                            "system"
-                        }
-                    ));
-                    self.loading = false;
-                    self.load_rx = None;
-                }
-                Ok(Err(e)) => {
-                    self.status_message = format!("Error: {}", e);
-                    self.append_to_console(format!(
-                        "[{}] ERROR: Failed to load packages - {}",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        e
-                    ));
-                    self.loading = false;
-                    self.load_rx = None;
-                }
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    // Still loading, do nothing
-                }
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    self.status_message = String::from("Loading failed");
-                    self.append_to_console(format!(
-                        "[{}] ERROR: Loading channel disconnected",
-                        chrono::Local::now().format("%H:%M:%S")
-                    ));
-                    self.loading = false;
-                    self.load_rx = None;
-                }
+        let Some(mut rx) = self.load_rx.take() else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(Ok(packages)) => {
+                self.packages = packages;
+                self.cleanup_stale_selections();
+                self.previous_statuses.clear();
+                self.apply_filters();
+                self.restore_cursor_anchor();
+                self.loading = false;
+                self.set_status(
+                    format!(
+                        "Loaded {} packages ({} updates)",
+                        self.filter_counts[0], self.filter_counts[2]
+                    ),
+                    true,
+                );
+            }
+            Ok(Err(error)) => {
+                self.loading = false;
+                self.set_status(format!("Load error: {}", error), true);
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {
+                self.load_rx = Some(rx);
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.loading = false;
+                self.set_status("Load failed: channel disconnected", true);
             }
         }
+    }
+
+    fn merge_installed_with_updates(
+        mut installed: Vec<Package>,
+        updates: Vec<Package>,
+    ) -> Vec<Package> {
+        let mut by_id: HashMap<String, usize> = HashMap::new();
+        for (idx, package) in installed.iter().enumerate() {
+            by_id.insert(package.id(), idx);
+        }
+
+        for update in updates {
+            let update_id = update.id();
+            if let Some(position) = by_id.get(&update_id).copied() {
+                if let Some(existing) = installed.get_mut(position) {
+                    existing.status = PackageStatus::UpdateAvailable;
+                    existing.available_version = update.available_version.clone();
+                    if !update.version.is_empty() {
+                        existing.version = update.version;
+                    }
+                    if !update.description.is_empty() {
+                        existing.description = update.description;
+                    }
+                    existing.update_category = update.update_category;
+                }
+            } else {
+                by_id.insert(update_id, installed.len());
+                installed.push(update);
+            }
+        }
+
+        installed.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.source.cmp(&b.source))
+        });
+        installed
+    }
+
+    fn cleanup_stale_selections(&mut self) {
+        let valid: HashSet<String> = self.packages.iter().map(Package::id).collect();
+        self.selected.retain(|id| valid.contains(id));
     }
 
     pub fn poll_task_events(&mut self) {
         let Some(mut rx) = self.task_events_rx.take() else {
             return;
         };
+
+        let running_before = self
+            .tasks
+            .iter()
+            .any(|task| task.status == TaskQueueStatus::Running);
 
         let mut changed = false;
         loop {
@@ -330,702 +499,675 @@ impl App {
             }
         }
 
-        let queue_running = self
-            .queued_tasks
+        let running_after = self
+            .tasks
             .iter()
             .any(|task| task.status == TaskQueueStatus::Running);
 
-        if changed && self.queue_was_running && !queue_running {
-            self.queue_was_running = false;
-            self.capture_queue_run_summary();
-            self.queue_run_started_at = None;
+        if changed && running_before && !running_after {
+            self.queue_completed_at = Some(Instant::now());
         }
 
-        if changed && self.refresh_after_queue_idle && !self.loading && !queue_running {
-            self.refresh_after_queue_idle = false;
-            self.append_to_console(format!(
-                "[{}] Queue idle - refreshing package state",
-                chrono::Local::now().format("%H:%M:%S")
-            ));
-            self.start_loading();
+        if changed && self.refresh_after_idle && !self.loading && !running_after {
+            self.refresh_after_idle = false;
+            let _ = self.start_loading();
         }
+    }
+
+    fn upsert_task(&mut self, entry: TaskQueueEntry) {
+        if let Some(position) = self.tasks.iter().position(|task| task.id == entry.id) {
+            self.tasks[position] = entry;
+        } else {
+            self.tasks.push(entry);
+        }
+        self.clamp_task_cursor();
+    }
+
+    fn find_package_pos_by_id(&self, package_id: &str) -> Option<usize> {
+        self.packages
+            .iter()
+            .position(|package| package.id() == package_id)
+    }
+
+    fn mark_package_started(&mut self, entry: &TaskQueueEntry) {
+        if let Some(position) = self.find_package_pos_by_id(&entry.package_id) {
+            if let Some(package) = self.packages.get(position) {
+                self.previous_statuses
+                    .entry(entry.package_id.clone())
+                    .or_insert(package.status);
+            }
+            if let Some(package) = self.packages.get_mut(position) {
+                package.status = match entry.action {
+                    TaskQueueAction::Install => PackageStatus::Installing,
+                    TaskQueueAction::Remove => PackageStatus::Removing,
+                    TaskQueueAction::Update => PackageStatus::Updating,
+                };
+            }
+        }
+    }
+
+    fn mark_package_completed(&mut self, entry: &TaskQueueEntry) {
+        match entry.action {
+            TaskQueueAction::Install => {
+                if let Some(position) = self.find_package_pos_by_id(&entry.package_id) {
+                    if let Some(package) = self.packages.get_mut(position) {
+                        package.status = PackageStatus::Installed;
+                    }
+                }
+            }
+            TaskQueueAction::Remove => {
+                if let Some(position) = self.find_package_pos_by_id(&entry.package_id) {
+                    self.packages.remove(position);
+                    self.selected.remove(&entry.package_id);
+                }
+            }
+            TaskQueueAction::Update => {
+                if let Some(position) = self.find_package_pos_by_id(&entry.package_id) {
+                    if let Some(package) = self.packages.get_mut(position) {
+                        package.status = PackageStatus::Installed;
+                        package.available_version = None;
+                    }
+                }
+            }
+        }
+        self.previous_statuses.remove(&entry.package_id);
+    }
+
+    fn mark_package_failed(&mut self, entry: &TaskQueueEntry) {
+        if let Some(position) = self.find_package_pos_by_id(&entry.package_id) {
+            let fallback = match entry.action {
+                TaskQueueAction::Install => PackageStatus::NotInstalled,
+                TaskQueueAction::Remove | TaskQueueAction::Update => PackageStatus::Installed,
+            };
+            let status = self
+                .previous_statuses
+                .remove(&entry.package_id)
+                .unwrap_or(fallback);
+            if let Some(package) = self.packages.get_mut(position) {
+                package.status = status;
+            }
+        }
+    }
+
+    fn append_task_log(&mut self, entry_id: &str, line: String) {
+        let logs = self.task_logs.entry(entry_id.to_string()).or_default();
+        logs.push_back(line);
+        while logs.len() > MAX_TASK_LOG_LINES {
+            logs.pop_front();
+        }
+    }
+
+    fn cleanup_task_logs(&mut self) {
+        let valid: HashSet<&str> = self.tasks.iter().map(|task| task.id.as_str()).collect();
+        self.task_logs
+            .retain(|task_id, _| valid.contains(task_id.as_str()));
     }
 
     fn apply_task_event(&mut self, event: TaskQueueEvent) {
         match event {
             TaskQueueEvent::Started(entry) => {
-                self.queue_was_running = true;
-                if self.queue_run_started_at.is_none() {
-                    self.queue_run_started_at = Some(chrono::Local::now());
-                }
-                if let Some(pos) = self.queued_tasks.iter().position(|t| t.id == entry.id) {
-                    self.queued_tasks[pos] = entry;
-                } else {
-                    self.queued_tasks.push(entry);
-                    self.clamp_queue_index();
-                }
+                self.upsert_task(entry.clone());
+                self.mark_package_started(&entry);
+                self.queue_completed_at = None;
+                self.apply_filters();
             }
-            TaskQueueEvent::Completed(entry) | TaskQueueEvent::Failed(entry) => {
-                if matches!(
-                    entry.status,
-                    TaskQueueStatus::Completed | TaskQueueStatus::Failed
-                ) {
-                    self.refresh_after_queue_idle = true;
-                }
-                if let Some(pos) = self.queued_tasks.iter().position(|t| t.id == entry.id) {
-                    self.queued_tasks[pos] = entry;
-                } else {
-                    self.queued_tasks.push(entry);
-                    self.clamp_queue_index();
-                }
+            TaskQueueEvent::Completed(entry) => {
+                self.upsert_task(entry.clone());
+                self.mark_package_completed(&entry);
+                self.refresh_after_idle = true;
+                self.apply_filters();
+            }
+            TaskQueueEvent::Failed(entry) => {
+                self.upsert_task(entry.clone());
+                self.mark_package_failed(&entry);
+                self.refresh_after_idle = true;
+                self.queue_failures_acknowledged = false;
+                self.apply_filters();
             }
             TaskQueueEvent::Log { entry_id, line } => {
-                if !self.queue_show_logs {
-                    return;
-                }
-                let (label, content) = match line {
-                    crate::backend::streaming::StreamLine::Stdout(text) => ("LOG", text),
+                let (kind, text) = match line {
+                    crate::backend::streaming::StreamLine::Stdout(text) => ("OUT", text),
                     crate::backend::streaming::StreamLine::Stderr(text) => ("ERR", text),
                 };
-                let short_id: String = entry_id.chars().take(8).collect();
-                self.append_to_console(format!(
-                    "[{}] {} {}: {}",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    short_id,
-                    label,
-                    content
-                ));
+                debug!(entry_id = %entry_id, kind = %kind, line = %text, "task output");
+                self.append_task_log(&entry_id, format!("[{}] {}", kind, text));
             }
+        }
+        self.cleanup_task_logs();
+    }
+
+    fn clamp_task_cursor(&mut self) {
+        if self.tasks.is_empty() {
+            self.task_cursor = 0;
+        } else {
+            self.task_cursor = self.task_cursor.min(self.tasks.len() - 1);
         }
     }
 
-    /// Blocking load for initial startup
-    pub async fn load_packages(&mut self) {
-        self.loading = true;
-        self.status_message = String::from("Loading packages...");
-        self.append_to_console(format!(
-            "[{}] Initial package load started from {}...",
-            chrono::Local::now().format("%H:%M:%S"),
-            if self.show_updates_only {
-                "update check"
-            } else {
-                "system"
-            }
-        ));
+    pub fn maybe_autohide_queue(&mut self) {
+        if self.queue_expanded || self.tasks.is_empty() {
+            return;
+        }
+        let has_running_or_queued = self.tasks.iter().any(|task| {
+            matches!(
+                task.status,
+                TaskQueueStatus::Queued | TaskQueueStatus::Running
+            )
+        });
+        if has_running_or_queued {
+            return;
+        }
 
-        let result = {
-            let manager = self.pm.lock().await;
-            if self.show_updates_only {
-                manager.check_all_updates().await
-            } else {
-                manager.list_all_installed().await
-            }
+        let has_failures = self
+            .tasks
+            .iter()
+            .any(|task| task.status == TaskQueueStatus::Failed);
+        if has_failures && !self.queue_failures_acknowledged {
+            return;
+        }
+
+        let Some(completed_at) = self.queue_completed_at else {
+            self.queue_completed_at = Some(Instant::now());
+            return;
         };
 
-        match result {
-            Ok(packages) => {
-                self.packages = packages;
-                self.cleanup_stale_selections();
-                self.filter_packages();
-                self.status_message = format!("Loaded {} packages", self.filtered_packages.len());
-                self.append_to_console(format!(
-                    "[{}] Initial load complete: {} packages loaded",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    self.filtered_packages.len()
-                ));
-            }
-            Err(e) => {
-                self.status_message = format!("Error: {}", e);
-                self.append_to_console(format!(
-                    "[{}] ERROR: Initial load failed - {}",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    e
-                ));
-            }
-        }
-
-        self.loading = false;
-    }
-
-    pub fn filter_packages(&mut self) {
-        self.filtered_packages = self
-            .packages
-            .iter()
-            .filter(|p| {
-                // Filter by source
-                if let Some(src) = self.selected_source {
-                    if p.source != src {
-                        return false;
-                    }
-                }
-                // Filter by search query
-                if !self.search_query.is_empty() {
-                    let query = self.search_query.to_lowercase();
-                    if !p.name.to_lowercase().contains(&query)
-                        && !p.description.to_lowercase().contains(&query)
-                    {
-                        return false;
-                    }
-                }
-                true
-            })
-            .cloned()
-            .collect();
-
-        // Reset package index if out of bounds
-        if self.package_index >= self.filtered_packages.len() {
-            self.package_index = self.filtered_packages.len().saturating_sub(1);
-        }
-
-        self.refresh_update_candidates();
-    }
-
-    fn refresh_update_candidates(&mut self) {
-        self.cleanup_expired_snoozes();
-        let now = chrono::Local::now().timestamp();
-        self.update_candidates = update_center::classify_updates(&self.filtered_packages)
-            .into_iter()
-            .filter(|candidate| {
-                let id = candidate.package.id();
-                let hidden = self.is_update_hidden_id(&id, now);
-                if self.show_hidden_updates {
-                    hidden
-                } else {
-                    !hidden
-                }
-            })
-            .collect();
-        self.update_summary = update_center::build_summary(&self.update_candidates);
-        self.cleanup_stale_update_selections();
-        if self.update_index >= self.update_candidates.len() {
-            self.update_index = self.update_candidates.len().saturating_sub(1);
+        if completed_at.elapsed() > QUEUE_AUTO_HIDE_AFTER {
+            self.tasks.clear();
+            self.task_logs.clear();
+            self.previous_statuses.clear();
+            self.task_cursor = 0;
+            self.queue_completed_at = None;
+            self.queue_failures_acknowledged = false;
         }
     }
 
-    fn cleanup_expired_snoozes(&mut self) {
-        let now = chrono::Local::now().timestamp();
-        self.snoozed_update_ids.retain(|_, until| *until > now);
-    }
-
-    fn is_update_hidden_id(&self, id: &str, now: i64) -> bool {
-        if self.ignored_update_ids.contains(id) {
-            return true;
+    pub fn toggle_queue_expanded(&mut self) {
+        if self.tasks.is_empty() {
+            self.set_status("No tasks in queue", true);
+            return;
         }
-        self.snoozed_update_ids
-            .get(id)
-            .map(|until| *until > now)
-            .unwrap_or(false)
-    }
-
-    pub fn hidden_state_for_package(&self, package: &Package) -> Option<String> {
-        let id = package.id();
-        if self.ignored_update_ids.contains(&id) {
-            return Some(String::from("Ignored"));
-        }
-        if let Some(until) = self.snoozed_update_ids.get(&id) {
-            if let Some(until_dt) = chrono::DateTime::<chrono::Utc>::from_timestamp(*until, 0) {
-                return Some(format!(
-                    "Snoozed until {}",
-                    until_dt
-                        .with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d %H:%M")
-                ));
-            }
-            return Some(String::from("Snoozed"));
-        }
-        None
-    }
-
-    fn persist_update_preferences(&mut self) {
-        #[cfg(not(test))]
-        {
-            let mut config = Config::load();
-            let mut ignored: Vec<String> = self.ignored_update_ids.iter().cloned().collect();
-            ignored.sort();
-            config.ignored_packages = ignored;
-            config.snoozed_updates = self.snoozed_update_ids.clone();
-
-            if let Err(e) = config
-                .save()
-                .context("Failed to save update ignore/snooze preferences")
+        self.queue_expanded = !self.queue_expanded;
+        if self.queue_expanded {
+            self.focus = Focus::Queue;
+            if self
+                .tasks
+                .iter()
+                .any(|task| task.status == TaskQueueStatus::Failed)
             {
-                self.append_to_console(format!(
-                    "[{}] WARN: {}",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    e
-                ));
+                self.queue_failures_acknowledged = true;
             }
+        } else if self.focus == Focus::Queue {
+            self.focus = Focus::Packages;
         }
     }
 
-    fn cleanup_stale_update_selections(&mut self) {
-        let valid_ids: HashSet<String> = self
-            .update_candidates
-            .iter()
-            .map(|candidate| candidate.package.id())
-            .collect();
-        self.update_selected_ids.retain(|id| valid_ids.contains(id));
+    fn next_package(&mut self) {
+        if self.filtered.is_empty() {
+            self.cursor = 0;
+            return;
+        }
+        self.cursor = (self.cursor + 1).min(self.filtered.len() - 1);
     }
 
-    pub fn selected_package(&self) -> Option<&Package> {
-        self.filtered_packages.get(self.package_index)
+    fn prev_package(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
     }
 
-    pub fn selected_queue_task(&self) -> Option<&TaskQueueEntry> {
-        self.queued_tasks.get(self.queue_index)
+    fn page_down(&mut self) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        self.cursor = (self.cursor + HALF_PAGE).min(self.filtered.len() - 1);
     }
 
-    pub fn selected_update_candidate(&self) -> Option<&UpdateCandidate> {
-        self.update_candidates.get(self.update_index)
+    fn page_up(&mut self) {
+        self.cursor = self.cursor.saturating_sub(HALF_PAGE);
     }
 
-    pub fn next_update_candidate(&mut self) {
-        if !self.update_candidates.is_empty() {
-            self.update_index = (self.update_index + 1) % self.update_candidates.len();
+    fn top(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn bottom(&mut self) {
+        if !self.filtered.is_empty() {
+            self.cursor = self.filtered.len() - 1;
         }
     }
 
-    pub fn prev_update_candidate(&mut self) {
-        if !self.update_candidates.is_empty() {
-            self.update_index = if self.update_index == 0 {
-                self.update_candidates.len() - 1
-            } else {
-                self.update_index - 1
-            };
+    fn queue_top(&mut self) {
+        self.task_cursor = 0;
+    }
+
+    fn queue_bottom(&mut self) {
+        if !self.tasks.is_empty() {
+            self.task_cursor = self.tasks.len() - 1;
         }
     }
 
-    pub fn next_source(&mut self) {
-        // Index 0 is "All", rest are sources
-        let total = self.available_sources.len() + 1;
-        self.source_index = (self.source_index + 1) % total;
-        self.selected_source = if self.source_index == 0 {
-            None
-        } else {
-            Some(self.available_sources[self.source_index - 1])
-        };
-        self.filter_packages();
-    }
-
-    pub fn prev_source(&mut self) {
-        let total = self.available_sources.len() + 1;
-        self.source_index = if self.source_index == 0 {
-            total - 1
-        } else {
-            self.source_index - 1
-        };
-        self.selected_source = if self.source_index == 0 {
-            None
-        } else {
-            Some(self.available_sources[self.source_index - 1])
-        };
-        self.filter_packages();
-    }
-
-    pub fn next_package(&mut self) {
-        if !self.filtered_packages.is_empty() {
-            self.package_index = (self.package_index + 1) % self.filtered_packages.len();
+    fn queue_next(&mut self) {
+        if self.tasks.is_empty() {
+            self.task_cursor = 0;
+            return;
         }
+        self.task_cursor = (self.task_cursor + 1).min(self.tasks.len() - 1);
     }
 
-    pub fn prev_package(&mut self) {
-        if !self.filtered_packages.is_empty() {
-            self.package_index = if self.package_index == 0 {
-                self.filtered_packages.len() - 1
-            } else {
-                self.package_index - 1
-            };
+    fn queue_prev(&mut self) {
+        self.task_cursor = self.task_cursor.saturating_sub(1);
+    }
+
+    fn queue_page_down(&mut self) {
+        if self.tasks.is_empty() {
+            return;
         }
+        self.task_cursor = (self.task_cursor + HALF_PAGE).min(self.tasks.len() - 1);
     }
 
-    pub fn next_queue_task(&mut self) {
-        if !self.queued_tasks.is_empty() {
-            self.queue_index = (self.queue_index + 1) % self.queued_tasks.len();
+    fn queue_page_up(&mut self) {
+        self.task_cursor = self.task_cursor.saturating_sub(HALF_PAGE);
+    }
+
+    fn collect_action_targets(&self) -> Vec<Package> {
+        if self.selected.is_empty() {
+            return self.current_package().cloned().into_iter().collect();
         }
-    }
-
-    pub fn prev_queue_task(&mut self) {
-        if !self.queued_tasks.is_empty() {
-            self.queue_index = if self.queue_index == 0 {
-                self.queued_tasks.len() - 1
-            } else {
-                self.queue_index - 1
-            };
-        }
-    }
-
-    pub fn page_down(&mut self) {
-        if !self.filtered_packages.is_empty() {
-            self.package_index = (self.package_index + 10).min(self.filtered_packages.len() - 1);
-        }
-    }
-
-    pub fn page_up(&mut self) {
-        self.package_index = self.package_index.saturating_sub(10);
-    }
-
-    pub fn is_selected(&self, package: &Package) -> bool {
-        self.selected_packages.contains(&package.id())
-    }
-
-    pub fn is_update_selected(&self, package: &Package) -> bool {
-        self.update_selected_ids.contains(&package.id())
-    }
-
-    #[allow(dead_code)]
-    pub fn toggle_selection(&mut self, package: &Package) {
-        let id = package.id();
-        if self.selected_packages.contains(&id) {
-            self.selected_packages.remove(&id);
-        } else {
-            self.selected_packages.insert(id);
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn select_all(&mut self) {
-        for pkg in &self.filtered_packages {
-            self.selected_packages.insert(pkg.id());
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn clear_selection(&mut self) {
-        self.selected_packages.clear();
-    }
-
-    #[allow(dead_code)]
-    pub fn selected_count(&self) -> usize {
-        self.selected_packages.len()
-    }
-
-    pub fn selected_update_count(&self) -> usize {
-        self.update_selected_ids.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn get_selected_packages(&self) -> Vec<Package> {
         self.packages
             .iter()
-            .filter(|p| self.selected_packages.contains(&p.id()))
+            .filter(|package| self.selected.contains(&package.id()))
             .cloned()
             .collect()
     }
 
-    pub fn toggle_selected_update(&mut self) -> bool {
-        let Some(candidate) = self.selected_update_candidate() else {
-            return false;
-        };
-
-        let id = candidate.package.id();
-        if self.update_selected_ids.contains(&id) {
-            self.update_selected_ids.remove(&id);
-        } else {
-            self.update_selected_ids.insert(id);
-        }
-        true
-    }
-
-    pub fn select_all_updates(&mut self) {
-        self.update_selected_ids = self
-            .update_candidates
-            .iter()
-            .map(|candidate| candidate.package.id())
-            .collect();
-    }
-
-    pub fn select_recommended_updates(&mut self) {
-        self.update_selected_ids = self
-            .update_candidates
-            .iter()
-            .filter(|candidate| {
+    fn is_valid_target(action: TaskQueueAction, package: &Package) -> bool {
+        match action {
+            TaskQueueAction::Install => package.status == PackageStatus::NotInstalled,
+            TaskQueueAction::Remove => {
                 matches!(
-                    candidate.lane,
-                    update_center::UpdateLane::Security | update_center::UpdateLane::Recommended
+                    package.status,
+                    PackageStatus::Installed | PackageStatus::UpdateAvailable
                 )
-            })
-            .map(|candidate| candidate.package.id())
-            .collect();
+            }
+            TaskQueueAction::Update => package.status == PackageStatus::UpdateAvailable,
+        }
     }
 
-    pub fn clear_update_selection(&mut self) {
-        self.update_selected_ids.clear();
+    fn invalid_single_target_message(action: TaskQueueAction, package: &Package) -> String {
+        match action {
+            TaskQueueAction::Install => format!("{} is already installed", package.name),
+            TaskQueueAction::Remove => format!("{} is not installed", package.name),
+            TaskQueueAction::Update => format!("{} has no update available", package.name),
+        }
     }
 
-    pub fn get_selected_update_packages(&self) -> Vec<Package> {
-        update_center::selected_packages(&self.update_candidates, &self.update_selected_ids)
+    fn invalid_batch_message(action: TaskQueueAction) -> &'static str {
+        match action {
+            TaskQueueAction::Install => "No installable packages in selection",
+            TaskQueueAction::Remove => "No removable packages in selection",
+            TaskQueueAction::Update => "No updatable packages in selection",
+        }
     }
 
-    pub fn get_recommended_update_packages(&self) -> Vec<Package> {
-        update_center::recommended_packages(&self.update_candidates)
+    fn skipped_reason(action: TaskQueueAction) -> &'static str {
+        match action {
+            TaskQueueAction::Install => "already installed",
+            TaskQueueAction::Remove => "not installed",
+            TaskQueueAction::Update => "already current",
+        }
     }
 
-    pub fn get_all_update_packages(&self) -> Vec<Package> {
-        update_center::all_packages(&self.update_candidates)
+    fn build_confirm_label(
+        action: TaskQueueAction,
+        valid: &[Package],
+        total: usize,
+        skipped: usize,
+        selection_mode: bool,
+    ) -> String {
+        let verb = action_label(action);
+
+        if !selection_mode && valid.len() == 1 {
+            return format!("{} {}?", verb, valid[0].name);
+        }
+
+        if skipped > 0 {
+            return format!(
+                "{} {} of {} selected ({} {})?",
+                verb,
+                valid.len(),
+                total,
+                skipped,
+                Self::skipped_reason(action)
+            );
+        }
+
+        if valid.len() <= 3 {
+            let names = valid
+                .iter()
+                .map(|package| package.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!("{} {}?", verb, names);
+        }
+
+        format!("{} {} packages?", verb, valid.len())
     }
 
-    pub fn get_update_packages_for_source(&self, source: PackageSource) -> Vec<Package> {
-        update_center::by_source_packages(&self.update_candidates, source)
-    }
+    fn prepare_action(&mut self, action: TaskQueueAction) {
+        let targets = self.collect_action_targets();
+        if targets.is_empty() {
+            self.set_status("No package selected", true);
+            return;
+        }
 
-    pub fn failed_update_count(&self) -> usize {
-        self.queued_tasks
+        let valid: Vec<Package> = targets
             .iter()
-            .filter(|task| {
-                task.action == TaskQueueAction::Update && task.status == TaskQueueStatus::Failed
-            })
-            .count()
-    }
-
-    pub fn failed_update_names(&self, limit: usize) -> Vec<String> {
-        self.queued_tasks
-            .iter()
-            .filter(|task| {
-                task.action == TaskQueueAction::Update && task.status == TaskQueueStatus::Failed
-            })
-            .take(limit)
-            .map(|task| task.package_name.clone())
-            .collect()
-    }
-
-    pub async fn retry_failed_updates(&mut self) -> usize {
-        let failed_entries: Vec<TaskQueueEntry> = self
-            .queued_tasks
-            .iter()
-            .filter(|task| {
-                task.action == TaskQueueAction::Update && task.status == TaskQueueStatus::Failed
-            })
+            .filter(|package| Self::is_valid_target(action, package))
             .cloned()
             .collect();
 
-        let mut queued = 0;
-        for failed in failed_entries {
-            let retry_task = TaskQueueEntry::new(
-                TaskQueueAction::Update,
-                failed.package_id.clone(),
-                failed.package_name.clone(),
-                failed.package_source,
-            );
-            self.enqueue_task_entry(retry_task).await;
-            queued += 1;
-        }
-
-        if queued > 0 {
-            self.spawn_task_executor();
-            self.append_to_console(format!(
-                "[{}] RETRY: queued {} failed update tasks",
-                chrono::Local::now().format("%H:%M:%S"),
-                queued
-            ));
-        }
-
-        queued
-    }
-
-    pub fn toggle_update_logs(&mut self) {
-        self.queue_show_logs = !self.queue_show_logs;
-        let state = if self.queue_show_logs {
-            "enabled"
-        } else {
-            "disabled"
-        };
-        self.status_message = format!("Detailed queue logs {}", state);
-        self.append_to_console(format!(
-            "[{}] Queue logs {}",
-            chrono::Local::now().format("%H:%M:%S"),
-            state
-        ));
-    }
-
-    pub fn toggle_hidden_updates_view(&mut self) {
-        self.show_hidden_updates = !self.show_hidden_updates;
-        self.update_index = 0;
-        self.update_selected_ids.clear();
-        self.filter_packages();
-        if self.show_hidden_updates {
-            self.status_message = String::from("Viewing hidden updates (ignored + snoozed)");
-        } else {
-            self.status_message = String::from("Viewing active updates");
-        }
-    }
-
-    pub fn toggle_ignore_selected_update(&mut self) -> bool {
-        let Some(candidate) = self.selected_update_candidate() else {
-            return false;
-        };
-        let id = candidate.package.id();
-        let pkg_name = candidate.package.name.clone();
-
-        if self.ignored_update_ids.contains(&id) {
-            self.ignored_update_ids.remove(&id);
-            self.status_message = format!("Unignored {}", pkg_name);
-        } else {
-            self.ignored_update_ids.insert(id.clone());
-            self.snoozed_update_ids.remove(&id);
-            self.status_message = format!("Ignored {}", pkg_name);
-        }
-        self.persist_update_preferences();
-        self.filter_packages();
-        true
-    }
-
-    pub fn snooze_selected_update(&mut self, hours: i64) -> bool {
-        let Some(candidate) = self.selected_update_candidate() else {
-            return false;
-        };
-        let id = candidate.package.id();
-        let pkg_name = candidate.package.name.clone();
-        let until = chrono::Local::now() + chrono::Duration::hours(hours);
-        self.snoozed_update_ids
-            .insert(id.clone(), until.timestamp());
-        self.ignored_update_ids.remove(&id);
-        self.persist_update_preferences();
-        self.filter_packages();
-        self.status_message = format!("Snoozed {} for {}h", pkg_name, hours);
-        true
-    }
-
-    pub fn clear_snooze_selected_update(&mut self) -> bool {
-        let Some(candidate) = self.selected_update_candidate() else {
-            return false;
-        };
-        let id = candidate.package.id();
-        let pkg_name = candidate.package.name.clone();
-        if self.snoozed_update_ids.remove(&id).is_some() {
-            self.persist_update_preferences();
-            self.filter_packages();
-            self.status_message = format!("Cleared snooze for {}", pkg_name);
-        } else {
-            self.status_message = String::from("Selected update is not snoozed");
-        }
-        true
-    }
-
-    pub fn queue_progress(&self) -> QueueProgress {
-        let mut progress = QueueProgress {
-            total: self.queued_tasks.len(),
-            ..QueueProgress::default()
-        };
-
-        for entry in &self.queued_tasks {
-            match entry.status {
-                TaskQueueStatus::Completed => progress.succeeded += 1,
-                TaskQueueStatus::Failed => progress.failed += 1,
-                TaskQueueStatus::Cancelled => progress.cancelled += 1,
-                TaskQueueStatus::Running => {
-                    progress.active_task = Some(format!(
-                        "{} {} ({})",
-                        action_display_name(entry.action),
-                        entry.package_name,
-                        entry.package_source
-                    ));
+        if valid.is_empty() {
+            if self.selected.is_empty() {
+                if let Some(target) = targets.first() {
+                    self.set_status(Self::invalid_single_target_message(action, target), true);
                 }
-                TaskQueueStatus::Queued => {}
+            } else {
+                self.set_status(Self::invalid_batch_message(action), true);
             }
+            return;
         }
 
-        progress.done = progress.succeeded + progress.failed + progress.cancelled;
-        progress
+        let skipped = targets.len().saturating_sub(valid.len());
+        let label = Self::build_confirm_label(
+            action,
+            &valid,
+            targets.len(),
+            skipped,
+            !self.selected.is_empty(),
+        );
+        self.confirming = Some(PendingAction {
+            label,
+            packages: valid,
+            action,
+        });
     }
 
-    fn capture_queue_run_summary(&mut self) {
-        let Some(run_started_at) = self.queue_run_started_at else {
+    fn toggle_selection_on_cursor(&mut self) {
+        let Some(package) = self.current_package() else {
             return;
         };
+        let package_id = package.id();
+        if self.selected.contains(&package_id) {
+            self.selected.remove(&package_id);
+        } else {
+            self.selected.insert(package_id);
+        }
+    }
 
-        let mut summary = QueueRunSummary::default();
-        for entry in &self.queued_tasks {
-            let Some(started_at) = entry.started_at else {
-                continue;
-            };
-            if started_at < run_started_at {
-                continue;
-            }
-
-            summary.total += 1;
-            match entry.status {
-                TaskQueueStatus::Completed => summary.succeeded += 1,
-                TaskQueueStatus::Failed => summary.failed += 1,
-                TaskQueueStatus::Cancelled => summary.cancelled += 1,
-                TaskQueueStatus::Queued | TaskQueueStatus::Running => {}
+    fn select_all_visible(&mut self) {
+        for index in &self.filtered {
+            if let Some(package) = self.packages.get(*index) {
+                self.selected.insert(package.id());
             }
         }
+    }
 
-        if summary.total == 0 {
+    fn clear_selection(&mut self) {
+        self.selected.clear();
+    }
+
+    async fn handle_help_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') => self.showing_help = false,
+            _ => {}
+        }
+    }
+
+    async fn handle_confirm_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if let Some(action) = self.confirming.take() {
+                    let queued = self.queue_tasks(action.packages, action.action).await;
+                    self.clear_selection();
+                    self.set_status(
+                        format!(
+                            "Queued {} {} task{}",
+                            queued,
+                            action_label(action.action).to_lowercase(),
+                            if queued == 1 { "" } else { "s" }
+                        ),
+                        true,
+                    );
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.confirming = None;
+                self.set_status("Cancelled", true);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.searching = false;
+                self.search.clear();
+                self.apply_filters();
+                self.set_status("Search cleared", true);
+            }
+            KeyCode::Enter => {
+                self.searching = false;
+                self.apply_filters();
+            }
+            KeyCode::Backspace | KeyCode::Delete => {
+                self.search.pop();
+                self.apply_filters();
+            }
+            KeyCode::Char(ch) if !ch.is_control() => {
+                self.search.push(ch);
+                self.apply_filters();
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_queue_shortcuts(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => self.cancel_selected_task().await,
+            KeyCode::Char('r') | KeyCode::Char('R') => self.retry_selected_task().await,
+            _ => {}
+        }
+    }
+
+    async fn handle_normal_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
             return;
         }
 
-        self.last_queue_summary = Some(summary.clone());
-        self.status_message = format!(
-            "Batch done: {}/{} succeeded, {} failed, {} cancelled",
-            summary.succeeded, summary.total, summary.failed, summary.cancelled
-        );
-        self.append_to_console(format!(
-            "[{}] BATCH SUMMARY: total={} succeeded={} failed={} cancelled={}",
-            chrono::Local::now().format("%H:%M:%S"),
-            summary.total,
-            summary.succeeded,
-            summary.failed,
-            summary.cancelled
-        ));
+        match key.code {
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+                return;
+            }
+            KeyCode::Char('?') => {
+                self.showing_help = true;
+                return;
+            }
+            _ => {}
+        }
+
+        if self.queue_expanded && self.focus == Focus::Queue {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('l') => {
+                    self.toggle_queue_expanded();
+                    return;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.queue_next();
+                    return;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.queue_prev();
+                    return;
+                }
+                KeyCode::Char('g') | KeyCode::Home => {
+                    self.queue_top();
+                    return;
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    self.queue_bottom();
+                    return;
+                }
+                KeyCode::PageDown => {
+                    self.queue_page_down();
+                    return;
+                }
+                KeyCode::PageUp => {
+                    self.queue_page_up();
+                    return;
+                }
+                _ if key.code == KeyCode::Char('d')
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.queue_page_down();
+                    return;
+                }
+                _ if key.code == KeyCode::Char('u')
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.queue_page_up();
+                    return;
+                }
+                _ => {
+                    self.handle_queue_shortcuts(key).await;
+                    return;
+                }
+            }
+        }
+
+        match key.code {
+            KeyCode::Tab => {
+                if !self.compact && !self.queue_expanded {
+                    self.focus = match self.focus {
+                        Focus::Sources => Focus::Packages,
+                        Focus::Packages | Focus::Queue => Focus::Sources,
+                    };
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => match self.focus {
+                Focus::Sources => self.next_source(),
+                Focus::Packages | Focus::Queue => self.next_package(),
+            },
+            KeyCode::Char('k') | KeyCode::Up => match self.focus {
+                Focus::Sources => self.prev_source(),
+                Focus::Packages | Focus::Queue => self.prev_package(),
+            },
+            KeyCode::Char('g') | KeyCode::Home => match self.focus {
+                Focus::Sources => self.set_source_by_index(0),
+                Focus::Packages | Focus::Queue => self.top(),
+            },
+            KeyCode::Char('G') | KeyCode::End => match self.focus {
+                Focus::Sources => self.set_source_by_index(self.source_count().saturating_sub(1)),
+                Focus::Packages | Focus::Queue => self.bottom(),
+            },
+            KeyCode::PageDown => self.page_down(),
+            KeyCode::PageUp => self.page_up(),
+            _ if key.code == KeyCode::Char('d')
+                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.page_down()
+            }
+            _ if key.code == KeyCode::Char('u')
+                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.page_up()
+            }
+
+            KeyCode::Char('1') => {
+                self.filter = Filter::All;
+                self.apply_filters();
+            }
+            KeyCode::Char('2') => {
+                self.filter = Filter::Installed;
+                self.apply_filters();
+            }
+            KeyCode::Char('3') => {
+                self.filter = Filter::Updates;
+                self.apply_filters();
+            }
+
+            KeyCode::Char(' ') => self.toggle_selection_on_cursor(),
+            KeyCode::Char('a') => self.select_all_visible(),
+
+            KeyCode::Char('i') => self.prepare_action(TaskQueueAction::Install),
+            KeyCode::Char('x') => self.prepare_action(TaskQueueAction::Remove),
+            KeyCode::Char('u') => self.prepare_action(TaskQueueAction::Update),
+
+            KeyCode::Char('/') => {
+                self.searching = true;
+            }
+            KeyCode::Char('r') => {
+                if !self.start_loading() {
+                    self.set_status("Already refreshing", true);
+                }
+            }
+            KeyCode::Char('l') => self.toggle_queue_expanded(),
+
+            KeyCode::Esc => {
+                if self.queue_expanded {
+                    self.toggle_queue_expanded();
+                } else if !self.search.is_empty() {
+                    self.search.clear();
+                    self.apply_filters();
+                    self.set_status("Search cleared", true);
+                } else if !self.selected.is_empty() {
+                    self.clear_selection();
+                    self.set_status("Selection cleared", true);
+                }
+            }
+
+            KeyCode::Char('C') | KeyCode::Char('R') => {
+                self.handle_queue_shortcuts(key).await;
+            }
+            _ => {}
+        }
     }
 
-    pub fn open_update_center(&mut self) {
-        self.mode = AppMode::UpdateCenter;
-        self.show_updates_only = true;
-        self.selected_source = None;
-        self.source_index = 0;
-        self.package_index = 0;
-        self.update_index = 0;
-        self.update_selected_ids.clear();
-        self.search_query.clear();
-        self.filter_packages();
-        self.start_loading();
-        self.append_to_console(format!(
-            "[{}] Opened Update Center",
-            chrono::Local::now().format("%H:%M:%S")
-        ));
-        self.status_message =
-            String::from("Update Center: refreshing available updates across all providers");
+    pub async fn handle_key(&mut self, key: KeyEvent) {
+        self.clear_status_if_needed();
+
+        if self.showing_help {
+            self.handle_help_key(key).await;
+            return;
+        }
+        if self.confirming.is_some() {
+            self.handle_confirm_key(key).await;
+            return;
+        }
+        if self.searching {
+            self.handle_search_key(key);
+            return;
+        }
+        self.handle_normal_key(key).await;
     }
 
-    pub fn close_update_center(&mut self) {
-        self.mode = AppMode::Normal;
-        self.show_updates_only = false;
-        self.update_selected_ids.clear();
-        self.search_query.clear();
-        self.filter_packages();
-        self.start_loading();
-        self.append_to_console(format!(
-            "[{}] Closed Update Center",
-            chrono::Local::now().format("%H:%M:%S")
-        ));
-        self.status_message = String::from("Back to package catalog");
-    }
-
-    fn cleanup_stale_selections(&mut self) {
-        let valid_ids: HashSet<String> = self.packages.iter().map(|p| p.id()).collect();
-        self.selected_packages.retain(|id| valid_ids.contains(id));
-    }
-
-    async fn queue_tasks(&mut self, packages: Vec<Package>, action: TaskQueueAction) -> usize {
-        let mut queued = 0;
-
-        for pkg in packages {
-            let entry = TaskQueueEntry::new(action, pkg.id(), pkg.name.clone(), pkg.source);
+    pub async fn queue_tasks(&mut self, packages: Vec<Package>, action: TaskQueueAction) -> usize {
+        let mut queued = 0usize;
+        for package in packages {
+            let entry =
+                TaskQueueEntry::new(action, package.id(), package.name.clone(), package.source);
             self.enqueue_task_entry(entry).await;
             queued += 1;
         }
-
         if queued > 0 {
+            self.queue_completed_at = None;
             self.spawn_task_executor();
         }
-
         queued
     }
 
     async fn enqueue_task_entry(&mut self, entry: TaskQueueEntry) {
-        let enqueue_result = {
+        let persisted = {
             let mut guard = self.history_tracker.lock().await;
             if let Some(tracker) = guard.as_mut() {
                 tracker.enqueue_task(entry.clone()).await.map(|_| true)
@@ -1034,92 +1176,172 @@ impl App {
             }
         };
 
-        match enqueue_result {
-            Ok(true) => {}
-            Ok(false) => {
-                self.append_to_console(format!(
-                    "[{}] WARN: history tracker unavailable; queue not persisted",
-                    chrono::Local::now().format("%H:%M:%S")
-                ));
-            }
-            Err(e) => {
-                self.append_to_console(format!(
-                    "[{}] ERROR: failed to persist task - {}",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    e
-                ));
-            }
+        if let Err(error) = persisted {
+            self.set_status(format!("Failed to persist task: {}", error), true);
         }
 
-        self.queued_tasks.push(entry);
-        self.clamp_queue_index();
+        self.upsert_task(entry);
     }
 
     fn spawn_task_executor(&self) {
-        if self.task_executor_running.swap(true, Ordering::SeqCst) {
+        if self.executor_running.swap(true, Ordering::SeqCst) {
             return;
         }
 
-        let running = self.task_executor_running.clone();
+        let running = self.executor_running.clone();
         let pm = self.pm.clone();
         let history_tracker = self.history_tracker.clone();
         let sender = self.task_events_tx.clone();
 
         tokio::spawn(async move {
             let executor = TaskQueueExecutor::new(pm, history_tracker);
-            if let Err(e) = executor.run(sender).await {
-                error!(error = %e, "Task queue executor stopped");
+            if let Err(error) = executor.run(sender).await {
+                error!(error = %error, "Task queue executor stopped");
             }
             running.store(false, Ordering::SeqCst);
         });
     }
 
-    fn clamp_queue_index(&mut self) {
-        if self.queued_tasks.is_empty() {
-            self.queue_index = 0;
-        } else if self.queue_index >= self.queued_tasks.len() {
-            self.queue_index = self.queued_tasks.len() - 1;
+    async fn cancel_selected_task(&mut self) {
+        if !self.queue_expanded {
+            return;
         }
+        let Some(task) = self.tasks.get(self.task_cursor).cloned() else {
+            self.set_status("No task selected", true);
+            return;
+        };
+
+        match task.status {
+            TaskQueueStatus::Queued => {
+                if let Some(position) = self.tasks.iter().position(|entry| entry.id == task.id) {
+                    self.tasks[position].mark_cancelled();
+                }
+                let result = {
+                    let mut guard = self.history_tracker.lock().await;
+                    if let Some(tracker) = guard.as_mut() {
+                        tracker.mark_task_cancelled(&task.id).await
+                    } else {
+                        Ok(None)
+                    }
+                };
+                if let Err(error) = result {
+                    self.set_status(format!("Failed to cancel task: {}", error), true);
+                } else {
+                    self.set_status(
+                        format!(
+                            "Cancelled {} for {}",
+                            action_label(task.action),
+                            task.package_name
+                        ),
+                        true,
+                    );
+                }
+            }
+            TaskQueueStatus::Running => self.set_status("Cannot cancel running task", true),
+            _ => self.set_status("Only queued tasks can be cancelled", true),
+        }
+    }
+
+    async fn retry_selected_task(&mut self) {
+        if !self.queue_expanded {
+            return;
+        }
+        let Some(task) = self.tasks.get(self.task_cursor).cloned() else {
+            self.set_status("No task selected", true);
+            return;
+        };
+
+        if task.status != TaskQueueStatus::Failed {
+            self.set_status("Only failed tasks can be retried", true);
+            return;
+        }
+
+        let retry = TaskQueueEntry::new(
+            task.action,
+            task.package_id.clone(),
+            task.package_name.clone(),
+            task.package_source,
+        );
+        self.enqueue_task_entry(retry).await;
+        self.queue_completed_at = None;
+        self.spawn_task_executor();
+        self.set_status(
+            format!(
+                "Re-queued {} for {}",
+                action_label(task.action),
+                task.package_name
+            ),
+            true,
+        );
+    }
+
+    pub fn queue_counts(&self) -> (usize, usize, usize, usize, usize) {
+        let mut queued = 0usize;
+        let mut running = 0usize;
+        let mut completed = 0usize;
+        let mut failed = 0usize;
+        let mut cancelled = 0usize;
+
+        for task in &self.tasks {
+            match task.status {
+                TaskQueueStatus::Queued => queued += 1,
+                TaskQueueStatus::Running => running += 1,
+                TaskQueueStatus::Completed => completed += 1,
+                TaskQueueStatus::Failed => failed += 1,
+                TaskQueueStatus::Cancelled => cancelled += 1,
+            }
+        }
+        (queued, running, completed, failed, cancelled)
+    }
+
+    pub fn should_show_queue_bar(&self) -> bool {
+        !self.tasks.is_empty()
+    }
+
+    pub fn spinner_frame(&self) -> char {
+        const FRAMES: [char; 4] = ['◐', '◓', '◑', '◒'];
+        FRAMES[(self.tick as usize) % FRAMES.len()]
+    }
+}
+
+pub fn action_label(action: TaskQueueAction) -> &'static str {
+    match action {
+        TaskQueueAction::Install => "Install",
+        TaskQueueAction::Remove => "Remove",
+        TaskQueueAction::Update => "Update",
     }
 }
 
 pub async fn run() -> Result<()> {
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app state
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        default_hook(info);
+    }));
+
     let pm = Arc::new(Mutex::new(PackageManager::new()));
     let history_tracker = Arc::new(Mutex::new(None));
     let (task_tx, task_rx) = mpsc::channel(200);
-    let mut app = App::new(
-        pm.clone(),
-        history_tracker.clone(),
-        Some(task_rx),
-        Some(task_tx.clone()),
-    );
 
-    // Initial load
+    let mut app = App::new(pm, history_tracker, Some(task_rx), Some(task_tx));
     app.initialize_history_tracker().await;
     app.sync_task_queue_from_history().await;
     app.load_sources().await;
-    app.load_packages().await;
-
+    let _ = app.start_loading();
     app.spawn_task_executor();
 
-    // Main loop
     let result = run_app(&mut terminal, &mut app).await;
 
-    // Restore terminal
+    let _ = std::panic::take_hook();
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result
@@ -1130,26 +1352,23 @@ async fn run_app(
     app: &mut App,
 ) -> Result<()> {
     loop {
+        app.tick = app.tick.wrapping_add(1);
+
         let size = terminal.size()?;
         app.compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
 
-        // Check for completed background loading
         app.poll_loading();
         app.poll_task_events();
+        app.maybe_autohide_queue();
 
-        terminal.draw(|f| ui::draw(f, app))?;
+        terminal.draw(|frame| ui::draw(frame, app))?;
 
-        // Poll for events with a small timeout to allow async operations
-        if event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match app.mode {
-                        AppMode::Normal => handle_normal_mode(app, key.code).await,
-                        AppMode::Search => handle_search_mode(app, key.code),
-                        AppMode::Confirm => handle_confirm_mode(app, key.code).await,
-                        AppMode::UpdateCenter => handle_update_center_mode(app, key.code).await,
-                    }
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.handle_key(key).await;
                 }
+                _ => {}
             }
         }
 
@@ -1161,843 +1380,414 @@ async fn run_app(
     Ok(())
 }
 
-async fn handle_normal_mode(app: &mut App, key: KeyCode) {
-    // Don't process keys while loading (except quit)
-    if app.loading && key != KeyCode::Char('q') && key != KeyCode::Esc {
-        return;
-    }
-
-    match key {
-        KeyCode::Char('q') | KeyCode::Esc => {
-            app.should_quit = true;
-        }
-        KeyCode::Char('h') => {
-            app.append_to_console(String::from(
-                "Help displayed - keyboard shortcuts available",
-            ));
-            app.status_message = String::from(
-                "Shortcuts are shown above status bar. Use Tab to switch panels, / to search, Space to select, u for Update Center, I/X to queue, C/R in Queue panel."
-            );
-        }
-        KeyCode::Tab => {
-            app.active_panel = match app.active_panel {
-                ActivePanel::Sources => ActivePanel::Packages,
-                ActivePanel::Packages => ActivePanel::Details,
-                ActivePanel::Details => ActivePanel::Queue,
-                ActivePanel::Queue => ActivePanel::Sources,
-            };
-        }
-        KeyCode::Char('j') | KeyCode::Down => match app.active_panel {
-            ActivePanel::Sources => app.next_source(),
-            ActivePanel::Packages => app.next_package(),
-            ActivePanel::Details => app.next_package(),
-            ActivePanel::Queue => app.next_queue_task(),
-        },
-        KeyCode::Char('k') | KeyCode::Up => match app.active_panel {
-            ActivePanel::Sources => app.prev_source(),
-            ActivePanel::Packages => app.prev_package(),
-            ActivePanel::Details => app.prev_package(),
-            ActivePanel::Queue => app.prev_queue_task(),
-        },
-        KeyCode::Char('g') | KeyCode::Home => {
-            app.package_index = 0;
-        }
-        KeyCode::Char('G') | KeyCode::End => {
-            if !app.filtered_packages.is_empty() {
-                app.package_index = app.filtered_packages.len() - 1;
-            }
-        }
-        KeyCode::PageDown | KeyCode::Char('d') => {
-            app.page_down();
-        }
-        KeyCode::PageUp | KeyCode::Char('b') => {
-            app.page_up();
-        }
-        KeyCode::Char('/') | KeyCode::Char('s') => {
-            app.search_return_mode = AppMode::Normal;
-            app.mode = AppMode::Search;
-            app.search_query.clear();
-            app.status_message =
-                String::from("Search: type query, Enter to confirm, Esc to cancel");
-        }
-        KeyCode::Char('u') => {
-            app.open_update_center();
-        }
-        KeyCode::Char('U') => {
-            app.open_update_center();
-        }
-        KeyCode::Char('I') => {
-            let install_targets: Vec<Package> = app
-                .get_selected_packages()
-                .into_iter()
-                .filter(|pkg| pkg.status == PackageStatus::NotInstalled)
-                .collect();
-
-            if install_targets.is_empty() {
-                app.status_message = String::from("No installable packages selected");
-            } else {
-                app.status_message = format!(
-                    "Queue installs for {} packages? (y/n)",
-                    install_targets.len()
-                );
-                app.append_to_console(format!(
-                    "[{}] Confirming queued installs for {} packages",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    install_targets.len()
-                ));
-                app.pending_action = Some(PendingAction::InstallSelected(install_targets));
-                app.confirm_return_mode = AppMode::Normal;
-                app.mode = AppMode::Confirm;
-            }
-        }
-        KeyCode::Char('X') => {
-            let remove_targets: Vec<Package> = app
-                .get_selected_packages()
-                .into_iter()
-                .filter(|pkg| {
-                    matches!(
-                        pkg.status,
-                        PackageStatus::Installed | PackageStatus::UpdateAvailable
-                    )
-                })
-                .collect();
-
-            if remove_targets.is_empty() {
-                app.status_message = String::from("No removable packages selected");
-            } else {
-                app.status_message = format!(
-                    "Queue removals for {} packages? (y/n)",
-                    remove_targets.len()
-                );
-                app.append_to_console(format!(
-                    "[{}] Confirming queued removals for {} packages",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    remove_targets.len()
-                ));
-                app.pending_action = Some(PendingAction::RemoveSelected(remove_targets));
-                app.confirm_return_mode = AppMode::Normal;
-                app.mode = AppMode::Confirm;
-            }
-        }
-        KeyCode::Char('r') => {
-            app.append_to_console(format!(
-                "[{}] Manual refresh triggered - reloading package list...",
-                chrono::Local::now().format("%H:%M:%S")
-            ));
-            app.start_loading();
-        }
-        KeyCode::Char('l') => {
-            app.toggle_update_logs();
-        }
-        KeyCode::Char('C') => {
-            if app.active_panel != ActivePanel::Queue {
-                return;
-            }
-            let task = app.selected_queue_task().cloned();
-            match task {
-                Some(task) => match task.status {
-                    TaskQueueStatus::Queued => {
-                        if let Some(pos) = app.queued_tasks.iter().position(|t| t.id == task.id) {
-                            app.queued_tasks[pos].mark_cancelled();
-                            app.clamp_queue_index();
-                        }
-
-                        let cancel_result = {
-                            let mut guard = app.history_tracker.lock().await;
-                            if let Some(tracker) = guard.as_mut() {
-                                tracker.mark_task_cancelled(&task.id).await
-                            } else {
-                                Ok(None)
-                            }
-                        };
-
-                        if let Err(e) = cancel_result {
-                            app.append_to_console(format!(
-                                "[{}] ERROR: failed to cancel task - {}",
-                                chrono::Local::now().format("%H:%M:%S"),
-                                e
-                            ));
-                        }
-
-                        app.status_message = format!(
-                            "Cancelled {} for {}",
-                            action_display_name(task.action),
-                            task.package_name
-                        );
-                        app.append_to_console(format!(
-                            "[{}] CANCELLED: {} {}",
-                            chrono::Local::now().format("%H:%M:%S"),
-                            action_display_name(task.action),
-                            task.package_name
-                        ));
-                    }
-                    TaskQueueStatus::Running => {
-                        app.status_message = String::from("Cannot cancel running task");
-                    }
-                    TaskQueueStatus::Completed | TaskQueueStatus::Failed => {
-                        app.status_message = String::from("Cannot cancel completed task");
-                    }
-                    TaskQueueStatus::Cancelled => {
-                        app.status_message = String::from("Task already cancelled");
-                    }
-                },
-                None => {
-                    app.status_message = String::from("No queued task selected");
-                }
-            }
-        }
-        KeyCode::Char('R') => {
-            if app.active_panel != ActivePanel::Queue {
-                return;
-            }
-            let task = app.selected_queue_task().cloned();
-            match task {
-                Some(task) => {
-                    if task.status != TaskQueueStatus::Failed {
-                        app.status_message = String::from("Only failed tasks can be retried");
-                        return;
-                    }
-
-                    let retry_task = TaskQueueEntry::new(
-                        task.action,
-                        task.package_id.clone(),
-                        task.package_name.clone(),
-                        task.package_source,
-                    );
-                    app.enqueue_task_entry(retry_task).await;
-                    app.spawn_task_executor();
-                    app.status_message = format!(
-                        "Re-queued {} for {}",
-                        action_display_name(task.action),
-                        task.package_name
-                    );
-                    app.append_to_console(format!(
-                        "[{}] RETRY: {} {}",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        action_display_name(task.action),
-                        task.package_name
-                    ));
-                }
-                None => {
-                    app.status_message = String::from("No queued task selected");
-                }
-            }
-        }
-        KeyCode::Char(' ') => {
-            if let Some(pkg) = app.selected_package().cloned() {
-                app.toggle_selection(&pkg);
-                app.status_message = format!("Selected: {}", app.selected_count());
-            } else {
-                app.status_message = String::from("No package selected");
-            }
-        }
-        KeyCode::Char('a') => {
-            app.select_all();
-            app.status_message = format!("Selected: {}", app.selected_count());
-        }
-        KeyCode::Char('c') => {
-            app.clear_selection();
-            app.status_message = String::from("Selection cleared");
-        }
-        KeyCode::Char('i') => {
-            if let Some(pkg) = app.selected_package().cloned() {
-                app.status_message = format!("Install {}? (y/n)", pkg.name);
-                app.append_to_console(format!(
-                    "[{}] Confirming installation of {} v{} from {:?}",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    pkg.name,
-                    pkg.version,
-                    pkg.source
-                ));
-                app.pending_action = Some(PendingAction::Install(pkg));
-                app.confirm_return_mode = AppMode::Normal;
-                app.mode = AppMode::Confirm;
-            }
-        }
-        KeyCode::Char('x') => {
-            if let Some(pkg) = app.selected_package().cloned() {
-                app.status_message = format!("Remove {}? (y/n)", pkg.name);
-                app.append_to_console(format!(
-                    "[{}] Confirming removal of {} v{}",
-                    chrono::Local::now().format("%H:%M:%S"),
-                    pkg.name,
-                    pkg.version
-                ));
-                app.pending_action = Some(PendingAction::Remove(pkg));
-                app.confirm_return_mode = AppMode::Normal;
-                app.mode = AppMode::Confirm;
-            }
-        }
-        KeyCode::Enter => match app.active_panel {
-            ActivePanel::Queue => {
-                if let Some(task) = app.selected_queue_task() {
-                    let status = match task.status {
-                        TaskQueueStatus::Queued => "Queued",
-                        TaskQueueStatus::Running => "Running",
-                        TaskQueueStatus::Completed => "Completed",
-                        TaskQueueStatus::Failed => "Failed",
-                        TaskQueueStatus::Cancelled => "Cancelled",
-                    };
-                    app.status_message = format!(
-                        "{} {} - {}",
-                        action_display_name(task.action),
-                        task.package_name,
-                        status
-                    );
-                }
-            }
-            _ => {
-                if let Some(pkg) = app.selected_package() {
-                    app.status_message = format!(
-                        "{} v{} ({:?}) - {}",
-                        pkg.name, pkg.version, pkg.source, pkg.description
-                    );
-                    app.active_panel = ActivePanel::Details;
-                }
-            }
-        },
-        _ => {}
-    }
-}
-
-async fn handle_update_center_mode(app: &mut App, key: KeyCode) {
-    // Keep quit and leave available while loading.
-    if app.loading && key != KeyCode::Char('q') && key != KeyCode::Esc {
-        return;
-    }
-
-    match key {
-        KeyCode::Char('q') => {
-            app.should_quit = true;
-        }
-        KeyCode::Esc | KeyCode::Char('u') => {
-            app.close_update_center();
-        }
-        KeyCode::Char('h') => {
-            app.status_message = String::from(
-                "Update Center: Space toggle, m mark rec, B source, S selected, U rec, A all, F retry failed, i ignore, z snooze, v hidden view, l logs",
-            );
-        }
-        KeyCode::Char('/') => {
-            app.search_return_mode = AppMode::UpdateCenter;
-            app.mode = AppMode::Search;
-            app.search_query.clear();
-            app.status_message =
-                String::from("Update search: type query, Enter to confirm, Esc to cancel");
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.next_update_candidate();
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.prev_update_candidate();
-        }
-        KeyCode::Char('g') | KeyCode::Home => {
-            app.update_index = 0;
-        }
-        KeyCode::Char('G') | KeyCode::End => {
-            if !app.update_candidates.is_empty() {
-                app.update_index = app.update_candidates.len() - 1;
-            }
-        }
-        KeyCode::Char(' ') => {
-            if app.toggle_selected_update() {
-                app.status_message = format!("Selected updates: {}", app.selected_update_count());
-            } else {
-                app.status_message = String::from("No update selected");
-            }
-        }
-        KeyCode::Char('m') => {
-            app.select_recommended_updates();
-            app.status_message = format!(
-                "Marked {} recommended/security updates",
-                app.selected_update_count()
-            );
-        }
-        KeyCode::Char('a') => {
-            app.select_all_updates();
-            app.status_message = format!("Selected updates: {}", app.selected_update_count());
-        }
-        KeyCode::Char('c') => {
-            app.clear_update_selection();
-            app.status_message = String::from("Update selection cleared");
-        }
-        KeyCode::Char('r') => {
-            app.append_to_console(format!(
-                "[{}] Update Center refresh triggered",
-                chrono::Local::now().format("%H:%M:%S")
-            ));
-            app.start_loading();
-        }
-        KeyCode::Char('l') => {
-            app.toggle_update_logs();
-        }
-        KeyCode::Char('v') => {
-            app.toggle_hidden_updates_view();
-        }
-        KeyCode::Char('i') => {
-            if !app.toggle_ignore_selected_update() {
-                app.status_message = String::from("No update selected");
-            }
-        }
-        KeyCode::Char('z') => {
-            if !app.snooze_selected_update(24) {
-                app.status_message = String::from("No update selected");
-            }
-        }
-        KeyCode::Char('Z') => {
-            if !app.clear_snooze_selected_update() {
-                app.status_message = String::from("No update selected");
-            }
-        }
-        KeyCode::Char('U') => {
-            let packages = app.get_recommended_update_packages();
-            if packages.is_empty() {
-                app.status_message = String::from("No recommended updates available");
-            } else {
-                app.status_message = format!(
-                    "Queue recommended updates for {} packages? (y/n)",
-                    packages.len()
-                );
-                app.pending_action = Some(PendingAction::UpdateRecommended(packages));
-                app.confirm_return_mode = AppMode::UpdateCenter;
-                app.mode = AppMode::Confirm;
-            }
-        }
-        KeyCode::Char('B') => {
-            if let Some(candidate) = app.selected_update_candidate() {
-                let source = candidate.package.source;
-                let packages = app.get_update_packages_for_source(source);
-                if packages.is_empty() {
-                    app.status_message = format!("No updates available from {}", source);
-                } else {
-                    app.status_message = format!(
-                        "Queue updates from {} for {} packages? (y/n)",
-                        source,
-                        packages.len()
-                    );
-                    app.pending_action = Some(PendingAction::UpdateBySource(source, packages));
-                    app.confirm_return_mode = AppMode::UpdateCenter;
-                    app.mode = AppMode::Confirm;
-                }
-            } else {
-                app.status_message = String::from("No update selected");
-            }
-        }
-        KeyCode::Char('S') => {
-            let packages = app.get_selected_update_packages();
-            if packages.is_empty() {
-                app.status_message = String::from("No selected updates to queue");
-            } else {
-                app.status_message = format!(
-                    "Queue selected updates for {} packages? (y/n)",
-                    packages.len()
-                );
-                app.pending_action = Some(PendingAction::UpdateSelected(packages));
-                app.confirm_return_mode = AppMode::UpdateCenter;
-                app.mode = AppMode::Confirm;
-            }
-        }
-        KeyCode::Char('A') => {
-            let packages = app.get_all_update_packages();
-            if packages.is_empty() {
-                app.status_message = String::from("No updates available");
-            } else {
-                app.status_message =
-                    format!("Queue all updates for {} packages? (y/n)", packages.len());
-                app.pending_action = Some(PendingAction::UpdateAll(packages));
-                app.confirm_return_mode = AppMode::UpdateCenter;
-                app.mode = AppMode::Confirm;
-            }
-        }
-        KeyCode::Char('F') => {
-            let retried = app.retry_failed_updates().await;
-            if retried == 0 {
-                app.status_message = String::from("No failed update tasks to retry");
-            } else {
-                app.status_message = format!("Re-queued {} failed update tasks", retried);
-            }
-        }
-        KeyCode::Enter => {
-            if let Some(candidate) = app.selected_update_candidate() {
-                let available = candidate
-                    .package
-                    .available_version
-                    .as_deref()
-                    .unwrap_or("unknown");
-                app.status_message = format!(
-                    "{} {} -> {} [{}]",
-                    candidate.package.name,
-                    candidate.package.version,
-                    available,
-                    candidate.lane.label()
-                );
-            }
-        }
-        _ => {}
-    }
-}
-
-fn action_display_name(action: TaskQueueAction) -> &'static str {
-    match action {
-        TaskQueueAction::Install => "Install",
-        TaskQueueAction::Remove => "Remove",
-        TaskQueueAction::Update => "Update",
-    }
-}
-
-fn handle_search_mode(app: &mut App, key: KeyCode) {
-    match key {
-        KeyCode::Esc => {
-            app.mode = app.search_return_mode;
-            app.search_return_mode = AppMode::Normal;
-            app.search_query.clear();
-            app.filter_packages();
-            app.status_message = String::from("Search cancelled");
-        }
-        KeyCode::Enter => {
-            app.mode = app.search_return_mode;
-            app.search_return_mode = AppMode::Normal;
-            app.filter_packages();
-            app.status_message = format!(
-                "Found {} packages matching '{}'",
-                app.filtered_packages.len(),
-                app.search_query
-            );
-        }
-        KeyCode::Backspace => {
-            app.search_query.pop();
-            app.filter_packages();
-        }
-        KeyCode::Char(c) => {
-            app.search_query.push(c);
-            app.filter_packages();
-        }
-        _ => {}
-    }
-}
-
-async fn handle_confirm_mode(app: &mut App, key: KeyCode) {
-    match key {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let action = app.pending_action.take();
-            let mut should_refresh = false;
-            match action {
-                Some(PendingAction::Install(pkg)) => {
-                    let result = {
-                        let manager = app.pm.lock().await;
-                        manager.install(&pkg).await
-                    };
-                    match result {
-                        Ok(_) => {
-                            app.status_message = format!("Success: {}", pkg.name);
-                            app.append_to_console(format!(
-                                "[{}] INSTALLED: {} v{} from {:?}",
-                                chrono::Local::now().format("%H:%M:%S"),
-                                pkg.name,
-                                pkg.version,
-                                pkg.source
-                            ));
-                        }
-                        Err(e) => {
-                            app.status_message = format!("Error: {}", e);
-                            app.append_to_console(format!(
-                                "[{}] FAILED: {} - {}",
-                                chrono::Local::now().format("%H:%M:%S"),
-                                pkg.name,
-                                e
-                            ));
-                        }
-                    }
-                    should_refresh = true;
-                }
-                Some(PendingAction::Remove(pkg)) => {
-                    let result = {
-                        let manager = app.pm.lock().await;
-                        manager.remove(&pkg).await
-                    };
-                    match result {
-                        Ok(_) => {
-                            app.status_message = format!("Success: {}", pkg.name);
-                            app.append_to_console(format!(
-                                "[{}] REMOVED: {} v{}",
-                                chrono::Local::now().format("%H:%M:%S"),
-                                pkg.name,
-                                pkg.version
-                            ));
-                        }
-                        Err(e) => {
-                            app.status_message = format!("Error: {}", e);
-                            app.append_to_console(format!(
-                                "[{}] FAILED: {} - {}",
-                                chrono::Local::now().format("%H:%M:%S"),
-                                pkg.name,
-                                e
-                            ));
-                        }
-                    }
-                    should_refresh = true;
-                }
-                Some(PendingAction::UpdateAll(packages)) => {
-                    let queued = app.queue_tasks(packages, TaskQueueAction::Update).await;
-                    app.status_message = format!("Queued {} update tasks", queued);
-                    app.append_to_console(format!(
-                        "[{}] QUEUED: {} update tasks",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        queued
-                    ));
-                }
-                Some(PendingAction::UpdateBySource(source, packages)) => {
-                    let queued = app.queue_tasks(packages, TaskQueueAction::Update).await;
-                    app.status_message = format!("Queued {} updates from {}", queued, source);
-                    app.append_to_console(format!(
-                        "[{}] QUEUED: {} update tasks from {}",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        queued,
-                        source
-                    ));
-                }
-                Some(PendingAction::UpdateRecommended(packages)) => {
-                    let queued = app.queue_tasks(packages, TaskQueueAction::Update).await;
-                    app.status_message = format!("Queued {} recommended updates", queued);
-                    app.append_to_console(format!(
-                        "[{}] QUEUED: {} recommended update tasks",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        queued
-                    ));
-                }
-                Some(PendingAction::UpdateSelected(packages)) => {
-                    let queued = app.queue_tasks(packages, TaskQueueAction::Update).await;
-                    app.status_message = format!("Queued {} selected updates", queued);
-                    app.append_to_console(format!(
-                        "[{}] QUEUED: {} selected update tasks",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        queued
-                    ));
-                }
-                Some(PendingAction::InstallSelected(packages)) => {
-                    let queued = app.queue_tasks(packages, TaskQueueAction::Install).await;
-                    app.status_message = format!("Queued {} install tasks", queued);
-                    app.append_to_console(format!(
-                        "[{}] QUEUED: {} install tasks",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        queued
-                    ));
-                }
-                Some(PendingAction::RemoveSelected(packages)) => {
-                    let queued = app.queue_tasks(packages, TaskQueueAction::Remove).await;
-                    app.status_message = format!("Queued {} remove tasks", queued);
-                    app.append_to_console(format!(
-                        "[{}] QUEUED: {} remove tasks",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        queued
-                    ));
-                }
-                None => {}
-            }
-            let return_mode = app.confirm_return_mode;
-            app.confirm_return_mode = AppMode::Normal;
-            app.mode = return_mode;
-            if should_refresh {
-                app.start_loading();
-            }
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.pending_action = None;
-            let return_mode = app.confirm_return_mode;
-            app.confirm_return_mode = AppMode::Normal;
-            app.mode = return_mode;
-            app.status_message = String::from("Cancelled");
-            app.append_to_console(format!(
-                "[{}] Operation cancelled by user",
-                chrono::Local::now().format("%H:%M:%S")
-            ));
-        }
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::PackageStatus;
-    use crate::models::UpdateCategory;
 
-    fn create_test_package(name: &str, source: PackageSource) -> Package {
+    fn make_pkg(name: &str, source: PackageSource, status: PackageStatus) -> Package {
         Package {
             name: name.to_string(),
             version: "1.0.0".to_string(),
-            available_version: None,
-            description: "Test package".to_string(),
+            available_version: (status == PackageStatus::UpdateAvailable)
+                .then(|| "1.1.0".to_string()),
+            description: format!("{} package", name),
             source,
-            status: PackageStatus::Installed,
+            status,
             size: None,
             homepage: None,
             license: None,
             maintainer: None,
-            dependencies: vec![],
+            dependencies: Vec::new(),
             install_date: None,
             update_category: None,
             enrichment: None,
         }
     }
 
-    fn create_update_package(
-        name: &str,
-        source: PackageSource,
-        category: Option<UpdateCategory>,
-    ) -> Package {
-        Package {
-            name: name.to_string(),
-            version: "1.0.0".to_string(),
-            available_version: Some("1.1.0".to_string()),
-            description: "Updatable package".to_string(),
-            source,
-            status: PackageStatus::UpdateAvailable,
-            size: None,
-            homepage: None,
-            license: None,
-            maintainer: None,
-            dependencies: vec![],
-            install_date: None,
-            update_category: category,
-            enrichment: None,
-        }
+    fn test_app() -> App {
+        App::new(
+            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(Mutex::new(None)),
+            None,
+            None,
+        )
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(code: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL)
     }
 
     #[test]
-    fn test_selection_methods() {
-        let pm = Arc::new(Mutex::new(PackageManager::new()));
-        let history_tracker = Arc::new(Mutex::new(None));
-        let mut app = App::new(pm, history_tracker, None, None);
+    fn apply_filters_all() {
+        let mut app = test_app();
+        app.packages = vec![
+            make_pkg("a", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("b", PackageSource::Snap, PackageStatus::UpdateAvailable),
+            make_pkg("c", PackageSource::Deb, PackageStatus::NotInstalled),
+        ];
+        app.filter = Filter::All;
+        app.apply_filters();
 
-        let pkg1 = create_test_package("pkg1", PackageSource::Apt);
-        let pkg2 = create_test_package("pkg2", PackageSource::Apt);
-        let pkg3 = create_test_package("pkg3", PackageSource::Dnf);
-
-        app.packages = vec![pkg1.clone(), pkg2.clone(), pkg3.clone()];
-        app.filter_packages();
-
-        assert!(!app.is_selected(&pkg1));
-        assert_eq!(app.selected_count(), 0);
-
-        app.toggle_selection(&pkg1);
-        assert!(app.is_selected(&pkg1));
-        assert_eq!(app.selected_count(), 1);
-
-        app.toggle_selection(&pkg1);
-        assert!(!app.is_selected(&pkg1));
-        assert_eq!(app.selected_count(), 0);
-
-        app.select_all();
-        assert_eq!(app.selected_count(), 3);
-        assert!(app.is_selected(&pkg1));
-        assert!(app.is_selected(&pkg2));
-        assert!(app.is_selected(&pkg3));
-
-        app.clear_selection();
-        assert_eq!(app.selected_count(), 0);
-
-        app.select_all();
-        let selected = app.get_selected_packages();
-        assert_eq!(selected.len(), 3);
+        assert_eq!(app.filtered.len(), 3);
+        assert_eq!(app.filter_counts, [3, 2, 1]);
     }
 
     #[test]
-    fn test_cleanup_stale_selections() {
-        let pm = Arc::new(Mutex::new(PackageManager::new()));
-        let history_tracker = Arc::new(Mutex::new(None));
-        let mut app = App::new(pm, history_tracker, None, None);
+    fn apply_filters_installed_includes_in_progress() {
+        let mut app = test_app();
+        app.packages = vec![
+            make_pkg("a", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("b", PackageSource::Apt, PackageStatus::UpdateAvailable),
+            make_pkg("c", PackageSource::Apt, PackageStatus::Updating),
+            make_pkg("d", PackageSource::Apt, PackageStatus::NotInstalled),
+        ];
+        app.filter = Filter::Installed;
+        app.apply_filters();
 
-        let pkg1 = create_test_package("pkg1", PackageSource::Apt);
-        let pkg2 = create_test_package("pkg2", PackageSource::Apt);
+        assert_eq!(app.filtered.len(), 3);
+    }
 
-        app.packages = vec![pkg1.clone(), pkg2.clone()];
-        app.filter_packages();
+    #[test]
+    fn apply_filters_updates_include_updating() {
+        let mut app = test_app();
+        app.packages = vec![
+            make_pkg("a", PackageSource::Apt, PackageStatus::UpdateAvailable),
+            make_pkg("b", PackageSource::Apt, PackageStatus::Updating),
+            make_pkg("c", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.filter = Filter::Updates;
+        app.apply_filters();
 
-        app.select_all();
-        assert_eq!(app.selected_count(), 2);
+        assert_eq!(app.filtered.len(), 2);
+        assert_eq!(app.filter_counts[2], 2);
+    }
 
-        app.packages = vec![pkg1.clone()];
+    #[test]
+    fn apply_filters_combined_source_search_and_cursor_clamp() {
+        let mut app = test_app();
+        app.available_sources = vec![PackageSource::Apt, PackageSource::Snap];
+        app.packages = vec![
+            make_pkg("firefox", PackageSource::Snap, PackageStatus::Installed),
+            make_pkg("vim", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.source = Some(PackageSource::Apt);
+        app.search = "vim".to_string();
+        app.cursor = 9;
+        app.apply_filters();
+
+        assert_eq!(app.filtered.len(), 1);
+        assert_eq!(app.cursor, 0);
+        assert_eq!(app.current_package().map(|p| p.name.as_str()), Some("vim"));
+    }
+
+    #[test]
+    fn merge_updates_upgrades_installed_package() {
+        let installed = vec![make_pkg(
+            "vim",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        let updates = vec![make_pkg(
+            "vim",
+            PackageSource::Apt,
+            PackageStatus::UpdateAvailable,
+        )];
+
+        let merged = App::merge_installed_with_updates(installed, updates);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].status, PackageStatus::UpdateAvailable);
+        assert_eq!(merged[0].available_version.as_deref(), Some("1.1.0"));
+    }
+
+    #[tokio::test]
+    async fn key_dispatch_precedence_help_confirm_search_normal() {
+        let mut app = test_app();
+        app.showing_help = true;
+        app.searching = true;
+        app.confirming = Some(PendingAction {
+            label: "x".into(),
+            packages: Vec::new(),
+            action: TaskQueueAction::Install,
+        });
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(!app.showing_help);
+        assert!(app.confirming.is_some());
+
+        app.showing_help = false;
+        app.searching = true;
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.confirming.is_none());
+        assert!(app.searching);
+
+        app.searching = true;
+        app.handle_key(key(KeyCode::Char('a'))).await;
+        assert_eq!(app.search, "a");
+    }
+
+    #[tokio::test]
+    async fn digits_do_not_leak_while_searching() {
+        let mut app = test_app();
+        app.searching = true;
+        app.filter = Filter::All;
+
+        app.handle_key(key(KeyCode::Char('1'))).await;
+
+        assert_eq!(app.search, "1");
+        assert_eq!(app.filter, Filter::All);
+    }
+
+    #[tokio::test]
+    async fn navigation_jk_bounds_and_g_g() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![
+            make_pkg("a", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("b", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("c", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('k'))).await;
+        assert_eq!(app.cursor, 0);
+
+        app.handle_key(key(KeyCode::Char('G'))).await;
+        assert_eq!(app.cursor, 2);
+
+        app.handle_key(key(KeyCode::Char('j'))).await;
+        assert_eq!(app.cursor, 2);
+
+        app.handle_key(key(KeyCode::Char('g'))).await;
+        assert_eq!(app.cursor, 0);
+    }
+
+    #[tokio::test]
+    async fn filter_keys_update_filter() {
+        let mut app = test_app();
+        app.packages = vec![
+            make_pkg("a", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("b", PackageSource::Apt, PackageStatus::UpdateAvailable),
+        ];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('3'))).await;
+        assert_eq!(app.filter, Filter::Updates);
+        assert_eq!(app.filtered.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn selection_space_a_and_esc_clear() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![
+            make_pkg("a", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("b", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char(' '))).await;
+        assert_eq!(app.selected.len(), 1);
+
+        app.handle_key(key(KeyCode::Char('a'))).await;
+        assert_eq!(app.selected.len(), 2);
+
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.selected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn selection_persists_across_filter_switch() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        let update = make_pkg("update", PackageSource::Apt, PackageStatus::UpdateAvailable);
+        let installed = make_pkg("installed", PackageSource::Apt, PackageStatus::Installed);
+        app.packages = vec![update.clone(), installed];
+        app.apply_filters();
+
+        app.selected.insert(update.id());
+        app.handle_key(key(KeyCode::Char('3'))).await;
+
+        assert_eq!(app.selected.len(), 1);
+    }
+
+    #[test]
+    fn cleanup_stale_selections_removes_gone_packages() {
+        let mut app = test_app();
+        let keep = make_pkg("keep", PackageSource::Apt, PackageStatus::Installed);
+        let gone = make_pkg("gone", PackageSource::Apt, PackageStatus::Installed);
+        app.packages = vec![keep.clone(), gone.clone()];
+        app.selected.insert(keep.id());
+        app.selected.insert(gone.id());
+
+        app.packages = vec![keep.clone()];
         app.cleanup_stale_selections();
-        assert_eq!(app.selected_count(), 1);
-        assert!(app.is_selected(&pkg1));
+
+        assert_eq!(app.selected.len(), 1);
+        assert!(app.selected.contains(&keep.id()));
     }
 
     #[tokio::test]
-    async fn test_open_update_center_switches_mode() {
-        let pm = Arc::new(Mutex::new(PackageManager::new()));
-        let history_tracker = Arc::new(Mutex::new(None));
-        let mut app = App::new(pm, history_tracker, None, None);
-
-        app.open_update_center();
-
-        assert_eq!(app.mode, AppMode::UpdateCenter);
-        assert!(app.show_updates_only);
-        assert!(app.load_rx.is_some());
-    }
-
-    #[test]
-    fn test_recommended_update_packages_filter() {
-        let pm = Arc::new(Mutex::new(PackageManager::new()));
-        let history_tracker = Arc::new(Mutex::new(None));
-        let mut app = App::new(pm, history_tracker, None, None);
-
-        let security = create_update_package(
-            "openssl",
+    async fn install_invalid_on_installed_shows_status() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "vim",
             PackageSource::Apt,
-            Some(UpdateCategory::Security),
-        );
-        let recommended = create_update_package(
-            "ripgrep",
-            PackageSource::Cargo,
-            Some(UpdateCategory::Bugfix),
-        );
-        let optional =
-            create_update_package("bat", PackageSource::Cargo, Some(UpdateCategory::Feature));
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
 
-        app.packages = vec![security, recommended, optional];
-        app.show_updates_only = true;
-        app.filter_packages();
+        app.handle_key(key(KeyCode::Char('i'))).await;
 
-        let recommended = app.get_recommended_update_packages();
-        assert_eq!(recommended.len(), 2);
-        assert!(recommended.iter().any(|pkg| pkg.name == "openssl"));
-        assert!(recommended.iter().any(|pkg| pkg.name == "ripgrep"));
+        assert!(app.confirming.is_none());
+        assert_eq!(app.status, "vim is already installed");
     }
 
     #[tokio::test]
-    async fn test_retry_failed_updates_only_requeues_failed_updates() {
-        use std::sync::atomic::Ordering;
+    async fn remove_invalid_on_not_installed_shows_status() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Deb,
+            PackageStatus::NotInstalled,
+        )];
+        app.apply_filters();
 
-        let pm = Arc::new(Mutex::new(PackageManager::new()));
-        let history_tracker = Arc::new(Mutex::new(None));
-        let mut app = App::new(pm, history_tracker, None, None);
+        app.handle_key(key(KeyCode::Char('x'))).await;
 
-        let mut failed_update = TaskQueueEntry::new(
-            TaskQueueAction::Update,
-            "APT:openssl".to_string(),
-            "openssl".to_string(),
-            PackageSource::Apt,
-        );
-        failed_update.mark_failed("network".to_string());
+        assert!(app.confirming.is_none());
+        assert_eq!(app.status, "pkg is not installed");
+    }
 
-        let mut failed_install = TaskQueueEntry::new(
+    #[tokio::test]
+    async fn batch_update_filters_valid_targets_and_reports_skip() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        let update = make_pkg("a", PackageSource::Apt, PackageStatus::UpdateAvailable);
+        let installed = make_pkg("b", PackageSource::Apt, PackageStatus::Installed);
+        app.packages = vec![update.clone(), installed.clone()];
+        app.apply_filters();
+        app.selected.insert(update.id());
+        app.selected.insert(installed.id());
+
+        app.handle_key(key(KeyCode::Char('u'))).await;
+
+        let confirming = app.confirming.as_ref().expect("confirm expected");
+        assert_eq!(confirming.packages.len(), 1);
+        assert!(confirming.label.contains("1 of 2 selected"));
+    }
+
+    #[tokio::test]
+    async fn search_enter_keeps_filter_and_esc_clears() {
+        let mut app = test_app();
+        app.packages = vec![
+            make_pkg("firefox", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("vim", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('/'))).await;
+        app.handle_key(key(KeyCode::Char('v'))).await;
+        app.handle_key(key(KeyCode::Char('i'))).await;
+        app.handle_key(key(KeyCode::Char('m'))).await;
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        assert!(!app.searching);
+        assert_eq!(app.search, "vim");
+        assert_eq!(app.filtered.len(), 1);
+
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.search.is_empty());
+    }
+
+    #[tokio::test]
+    async fn confirm_y_queues_tasks_and_n_clears() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.confirming = Some(PendingAction {
+            label: "Install pkg?".into(),
+            packages: vec![make_pkg(
+                "pkg",
+                PackageSource::Deb,
+                PackageStatus::NotInstalled,
+            )],
+            action: TaskQueueAction::Install,
+        });
+
+        app.handle_key(key(KeyCode::Char('n'))).await;
+        assert!(app.confirming.is_none());
+
+        app.confirming = Some(PendingAction {
+            label: "Install pkg?".into(),
+            packages: vec![make_pkg(
+                "pkg",
+                PackageSource::Deb,
+                PackageStatus::NotInstalled,
+            )],
+            action: TaskQueueAction::Install,
+        });
+        app.handle_key(key(KeyCode::Char('y'))).await;
+        assert_eq!(app.tasks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn queue_cancel_and_retry_paths() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let queued = TaskQueueEntry::new(
             TaskQueueAction::Install,
-            "cargo:bat".to_string(),
-            "bat".to_string(),
-            PackageSource::Cargo,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
         );
-        failed_install.mark_failed("permission".to_string());
 
-        app.queued_tasks.push(failed_update);
-        app.queued_tasks.push(failed_install);
-        app.task_executor_running.store(true, Ordering::SeqCst);
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:b".into(),
+            "b".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("err".into());
 
-        let retried = app.retry_failed_updates().await;
-        assert_eq!(retried, 1);
+        app.tasks = vec![queued.clone(), failed.clone()];
 
-        let last = app.queued_tasks.last().expect("expected retried task");
-        assert_eq!(last.action, TaskQueueAction::Update);
-        assert_eq!(last.package_name, "openssl");
+        app.task_cursor = 0;
+        app.handle_key(key(KeyCode::Char('C'))).await;
+        assert_eq!(app.tasks[0].status, TaskQueueStatus::Cancelled);
+
+        app.task_cursor = 1;
+        let before = app.tasks.len();
+        app.handle_key(key(KeyCode::Char('R'))).await;
+        assert_eq!(app.tasks.len(), before + 1);
+        assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn ctrl_d_and_ctrl_u_navigation_work() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = (0..30)
+            .map(|idx| {
+                make_pkg(
+                    &format!("p{}", idx),
+                    PackageSource::Apt,
+                    PackageStatus::Installed,
+                )
+            })
+            .collect();
+        app.apply_filters();
+
+        app.handle_key(ctrl('d')).await;
+        assert!(app.cursor > 0);
+
+        app.handle_key(ctrl('u')).await;
+        assert_eq!(app.cursor, 0);
     }
 }

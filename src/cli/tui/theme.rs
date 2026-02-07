@@ -4,97 +4,28 @@ pub mod palette {
     use super::*;
 
     pub const CYAN: Color = Color::Rgb(0, 255, 255);
-    pub const HUD_BLUE: Color = Color::Rgb(40, 150, 220);
     pub const YELLOW: Color = Color::Rgb(255, 255, 0);
     pub const GREEN: Color = Color::Rgb(0, 255, 0);
     pub const RED: Color = Color::Rgb(255, 0, 0);
     pub const WHITE: Color = Color::Rgb(255, 255, 255);
     pub const LIGHT_GRAY: Color = Color::Rgb(185, 185, 185);
-    pub const DARK_GRAY: Color = Color::Rgb(100, 100, 100);
-    pub const INACTIVE_BORDER: Color = Color::Rgb(60, 60, 60);
+    pub const DARK_GRAY: Color = Color::Rgb(140, 140, 140);
+    pub const INACTIVE_BORDER: Color = Color::Rgb(90, 90, 90);
 }
 
-pub fn title_style() -> Style {
-    Style::default()
-        .fg(palette::CYAN)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn title_bar() -> Style {
+pub fn text() -> Style {
     Style::default().fg(palette::WHITE)
-}
-
-pub fn accent_color() -> Color {
-    palette::YELLOW
-}
-
-pub fn title_color() -> Color {
-    palette::CYAN
-}
-
-pub fn panel() -> Style {
-    Style::default().fg(palette::WHITE)
-}
-
-pub fn panel_title() -> Style {
-    Style::default()
-        .fg(palette::WHITE)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn panel_title_active() -> Style {
-    Style::default()
-        .fg(palette::YELLOW)
-        .add_modifier(Modifier::BOLD)
 }
 
 pub fn dim() -> Style {
     Style::default().fg(palette::DARK_GRAY)
 }
 
+pub fn muted() -> Style {
+    Style::default().fg(palette::LIGHT_GRAY)
+}
+
 pub fn accent() -> Style {
-    Style::default().fg(palette::YELLOW)
-}
-
-pub fn selection() -> Style {
-    Style::default()
-        .bg(palette::DARK_GRAY)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn selection_focused() -> Style {
-    Style::default().add_modifier(Modifier::REVERSED)
-}
-
-pub fn border_active() -> Style {
-    Style::default().fg(palette::YELLOW)
-}
-
-pub fn border_inactive() -> Style {
-    Style::default().fg(palette::INACTIVE_BORDER)
-}
-
-pub fn status_installed() -> Style {
-    Style::default().fg(palette::GREEN)
-}
-
-pub fn status_update() -> Style {
-    Style::default().fg(palette::YELLOW)
-}
-
-pub fn status_not_installed() -> Style {
-    Style::default().fg(palette::DARK_GRAY)
-}
-
-pub fn status_loading() -> Style {
-    Style::default().fg(palette::CYAN)
-}
-
-pub fn status_removing() -> Style {
-    Style::default().fg(palette::RED)
-}
-
-pub fn table_header() -> Style {
     Style::default()
         .fg(palette::CYAN)
         .add_modifier(Modifier::BOLD)
@@ -106,102 +37,55 @@ pub fn key_hint() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-pub fn description() -> Style {
-    Style::default().fg(palette::LIGHT_GRAY)
-}
-
-pub fn separator() -> Style {
-    Style::default().fg(palette::LIGHT_GRAY)
-}
-
-pub fn mode_normal() -> Style {
-    Style::default().fg(palette::GREEN)
-}
-
-pub fn mode_search() -> Style {
-    Style::default().fg(palette::YELLOW)
-}
-
-pub fn mode_confirm() -> Style {
-    Style::default().fg(palette::RED)
-}
-
-pub fn mode_update_center() -> Style {
+pub fn border_focused() -> Style {
     Style::default().fg(palette::CYAN)
 }
 
-pub fn label() -> Style {
-    Style::default()
-        .fg(palette::DARK_GRAY)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn hud_border() -> Style {
-    Style::default()
-        .fg(palette::CYAN)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn hud_title() -> Style {
-    Style::default()
-        .fg(palette::CYAN)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-}
-
-pub fn hud_label() -> Style {
-    Style::default()
-        .fg(palette::HUD_BLUE)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn hud_action() -> Style {
-    Style::default()
-        .fg(palette::WHITE)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn hud_separator() -> Style {
+pub fn border_unfocused() -> Style {
     Style::default().fg(palette::INACTIVE_BORDER)
 }
 
-pub fn hud_value_active() -> Style {
+pub fn row_cursor() -> Style {
     Style::default()
-        .fg(palette::CYAN)
+        .bg(palette::CYAN)
+        .fg(Color::Black)
         .add_modifier(Modifier::BOLD)
 }
 
-pub fn hud_value_queued() -> Style {
-    Style::default()
-        .fg(palette::YELLOW)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn hud_value_completed() -> Style {
-    Style::default()
-        .fg(palette::GREEN)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn task_status_running() -> Style {
-    Style::default()
-        .fg(palette::CYAN)
-        .add_modifier(Modifier::BOLD)
-}
-
-pub fn task_status_queued() -> Style {
+pub fn row_selected() -> Style {
     Style::default().fg(palette::YELLOW)
 }
 
-pub fn task_status_completed() -> Style {
+pub fn success() -> Style {
     Style::default().fg(palette::GREEN)
 }
 
-pub fn task_status_failed() -> Style {
+pub fn warning() -> Style {
+    Style::default().fg(palette::YELLOW)
+}
+
+pub fn error() -> Style {
     Style::default()
         .fg(palette::RED)
         .add_modifier(Modifier::BOLD)
 }
 
-pub fn task_status_cancelled() -> Style {
-    Style::default().fg(palette::DARK_GRAY)
+pub fn loading() -> Style {
+    Style::default().fg(palette::CYAN)
+}
+
+pub fn table_header() -> Style {
+    Style::default()
+        .fg(palette::CYAN)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn italic_status() -> Style {
+    Style::default()
+        .fg(palette::LIGHT_GRAY)
+        .add_modifier(Modifier::ITALIC)
+}
+
+pub fn footer_label() -> Style {
+    Style::default().fg(palette::LIGHT_GRAY)
 }
