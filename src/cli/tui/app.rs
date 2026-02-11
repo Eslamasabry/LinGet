@@ -63,6 +63,7 @@ pub struct App {
 
     pub tasks: Vec<TaskQueueEntry>,
     pub task_cursor: usize,
+    pub task_log_scroll: usize,
     pub task_logs: HashMap<String, VecDeque<String>>,
     pub previous_statuses: HashMap<String, PackageStatus>,
     pub queue_expanded: bool,
@@ -111,6 +112,7 @@ impl App {
             searching: false,
             tasks: Vec::new(),
             task_cursor: 0,
+            task_log_scroll: 0,
             task_logs: HashMap::new(),
             previous_statuses: HashMap::new(),
             queue_expanded: false,
@@ -637,10 +639,21 @@ impl App {
     }
 
     fn clamp_task_cursor(&mut self) {
-        if self.tasks.is_empty() {
-            self.task_cursor = 0;
+        self.set_task_cursor(self.task_cursor);
+    }
+
+    fn set_task_cursor(&mut self, cursor: usize) {
+        let next = if self.tasks.is_empty() {
+            0
         } else {
-            self.task_cursor = self.task_cursor.min(self.tasks.len() - 1);
+            cursor.min(self.tasks.len() - 1)
+        };
+
+        if self.task_cursor != next {
+            self.task_cursor = next;
+            self.task_log_scroll = 0;
+        } else {
+            self.task_cursor = next;
         }
     }
 
@@ -676,6 +689,7 @@ impl App {
             self.task_logs.clear();
             self.previous_statuses.clear();
             self.task_cursor = 0;
+            self.task_log_scroll = 0;
             self.queue_completed_at = None;
             self.queue_failures_acknowledged = false;
         }
@@ -689,6 +703,7 @@ impl App {
         self.queue_expanded = !self.queue_expanded;
         if self.queue_expanded {
             self.focus = Focus::Queue;
+            self.task_log_scroll = 0;
             if self
                 .tasks
                 .iter()
@@ -735,36 +750,53 @@ impl App {
     }
 
     fn queue_top(&mut self) {
-        self.task_cursor = 0;
+        self.set_task_cursor(0);
     }
 
     fn queue_bottom(&mut self) {
         if !self.tasks.is_empty() {
-            self.task_cursor = self.tasks.len() - 1;
+            self.set_task_cursor(self.tasks.len() - 1);
         }
     }
 
     fn queue_next(&mut self) {
         if self.tasks.is_empty() {
-            self.task_cursor = 0;
+            self.set_task_cursor(0);
             return;
         }
-        self.task_cursor = (self.task_cursor + 1).min(self.tasks.len() - 1);
+        self.set_task_cursor((self.task_cursor + 1).min(self.tasks.len() - 1));
     }
 
     fn queue_prev(&mut self) {
-        self.task_cursor = self.task_cursor.saturating_sub(1);
+        self.set_task_cursor(self.task_cursor.saturating_sub(1));
     }
 
     fn queue_page_down(&mut self) {
         if self.tasks.is_empty() {
             return;
         }
-        self.task_cursor = (self.task_cursor + HALF_PAGE).min(self.tasks.len() - 1);
+        self.set_task_cursor((self.task_cursor + HALF_PAGE).min(self.tasks.len() - 1));
     }
 
     fn queue_page_up(&mut self) {
-        self.task_cursor = self.task_cursor.saturating_sub(HALF_PAGE);
+        self.set_task_cursor(self.task_cursor.saturating_sub(HALF_PAGE));
+    }
+
+    fn queue_log_scroll_up(&mut self) {
+        let Some(task) = self.tasks.get(self.task_cursor) else {
+            self.task_log_scroll = 0;
+            return;
+        };
+        let max_scroll = self
+            .task_logs
+            .get(&task.id)
+            .map(|logs| logs.len().saturating_sub(1))
+            .unwrap_or(0);
+        self.task_log_scroll = (self.task_log_scroll + 1).min(max_scroll);
+    }
+
+    fn queue_log_scroll_down(&mut self) {
+        self.task_log_scroll = self.task_log_scroll.saturating_sub(1);
     }
 
     fn collect_action_targets(&self) -> Vec<Package> {
@@ -1024,6 +1056,14 @@ impl App {
                 }
                 KeyCode::PageUp => {
                     self.queue_page_up();
+                    return;
+                }
+                KeyCode::Char('[') => {
+                    self.queue_log_scroll_up();
+                    return;
+                }
+                KeyCode::Char(']') => {
+                    self.queue_log_scroll_down();
                     return;
                 }
                 _ if key.code == KeyCode::Char('d')
@@ -1767,6 +1807,64 @@ mod tests {
         app.handle_key(key(KeyCode::Char('R'))).await;
         assert_eq!(app.tasks.len(), before + 1);
         assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn queue_log_scroll_keys_and_task_change_reset() {
+        let mut app = test_app();
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+        let first = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        let second = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:b".into(),
+            "b".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![first.clone(), second.clone()];
+        app.task_logs.insert(
+            first.id.clone(),
+            VecDeque::from(vec![
+                "one".to_string(),
+                "two".to_string(),
+                "three".to_string(),
+            ]),
+        );
+
+        app.handle_key(key(KeyCode::Char('['))).await;
+        assert_eq!(app.task_log_scroll, 1);
+
+        app.handle_key(key(KeyCode::Char(']'))).await;
+        assert_eq!(app.task_log_scroll, 0);
+
+        app.handle_key(key(KeyCode::Char('['))).await;
+        app.handle_key(key(KeyCode::Char('j'))).await;
+        assert_eq!(app.task_cursor, 1);
+        assert_eq!(app.task_log_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn expanding_queue_resets_log_scroll() {
+        let mut app = test_app();
+        let task = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![task];
+        app.task_log_scroll = 5;
+
+        app.handle_key(key(KeyCode::Char('l'))).await;
+
+        assert!(app.queue_expanded);
+        assert_eq!(app.focus, Focus::Queue);
+        assert_eq!(app.task_log_scroll, 0);
     }
 
     #[tokio::test]

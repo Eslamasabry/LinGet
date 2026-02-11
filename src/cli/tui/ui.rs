@@ -67,6 +67,8 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
 
 fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     let mut left: Vec<Span> = vec![Span::styled("LinGet  ", accent())];
+    let installed_label = if app.compact { "Inst" } else { "Installed" };
+    let updates_label = if app.compact { "Upd" } else { "Updates" };
 
     left.extend(render_filter_tab(
         "1",
@@ -78,7 +80,7 @@ fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     left.push(Span::raw(" "));
     left.extend(render_filter_tab(
         "2",
-        "Installed",
+        installed_label,
         app.filter_counts[1],
         app.filter == Filter::Installed,
         app.searching,
@@ -86,7 +88,7 @@ fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     left.push(Span::raw(" "));
     left.extend(render_filter_tab(
         "3",
-        "Updates",
+        updates_label,
         app.filter_counts[2],
         app.filter == Filter::Updates,
         app.searching,
@@ -238,6 +240,11 @@ fn draw_compact_content(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    if area.height < 4 {
+        draw_packages_panel(frame, app, area, true);
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(2)])
@@ -361,7 +368,7 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
                     if is_selected { row_selected() } else { text() },
                 )),
                 Cell::from(Span::styled(
-                    truncate_to_width(&package.name, if compact { 20 } else { 26 }),
+                    truncate_middle_to_width(&package.name, if compact { 20 } else { 26 }),
                     row_style,
                 )),
                 Cell::from(Span::styled(
@@ -628,23 +635,26 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
     let visible = sections[0].height as usize;
     let start = window_start(app.tasks.len(), visible.max(1), app.task_cursor);
     let end = (start + visible.max(1)).min(app.tasks.len());
+    let task_width = sections[0].width.saturating_sub(2) as usize;
 
     let mut task_lines = Vec::new();
     for idx in start..end {
         let task = &app.tasks[idx];
         let selected = idx == app.task_cursor;
-        task_lines.push(render_task_line(task, selected));
+        task_lines.push(render_task_line(task, selected, task_width));
     }
     frame.render_widget(Paragraph::new(task_lines), sections[0]);
 
+    let mut logs_scroll = 0usize;
     if sections.len() == 3 {
         if let Some(task) = app.tasks.get(app.task_cursor) {
             let logs = app.task_logs.get(&task.id);
             let mut lines = vec![Line::from(Span::styled("Logs:", dim()))];
             if let Some(logs) = logs {
                 let max = sections[1].height.saturating_sub(1) as usize;
-                let start = logs.len().saturating_sub(max);
-                for line in logs.iter().skip(start) {
+                let (start, end, scroll) = task_log_window(logs.len(), max, app.task_log_scroll);
+                logs_scroll = scroll;
+                for line in logs.iter().skip(start).take(end.saturating_sub(start)) {
                     lines.push(Line::from(Span::styled(
                         truncate_to_width(line, sections[1].width as usize),
                         muted(),
@@ -663,7 +673,16 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("R", key_hint()),
                 Span::styled(" retry  ", footer_label()),
                 Span::styled("↑↓", key_hint()),
-                Span::styled(" navigate", footer_label()),
+                Span::styled(" navigate  ", footer_label()),
+                Span::styled("[ ]", key_hint()),
+                Span::styled(
+                    if logs_scroll == 0 {
+                        " logs".to_string()
+                    } else {
+                        format!(" logs +{}", logs_scroll)
+                    },
+                    footer_label(),
+                ),
             ])),
             sections[2],
         );
@@ -682,7 +701,7 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 }
 
-fn render_task_line(task: &TaskQueueEntry, selected: bool) -> Line<'static> {
+fn render_task_line(task: &TaskQueueEntry, selected: bool, max_width: usize) -> Line<'static> {
     let (symbol, style, status_text) = match task.status {
         TaskQueueStatus::Queued => ("◻", warning(), "queued"),
         TaskQueueStatus::Running => ("▶", loading(), "running"),
@@ -703,6 +722,7 @@ fn render_task_line(task: &TaskQueueEntry, selected: bool) -> Line<'static> {
             text_value.push_str(&format!(": {}", error_text));
         }
     }
+    let text_value = truncate_middle_to_width(&text_value, max_width);
 
     Line::from(vec![
         Span::styled(if selected { "▸ " } else { "  " }, row_selected()),
@@ -739,6 +759,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         Line::from(""),
         Line::from("Queue (expanded)"),
         Line::from("  C cancel queued   R retry failed"),
+        Line::from("  [ ] logs older/newer"),
         Line::from(""),
         Line::from("  ? or Esc to close"),
     ];
@@ -823,6 +844,22 @@ pub fn window_start(total: usize, visible: usize, selected: usize) -> usize {
     start
 }
 
+fn task_log_window(
+    total_lines: usize,
+    visible_lines: usize,
+    scroll: usize,
+) -> (usize, usize, usize) {
+    if visible_lines == 0 || total_lines == 0 {
+        return (0, 0, 0);
+    }
+
+    let max_scroll = total_lines.saturating_sub(visible_lines);
+    let scroll = scroll.min(max_scroll);
+    let end = total_lines.saturating_sub(scroll);
+    let start = end.saturating_sub(visible_lines);
+    (start, end, scroll)
+}
+
 pub fn truncate_to_width(text_value: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
@@ -847,6 +884,46 @@ pub fn truncate_to_width(text_value: &str, max_width: usize) -> String {
     }
     out.push('…');
     out
+}
+
+pub fn truncate_middle_to_width(text_value: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text_value) <= max_width {
+        return text_value.to_string();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let target = max_width.saturating_sub(1);
+    let left_target = target.div_ceil(2);
+    let right_target = target / 2;
+
+    let mut left = String::new();
+    let mut left_width = 0usize;
+    for ch in text_value.chars() {
+        let char_width = UnicodeWidthStr::width(ch.to_string().as_str());
+        if left_width + char_width > left_target {
+            break;
+        }
+        left.push(ch);
+        left_width += char_width;
+    }
+
+    let mut right = String::new();
+    let mut right_width = 0usize;
+    for ch in text_value.chars().rev() {
+        let char_width = UnicodeWidthStr::width(ch.to_string().as_str());
+        if right_width + char_width > right_target {
+            break;
+        }
+        right.insert(0, ch);
+        right_width += char_width;
+    }
+
+    format!("{}…{}", left, right)
 }
 
 fn wrap_text(text_value: &str, max_width: usize) -> Vec<String> {
@@ -896,4 +973,28 @@ fn wrap_text(text_value: &str, max_width: usize) -> Vec<String> {
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_middle_preserves_edges() {
+        let truncated = truncate_middle_to_width("super-long-package-name", 12);
+        assert_eq!(truncated, "super-…-name");
+    }
+
+    #[test]
+    fn truncate_middle_handles_small_width() {
+        assert_eq!(truncate_middle_to_width("abcdef", 1), "…");
+        assert_eq!(truncate_middle_to_width("abcdef", 2), "a…");
+    }
+
+    #[test]
+    fn task_log_window_clamps_scroll_and_ranges() {
+        assert_eq!(task_log_window(10, 4, 0), (6, 10, 0));
+        assert_eq!(task_log_window(10, 4, 3), (3, 7, 3));
+        assert_eq!(task_log_window(3, 8, 5), (0, 3, 0));
+    }
 }
