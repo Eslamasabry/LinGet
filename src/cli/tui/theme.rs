@@ -1,16 +1,26 @@
+use crate::models::PackageSource;
 use ratatui::style::{Color, Modifier, Style};
 
 pub mod palette {
     use super::*;
 
-    pub const CYAN: Color = Color::Rgb(0, 255, 255);
-    pub const YELLOW: Color = Color::Rgb(255, 255, 0);
-    pub const GREEN: Color = Color::Rgb(0, 255, 0);
-    pub const RED: Color = Color::Rgb(255, 0, 0);
-    pub const WHITE: Color = Color::Rgb(255, 255, 255);
+    pub const CYAN: Color = Color::Rgb(102, 217, 239);
+    pub const YELLOW: Color = Color::Rgb(230, 219, 116);
+    pub const GREEN: Color = Color::Rgb(166, 226, 46);
+    pub const RED: Color = Color::Rgb(249, 38, 114);
+    pub const WHITE: Color = Color::Rgb(248, 248, 242);
     pub const LIGHT_GRAY: Color = Color::Rgb(185, 185, 185);
     pub const DARK_GRAY: Color = Color::Rgb(140, 140, 140);
     pub const INACTIVE_BORDER: Color = Color::Rgb(90, 90, 90);
+
+    pub const MAGENTA: Color = Color::Rgb(174, 129, 255);
+    pub const BLUE: Color = Color::Rgb(104, 159, 232);
+    pub const ORANGE: Color = Color::Rgb(253, 151, 31);
+    pub const TEAL: Color = Color::Rgb(72, 209, 204);
+    pub const PEACH: Color = Color::Rgb(255, 183, 139);
+    pub const LAVENDER: Color = Color::Rgb(189, 147, 249);
+    pub const PINK: Color = Color::Rgb(255, 121, 198);
+    pub const SKY: Color = Color::Rgb(137, 220, 235);
 }
 
 pub fn text() -> Style {
@@ -88,4 +98,33 @@ pub fn italic_status() -> Style {
 
 pub fn footer_label() -> Style {
     Style::default().fg(palette::LIGHT_GRAY)
+}
+
+pub fn section_header() -> Style {
+    Style::default()
+        .fg(palette::MAGENTA)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn source_color(source: PackageSource) -> Style {
+    let color = match source {
+        PackageSource::Apt => palette::BLUE,
+        PackageSource::Dnf => palette::ORANGE,
+        PackageSource::Pacman => palette::TEAL,
+        PackageSource::Zypper => palette::GREEN,
+        PackageSource::Flatpak => palette::MAGENTA,
+        PackageSource::Snap => palette::PEACH,
+        PackageSource::Npm => palette::RED,
+        PackageSource::Pip => palette::YELLOW,
+        PackageSource::Pipx => palette::LAVENDER,
+        PackageSource::Cargo => palette::ORANGE,
+        PackageSource::Brew => palette::SKY,
+        PackageSource::Aur => palette::CYAN,
+        PackageSource::Conda => palette::GREEN,
+        PackageSource::Mamba => palette::TEAL,
+        PackageSource::Dart => palette::BLUE,
+        PackageSource::Deb => palette::PINK,
+        PackageSource::AppImage => palette::PEACH,
+    };
+    Style::default().fg(color)
 }

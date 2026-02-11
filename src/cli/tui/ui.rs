@@ -270,23 +270,44 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
     let block = panel_block(" Sources ".to_string(), focused);
     let inner = block.inner(area);
 
-    let total = app.source_count();
+    let visible = app.visible_sources();
+    let total = visible.len() + 1;
     let selected = app.source_index();
-    let visible = inner.height as usize;
-    let start = window_start(total, visible, selected);
-    let end = (start + visible).min(total);
+    let visible_rows = inner.height as usize;
+    let start = window_start(total, visible_rows, selected);
+    let end = (start + visible_rows).min(total);
 
     let mut items = Vec::new();
     for idx in start..end {
         let selected_row = idx == selected;
-        let label = if idx == 0 {
-            "All".to_string()
+        let (label, label_style) = if idx == 0 {
+            let count_str = match app.filter {
+                Filter::Updates => format!(" {}", app.filter_counts[2]),
+                _ => format!(" {}", app.filter_counts[1]),
+            };
+            (
+                format!("All{}", count_str),
+                if selected_row { accent() } else { text() },
+            )
         } else {
-            app.available_sources[idx - 1].to_string()
+            let source = visible[idx - 1];
+            let counts = app.source_counts.get(&source).copied().unwrap_or((0, 0));
+            let count_str = match app.filter {
+                Filter::Updates => format!(" {}", counts.1),
+                _ => format!(" {}", counts.0),
+            };
+            (
+                format!("{}{}", source, count_str),
+                if selected_row {
+                    accent()
+                } else {
+                    source_color(source)
+                },
+            )
         };
         items.push(ListItem::new(Line::from(vec![
             Span::styled(if selected_row { "▸ " } else { "  " }, row_selected()),
-            Span::styled(label, if selected_row { accent() } else { text() }),
+            Span::styled(label, label_style),
         ])));
     }
 
@@ -375,7 +396,14 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
                     truncate_to_width(&version, if compact { 16 } else { 24 }),
                     row_style,
                 )),
-                Cell::from(Span::styled(truncate_to_width(&source, 10), row_style)),
+                Cell::from(Span::styled(
+                    truncate_to_width(&source, 10),
+                    if is_cursor {
+                        row_style
+                    } else {
+                        source_color(package.source)
+                    },
+                )),
                 Cell::from(Span::styled(status.0, status.1)),
             ])
             .style(row_style),
@@ -430,7 +458,7 @@ fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Source: ", dim()),
-            Span::styled(package.source.to_string(), text()),
+            Span::styled(package.source.to_string(), source_color(package.source)),
         ]),
     ];
 
@@ -741,23 +769,23 @@ fn draw_help_overlay(frame: &mut Frame) {
         .title_style(accent());
 
     let lines = vec![
-        Line::from("Navigation"),
+        Line::from(Span::styled("Navigation", section_header())),
         Line::from("  ↑↓/jk  move      g/G top/bottom"),
         Line::from("  ^d/^u  half-page  Tab switch panel"),
         Line::from(""),
-        Line::from("Filters"),
+        Line::from(Span::styled("Filters", section_header())),
         Line::from("  1 All    2 Installed    3 Updates"),
         Line::from(""),
-        Line::from("Actions"),
+        Line::from(Span::styled("Actions", section_header())),
         Line::from("  Space select   a select all"),
         Line::from("  i install      x remove      u update"),
         Line::from("  Esc clear / back"),
         Line::from(""),
-        Line::from("Global"),
+        Line::from(Span::styled("Global", section_header())),
         Line::from("  / search   r refresh   l queue log"),
         Line::from("  ? help     q quit"),
         Line::from(""),
-        Line::from("Queue (expanded)"),
+        Line::from(Span::styled("Queue (expanded)", section_header())),
         Line::from("  C cancel queued   R retry failed"),
         Line::from("  [ ] logs older/newer"),
         Line::from(""),

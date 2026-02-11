@@ -49,6 +49,195 @@ pub struct PendingAction {
 
 type LoadResult = Result<Vec<Package>, String>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CommandId {
+    Quit,
+    ShowHelp,
+    CycleFocus,
+    MoveUp,
+    MoveDown,
+    MoveTop,
+    MoveBottom,
+    PageUp,
+    PageDown,
+    FilterAll,
+    FilterInstalled,
+    FilterUpdates,
+    ToggleSelection,
+    SelectAll,
+    Install,
+    Remove,
+    Update,
+    Search,
+    Refresh,
+    ToggleQueue,
+    QueueCancel,
+    QueueRetry,
+    QueueLogOlder,
+    QueueLogNewer,
+}
+
+#[derive(Clone, Copy)]
+pub struct CommandDefinition {
+    pub id: CommandId,
+    pub label: &'static str,
+    pub shortcut: &'static str,
+    pub enabled: fn(&App) -> bool,
+}
+
+impl CommandDefinition {
+    pub fn is_enabled(&self, app: &App) -> bool {
+        (self.enabled)(app)
+    }
+}
+
+const COMMAND_REGISTRY: &[CommandDefinition] = &[
+    CommandDefinition {
+        id: CommandId::Quit,
+        label: "Quit",
+        shortcut: "q / Ctrl+C",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::ShowHelp,
+        label: "Show help",
+        shortcut: "?",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::CycleFocus,
+        label: "Cycle focus",
+        shortcut: "Tab",
+        enabled: command_cycle_focus_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::MoveUp,
+        label: "Move up",
+        shortcut: "k / Up",
+        enabled: command_move_up_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::MoveDown,
+        label: "Move down",
+        shortcut: "j / Down",
+        enabled: command_move_down_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::MoveTop,
+        label: "Jump top",
+        shortcut: "g / Home",
+        enabled: command_move_top_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::MoveBottom,
+        label: "Jump bottom",
+        shortcut: "G / End",
+        enabled: command_move_bottom_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::PageUp,
+        label: "Page up",
+        shortcut: "PgUp / Ctrl+u",
+        enabled: command_page_up_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::PageDown,
+        label: "Page down",
+        shortcut: "PgDn / Ctrl+d",
+        enabled: command_page_down_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::FilterAll,
+        label: "Filter all",
+        shortcut: "1",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::FilterInstalled,
+        label: "Filter installed",
+        shortcut: "2",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::FilterUpdates,
+        label: "Filter updates",
+        shortcut: "3",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::ToggleSelection,
+        label: "Toggle selection",
+        shortcut: "Space",
+        enabled: command_toggle_selection_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::SelectAll,
+        label: "Select all visible",
+        shortcut: "a",
+        enabled: command_select_all_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::Install,
+        label: "Queue install",
+        shortcut: "i",
+        enabled: command_install_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::Remove,
+        label: "Queue remove",
+        shortcut: "x",
+        enabled: command_remove_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::Update,
+        label: "Queue update",
+        shortcut: "u",
+        enabled: command_update_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::Search,
+        label: "Search packages",
+        shortcut: "/",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::Refresh,
+        label: "Refresh packages",
+        shortcut: "r",
+        enabled: command_refresh_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::ToggleQueue,
+        label: "Toggle queue",
+        shortcut: "l",
+        enabled: command_toggle_queue_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::QueueCancel,
+        label: "Cancel queued task",
+        shortcut: "C",
+        enabled: command_queue_cancel_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::QueueRetry,
+        label: "Retry failed task",
+        shortcut: "R",
+        enabled: command_queue_retry_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::QueueLogOlder,
+        label: "Show older queue logs",
+        shortcut: "[",
+        enabled: command_queue_log_older_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::QueueLogNewer,
+        label: "Show newer queue logs",
+        shortcut: "]",
+        enabled: command_queue_log_newer_enabled,
+    },
+];
+
 pub struct App {
     pub packages: Vec<Package>,
     pub filtered: Vec<usize>,
@@ -83,6 +272,7 @@ pub struct App {
     pub tick: u64,
 
     pub available_sources: Vec<PackageSource>,
+    pub source_counts: HashMap<PackageSource, (usize, usize)>,
 
     pub pm: Arc<Mutex<PackageManager>>,
     pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
@@ -129,6 +319,7 @@ impl App {
             should_quit: false,
             tick: 0,
             available_sources: Vec::new(),
+            source_counts: HashMap::new(),
             pm,
             history_tracker,
             load_rx: None,
@@ -183,14 +374,50 @@ impl App {
     }
 
     pub fn source_count(&self) -> usize {
-        self.available_sources.len() + 1
+        self.visible_sources().len() + 1
+    }
+
+    pub fn visible_sources(&self) -> Vec<PackageSource> {
+        if self.filter == Filter::Updates {
+            self.available_sources
+                .iter()
+                .filter(|s| {
+                    self.source_counts
+                        .get(s)
+                        .is_some_and(|(_, updates)| *updates > 0)
+                })
+                .copied()
+                .collect()
+        } else {
+            self.available_sources.clone()
+        }
+    }
+
+    pub fn command_registry() -> &'static [CommandDefinition] {
+        COMMAND_REGISTRY
+    }
+
+    pub fn command_enabled(&self, id: CommandId) -> bool {
+        Self::command_definition(id)
+            .map(|definition| {
+                !definition.label.trim().is_empty()
+                    && !definition.shortcut.trim().is_empty()
+                    && definition.is_enabled(self)
+            })
+            .unwrap_or(false)
+    }
+
+    fn command_definition(id: CommandId) -> Option<&'static CommandDefinition> {
+        Self::command_registry()
+            .iter()
+            .find(|definition| definition.id == id)
     }
 
     pub fn source_index(&self) -> usize {
         match self.source {
             None => 0,
             Some(source) => self
-                .available_sources
+                .visible_sources()
                 .iter()
                 .position(|s| *s == source)
                 .map(|idx| idx + 1)
@@ -198,10 +425,143 @@ impl App {
         }
     }
 
+    fn queue_focus_active(&self) -> bool {
+        self.queue_expanded && self.focus == Focus::Queue
+    }
+
+    fn can_cycle_focus_command(&self) -> bool {
+        !self.compact && !self.queue_expanded
+    }
+
+    fn can_move_up_command(&self) -> bool {
+        if self.queue_focus_active() {
+            return self.task_cursor > 0;
+        }
+
+        match self.focus {
+            Focus::Sources => self.source_index() > 0,
+            Focus::Packages | Focus::Queue => self.cursor > 0,
+        }
+    }
+
+    fn can_move_down_command(&self) -> bool {
+        if self.queue_focus_active() {
+            return self.task_cursor + 1 < self.tasks.len();
+        }
+
+        match self.focus {
+            Focus::Sources => self.source_index() + 1 < self.source_count(),
+            Focus::Packages | Focus::Queue => self.cursor + 1 < self.filtered.len(),
+        }
+    }
+
+    fn can_move_top_command(&self) -> bool {
+        if self.queue_focus_active() {
+            return !self.tasks.is_empty() && self.task_cursor > 0;
+        }
+
+        match self.focus {
+            Focus::Sources => self.source_index() > 0,
+            Focus::Packages | Focus::Queue => !self.filtered.is_empty() && self.cursor > 0,
+        }
+    }
+
+    fn can_move_bottom_command(&self) -> bool {
+        if self.queue_focus_active() {
+            return self.task_cursor + 1 < self.tasks.len();
+        }
+
+        match self.focus {
+            Focus::Sources => self.source_index() + 1 < self.source_count(),
+            Focus::Packages | Focus::Queue => self.cursor + 1 < self.filtered.len(),
+        }
+    }
+
+    fn can_page_up_command(&self) -> bool {
+        if self.queue_focus_active() {
+            return self.task_cursor > 0;
+        }
+
+        match self.focus {
+            Focus::Sources => self.source_index() > 0,
+            Focus::Packages | Focus::Queue => self.cursor > 0,
+        }
+    }
+
+    fn can_page_down_command(&self) -> bool {
+        if self.queue_focus_active() {
+            return self.task_cursor + 1 < self.tasks.len();
+        }
+
+        match self.focus {
+            Focus::Sources => self.source_index() + 1 < self.source_count(),
+            Focus::Packages | Focus::Queue => self.cursor + 1 < self.filtered.len(),
+        }
+    }
+
+    fn can_toggle_selection_command(&self) -> bool {
+        self.current_package().is_some()
+    }
+
+    fn can_select_all_command(&self) -> bool {
+        !self.filtered.is_empty()
+    }
+
+    fn can_prepare_command(&self, action: TaskQueueAction) -> bool {
+        let targets = self.collect_action_targets();
+        !targets.is_empty()
+            && targets
+                .iter()
+                .any(|package| Self::is_valid_target(action, package))
+    }
+
+    fn can_refresh_command(&self) -> bool {
+        !self.loading
+    }
+
+    fn can_toggle_queue_command(&self) -> bool {
+        !self.tasks.is_empty()
+    }
+
+    fn can_cancel_selected_task_command(&self) -> bool {
+        self.queue_focus_active()
+            && self
+                .tasks
+                .get(self.task_cursor)
+                .is_some_and(|task| task.status == TaskQueueStatus::Queued)
+    }
+
+    fn can_retry_selected_task_command(&self) -> bool {
+        self.queue_focus_active()
+            && self
+                .tasks
+                .get(self.task_cursor)
+                .is_some_and(|task| task.status == TaskQueueStatus::Failed)
+    }
+
+    fn queue_log_max_scroll(&self) -> usize {
+        let Some(task) = self.tasks.get(self.task_cursor) else {
+            return 0;
+        };
+        self.task_logs
+            .get(&task.id)
+            .map(|logs| logs.len().saturating_sub(1))
+            .unwrap_or(0)
+    }
+
+    fn can_queue_log_older_command(&self) -> bool {
+        self.queue_focus_active() && self.task_log_scroll < self.queue_log_max_scroll()
+    }
+
+    fn can_queue_log_newer_command(&self) -> bool {
+        self.queue_focus_active() && self.task_log_scroll > 0
+    }
+
     fn set_source_by_index(&mut self, index: usize) {
+        let visible = self.visible_sources();
         if index == 0 {
             self.source = None;
-        } else if let Some(source) = self.available_sources.get(index.saturating_sub(1)).copied() {
+        } else if let Some(source) = visible.get(index.saturating_sub(1)).copied() {
             self.source = Some(source);
         }
         self.apply_filters();
@@ -261,26 +621,41 @@ impl App {
         let mut n_installed = 0usize;
         let mut n_updates = 0usize;
 
+        let mut per_source: HashMap<PackageSource, (usize, usize)> = HashMap::new();
+
         for package in &self.packages {
             n_all += 1;
-            if matches!(
+            let entry = per_source.entry(package.source).or_insert((0, 0));
+            let is_installed = matches!(
                 package.status,
                 PackageStatus::Installed
                     | PackageStatus::UpdateAvailable
                     | PackageStatus::Installing
                     | PackageStatus::Removing
                     | PackageStatus::Updating
-            ) {
-                n_installed += 1;
-            }
-            if matches!(
+            );
+            let is_update = matches!(
                 package.status,
                 PackageStatus::UpdateAvailable | PackageStatus::Updating
-            ) {
+            );
+            if is_installed {
+                n_installed += 1;
+                entry.0 += 1;
+            }
+            if is_update {
                 n_updates += 1;
+                entry.1 += 1;
             }
         }
         self.filter_counts = [n_all, n_installed, n_updates];
+        self.source_counts = per_source;
+
+        // Reset source if it's not visible under the current filter
+        if let Some(source) = self.source {
+            if !self.visible_sources().contains(&source) {
+                self.source = None;
+            }
+        }
 
         let query = self.search.to_lowercase();
         self.filtered = self
@@ -783,16 +1158,7 @@ impl App {
     }
 
     fn queue_log_scroll_up(&mut self) {
-        let Some(task) = self.tasks.get(self.task_cursor) else {
-            self.task_log_scroll = 0;
-            return;
-        };
-        let max_scroll = self
-            .task_logs
-            .get(&task.id)
-            .map(|logs| logs.len().saturating_sub(1))
-            .unwrap_or(0);
-        self.task_log_scroll = (self.task_log_scroll + 1).min(max_scroll);
+        self.task_log_scroll = (self.task_log_scroll + 1).min(self.queue_log_max_scroll());
     }
 
     fn queue_log_scroll_down(&mut self) {
@@ -1017,11 +1383,11 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') => {
+            KeyCode::Char('q') if self.command_enabled(CommandId::Quit) => {
                 self.should_quit = true;
                 return;
             }
-            KeyCode::Char('?') => {
+            KeyCode::Char('?') if self.command_enabled(CommandId::ShowHelp) => {
                 self.showing_help = true;
                 return;
             }
@@ -1087,7 +1453,7 @@ impl App {
 
         match key.code {
             KeyCode::Tab => {
-                if !self.compact && !self.queue_expanded {
+                if self.command_enabled(CommandId::CycleFocus) {
                     self.focus = match self.focus {
                         Focus::Sources => Focus::Packages,
                         Focus::Packages | Focus::Queue => Focus::Sources,
@@ -1344,6 +1710,82 @@ impl App {
     }
 }
 
+fn command_always_enabled(_: &App) -> bool {
+    true
+}
+
+fn command_cycle_focus_enabled(app: &App) -> bool {
+    app.can_cycle_focus_command()
+}
+
+fn command_move_up_enabled(app: &App) -> bool {
+    app.can_move_up_command()
+}
+
+fn command_move_down_enabled(app: &App) -> bool {
+    app.can_move_down_command()
+}
+
+fn command_move_top_enabled(app: &App) -> bool {
+    app.can_move_top_command()
+}
+
+fn command_move_bottom_enabled(app: &App) -> bool {
+    app.can_move_bottom_command()
+}
+
+fn command_page_up_enabled(app: &App) -> bool {
+    app.can_page_up_command()
+}
+
+fn command_page_down_enabled(app: &App) -> bool {
+    app.can_page_down_command()
+}
+
+fn command_toggle_selection_enabled(app: &App) -> bool {
+    app.can_toggle_selection_command()
+}
+
+fn command_select_all_enabled(app: &App) -> bool {
+    app.can_select_all_command()
+}
+
+fn command_install_enabled(app: &App) -> bool {
+    app.can_prepare_command(TaskQueueAction::Install)
+}
+
+fn command_remove_enabled(app: &App) -> bool {
+    app.can_prepare_command(TaskQueueAction::Remove)
+}
+
+fn command_update_enabled(app: &App) -> bool {
+    app.can_prepare_command(TaskQueueAction::Update)
+}
+
+fn command_refresh_enabled(app: &App) -> bool {
+    app.can_refresh_command()
+}
+
+fn command_toggle_queue_enabled(app: &App) -> bool {
+    app.can_toggle_queue_command()
+}
+
+fn command_queue_cancel_enabled(app: &App) -> bool {
+    app.can_cancel_selected_task_command()
+}
+
+fn command_queue_retry_enabled(app: &App) -> bool {
+    app.can_retry_selected_task_command()
+}
+
+fn command_queue_log_older_enabled(app: &App) -> bool {
+    app.can_queue_log_older_command()
+}
+
+fn command_queue_log_newer_enabled(app: &App) -> bool {
+    app.can_queue_log_newer_command()
+}
+
 pub fn action_label(action: TaskQueueAction) -> &'static str {
     match action {
         TaskQueueAction::Install => "Install",
@@ -1459,6 +1901,105 @@ mod tests {
 
     fn ctrl(code: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn command_registry_has_metadata_and_required_coverage() {
+        let registry = App::command_registry();
+
+        assert!(!registry.is_empty());
+        assert!(registry
+            .iter()
+            .all(|command| !command.label.trim().is_empty()));
+        assert!(registry
+            .iter()
+            .all(|command| !command.shortcut.trim().is_empty()));
+        assert!(registry
+            .iter()
+            .any(|command| command.id == CommandId::MoveDown));
+        assert!(registry
+            .iter()
+            .any(|command| command.id == CommandId::FilterAll));
+        assert!(registry
+            .iter()
+            .any(|command| command.id == CommandId::QueueCancel));
+        assert!(registry
+            .iter()
+            .any(|command| command.id == CommandId::ShowHelp));
+    }
+
+    #[test]
+    fn command_enabled_reflects_navigation_and_actions() {
+        let mut app = test_app();
+
+        assert!(app.command_enabled(CommandId::CycleFocus));
+        app.compact = true;
+        assert!(!app.command_enabled(CommandId::CycleFocus));
+
+        app.compact = false;
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::NotInstalled,
+        )];
+        app.apply_filters();
+
+        assert!(app.command_enabled(CommandId::ToggleSelection));
+        assert!(app.command_enabled(CommandId::Install));
+        assert!(!app.command_enabled(CommandId::Remove));
+        assert!(!app.command_enabled(CommandId::Update));
+
+        app.packages[0].status = PackageStatus::UpdateAvailable;
+        app.apply_filters();
+
+        assert!(app.command_enabled(CommandId::Remove));
+        assert!(app.command_enabled(CommandId::Update));
+    }
+
+    #[test]
+    fn queue_command_enablement_follows_selected_task_state() {
+        let mut app = test_app();
+        assert!(!app.command_enabled(CommandId::ToggleQueue));
+
+        let queued = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:b".into(),
+            "b".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("err".into());
+
+        app.tasks = vec![queued.clone(), failed.clone()];
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        assert!(app.command_enabled(CommandId::ToggleQueue));
+
+        app.task_cursor = 0;
+        assert!(app.command_enabled(CommandId::QueueCancel));
+        assert!(!app.command_enabled(CommandId::QueueRetry));
+
+        app.task_cursor = 1;
+        assert!(!app.command_enabled(CommandId::QueueCancel));
+        assert!(app.command_enabled(CommandId::QueueRetry));
+
+        app.task_logs.insert(
+            failed.id.clone(),
+            VecDeque::from(vec!["one".to_string(), "two".to_string()]),
+        );
+        assert!(app.command_enabled(CommandId::QueueLogOlder));
+        assert!(!app.command_enabled(CommandId::QueueLogNewer));
+
+        app.task_log_scroll = 1;
+        assert!(!app.command_enabled(CommandId::QueueLogOlder));
+        assert!(app.command_enabled(CommandId::QueueLogNewer));
     }
 
     #[test]
