@@ -24,7 +24,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let queue_height = if app.should_show_queue_bar() { 1 } else { 0 };
     let constraints = vec![
-        Constraint::Length(1),
+        Constraint::Length(2),
         Constraint::Min(1),
         Constraint::Length(queue_height),
         Constraint::Length(1),
@@ -34,7 +34,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .constraints(constraints)
         .split(area);
 
-    draw_filter_bar(frame, app, chunks[0]);
+    let header_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(chunks[0]);
+    draw_filter_bar(frame, app, header_chunks[0]);
+    draw_status_legend(frame, header_chunks[1]);
     draw_main_content(frame, app, chunks[1]);
 
     let footer_chunk = if queue_height == 1 {
@@ -140,6 +145,21 @@ fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     let line = compose_left_right(left, right, area.width as usize);
     let paragraph = Paragraph::new(line).style(header_bar());
     frame.render_widget(paragraph, area);
+}
+
+fn draw_status_legend(frame: &mut Frame, area: Rect) {
+    let legend = Line::from(vec![
+        Span::styled("Status ", footer_label()),
+        Span::styled(" ✓ ", badge_installed()),
+        Span::styled("installed  ", muted()),
+        Span::styled(" ↑ ", badge_update()),
+        Span::styled("updates  ", muted()),
+        Span::styled(" ⟳ ", badge_progress()),
+        Span::styled("in-progress  ", muted()),
+        Span::styled(" ○ ", badge_not_installed()),
+        Span::styled("available", muted()),
+    ]);
+    frame.render_widget(Paragraph::new(legend).style(header_bar()), area);
 }
 
 fn render_filter_tab(
@@ -326,11 +346,14 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
     for idx in start..end {
         let selected_row = idx == selected;
         let (label, label_style) = if idx == 0 {
-            let count_str = match app.filter {
-                Filter::All => format!(" {}", app.filter_counts[0]),
-                Filter::Installed => format!(" {}", app.filter_counts[1]),
-                Filter::Updates => format!(" {}", app.filter_counts[2]),
-            };
+            let count_str = source_count_label(
+                app.filter,
+                (
+                    app.filter_counts[0],
+                    app.filter_counts[1],
+                    app.filter_counts[2],
+                ),
+            );
             (
                 format!("All{}", count_str),
                 if selected_row { accent() } else { text() },
@@ -338,11 +361,7 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             let source = visible[idx - 1];
             let counts = app.source_counts.get(&source).copied().unwrap_or((0, 0, 0));
-            let count_str = match app.filter {
-                Filter::All => format!(" {}", counts.0),
-                Filter::Installed => format!(" {}", counts.1),
-                Filter::Updates => format!(" {}", counts.2),
-            };
+            let count_str = source_count_label(app.filter, counts);
             (
                 format!("{}{}", source, count_str),
                 if selected_row {
@@ -374,6 +393,20 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
             }),
             &mut scrollbar_state,
         );
+    }
+}
+
+fn source_count_label(filter: Filter, counts: (usize, usize, usize)) -> String {
+    match filter {
+        Filter::All => {
+            if counts.2 > 0 {
+                format!(" {} (+{})", counts.0, counts.2)
+            } else {
+                format!(" {}", counts.0)
+            }
+        }
+        Filter::Installed => format!(" {}", counts.1),
+        Filter::Updates => format!(" {}", counts.2),
     }
 }
 
@@ -602,6 +635,7 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
     let (queued, running, completed, failed, cancelled) = app.queue_counts();
     let total = app.tasks.len();
     let done = completed + failed + cancelled;
+    let performance_hint = queue_performance_hint(&app.tasks, total.saturating_sub(done));
 
     if running > 0 {
         let active_label = app
@@ -616,14 +650,13 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             0.0
         };
-        let label_text = if failed > 0 {
-            format!(
-                "▶ {} ({}/{}) · {} failed  [l]",
-                active_label, progressed, total, failed
-            )
-        } else {
-            format!("▶ {} ({}/{})  [l]", active_label, progressed, total)
-        };
+        let label_text = build_running_queue_label(
+            &active_label,
+            progressed,
+            total,
+            failed,
+            performance_hint.as_deref(),
+        );
         let gauge_style = if failed > 0 {
             gauge_failed()
         } else {
@@ -631,30 +664,159 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
         };
         let gauge = Gauge::default()
             .gauge_style(gauge_style)
-            .label(Span::styled(label_text, text()))
+            .label(Span::styled(
+                truncate_to_width(&label_text, area.width.saturating_sub(1) as usize),
+                text(),
+            ))
             .ratio(ratio);
         frame.render_widget(gauge, area);
     } else {
-        let (message, style) = if queued > 0 {
-            (format!("◻ {} tasks queued  [l expand]", queued), muted())
-        } else if failed > 0 {
-            (
-                format!(
-                    "⚠ {} done, {} failed  [l details]",
-                    completed + cancelled,
-                    failed
-                ),
-                error(),
-            )
-        } else {
-            (
-                format!("✓ {}/{} complete  [l details]", done, total),
-                success(),
-            )
+        let (message, state) = build_idle_queue_label(
+            queued,
+            completed,
+            cancelled,
+            failed,
+            done,
+            total,
+            performance_hint.as_deref(),
+        );
+        let style = match state {
+            QueueBarState::Queued => muted(),
+            QueueBarState::Failed => error(),
+            QueueBarState::Complete => success(),
         };
         let line = truncate_to_width(&message, area.width as usize);
         frame.render_widget(Paragraph::new(line).style(style), area);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueBarState {
+    Queued,
+    Failed,
+    Complete,
+}
+
+fn build_running_queue_label(
+    active_label: &str,
+    progressed: usize,
+    total: usize,
+    failed: usize,
+    performance_hint: Option<&str>,
+) -> String {
+    let mut text_value = if failed > 0 {
+        format!(
+            "▶ {} ({}/{}) · {} failed",
+            active_label, progressed, total, failed
+        )
+    } else {
+        format!("▶ {} ({}/{})", active_label, progressed, total)
+    };
+    if let Some(hint) = performance_hint {
+        text_value.push_str(" • ");
+        text_value.push_str(hint);
+    }
+    text_value.push_str("  [l]");
+    text_value
+}
+
+fn build_idle_queue_label(
+    queued: usize,
+    completed: usize,
+    cancelled: usize,
+    failed: usize,
+    done: usize,
+    total: usize,
+    performance_hint: Option<&str>,
+) -> (String, QueueBarState) {
+    if queued > 0 {
+        let mut text_value = format!("◻ {} tasks queued", queued);
+        if let Some(hint) = performance_hint {
+            text_value.push_str(" • ");
+            text_value.push_str(hint);
+        }
+        text_value.push_str("  [l expand]");
+        return (text_value, QueueBarState::Queued);
+    }
+
+    if failed > 0 {
+        let mut text_value = format!("⚠ {} done, {} failed", completed + cancelled, failed);
+        if let Some(hint) = performance_hint {
+            text_value.push_str(" • ");
+            text_value.push_str(hint);
+        }
+        text_value.push_str("  [l details]");
+        return (text_value, QueueBarState::Failed);
+    }
+
+    let mut text_value = format!("✓ {}/{} complete", done, total);
+    if let Some(hint) = performance_hint {
+        text_value.push_str(" • ");
+        text_value.push_str(hint);
+    }
+    text_value.push_str("  [l details]");
+    (text_value, QueueBarState::Complete)
+}
+
+fn queue_performance_hint(tasks: &[TaskQueueEntry], remaining: usize) -> Option<String> {
+    const MAX_SAMPLES: usize = 8;
+    const MIN_SAMPLES: usize = 2;
+
+    let mut duration_secs = Vec::new();
+    for task in tasks.iter().rev() {
+        if task.status != TaskQueueStatus::Completed {
+            continue;
+        }
+        let (Some(started_at), Some(completed_at)) =
+            (task.started_at.as_ref(), task.completed_at.as_ref())
+        else {
+            continue;
+        };
+        let elapsed_ms = completed_at
+            .signed_duration_since(*started_at)
+            .num_milliseconds();
+        if elapsed_ms <= 0 {
+            continue;
+        }
+        duration_secs.push(elapsed_ms as f64 / 1000.0);
+        if duration_secs.len() >= MAX_SAMPLES {
+            break;
+        }
+    }
+
+    if duration_secs.len() < MIN_SAMPLES {
+        return None;
+    }
+
+    let avg_secs = duration_secs.iter().sum::<f64>() / duration_secs.len() as f64;
+    if avg_secs <= 0.0 {
+        return None;
+    }
+
+    let throughput = 60.0 / avg_secs;
+    if remaining == 0 {
+        return Some(format!("{:.1} t/m", throughput));
+    }
+
+    let eta_secs = (avg_secs * remaining as f64).round().max(1.0) as u64;
+    Some(format!(
+        "{:.1} t/m • ETA {}",
+        throughput,
+        format_eta_seconds(eta_secs)
+    ))
+}
+
+fn format_eta_seconds(total_seconds: u64) -> String {
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        return format!("{}h{:02}m", hours, minutes);
+    }
+    if minutes > 0 {
+        return format!("{}m{:02}s", minutes, seconds);
+    }
+    format!("{}s", seconds)
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
@@ -1084,7 +1246,13 @@ fn wrap_text(text_value: &str, max_width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::app::App;
     use super::*;
+    use crate::backend::PackageManager;
+    use crate::models::PackageSource;
+    use chrono::{Duration, Local};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     #[test]
     fn truncate_middle_preserves_edges() {
@@ -1103,5 +1271,87 @@ mod tests {
         assert_eq!(task_log_window(10, 4, 0), (6, 10, 0));
         assert_eq!(task_log_window(10, 4, 3), (3, 7, 3));
         assert_eq!(task_log_window(3, 8, 5), (0, 3, 0));
+    }
+
+    #[test]
+    fn source_count_label_snapshots() {
+        assert_eq!(source_count_label(Filter::All, (42, 31, 3)), " 42 (+3)");
+        assert_eq!(source_count_label(Filter::All, (42, 31, 0)), " 42");
+        assert_eq!(source_count_label(Filter::Installed, (42, 31, 3)), " 31");
+        assert_eq!(source_count_label(Filter::Updates, (42, 31, 3)), " 3");
+    }
+
+    #[test]
+    fn queue_running_label_snapshot() {
+        let line = build_running_queue_label("Update vim", 3, 8, 1, Some("2.0 t/m • ETA 2m30s"));
+        assert_eq!(
+            line,
+            "▶ Update vim (3/8) · 1 failed • 2.0 t/m • ETA 2m30s  [l]"
+        );
+    }
+
+    #[test]
+    fn queue_idle_label_snapshots() {
+        let (queued_line, queued_state) =
+            build_idle_queue_label(4, 0, 0, 0, 0, 4, Some("2.0 t/m • ETA 2m00s"));
+        assert_eq!(queued_state, QueueBarState::Queued);
+        assert_eq!(
+            queued_line,
+            "◻ 4 tasks queued • 2.0 t/m • ETA 2m00s  [l expand]"
+        );
+
+        let (failed_line, failed_state) =
+            build_idle_queue_label(0, 2, 1, 1, 4, 5, Some("1.0 t/m • ETA 1m00s"));
+        assert_eq!(failed_state, QueueBarState::Failed);
+        assert_eq!(
+            failed_line,
+            "⚠ 3 done, 1 failed • 1.0 t/m • ETA 1m00s  [l details]"
+        );
+
+        let (done_line, done_state) = build_idle_queue_label(0, 3, 0, 0, 3, 3, None);
+        assert_eq!(done_state, QueueBarState::Complete);
+        assert_eq!(done_line, "✓ 3/3 complete  [l details]");
+    }
+
+    #[test]
+    fn queue_performance_hint_snapshot() {
+        let now = Local::now();
+        let make_completed = |id: &str, started_secs_ago: i64, duration_secs: i64| TaskQueueEntry {
+            id: id.to_string(),
+            action: TaskQueueAction::Update,
+            package_id: id.to_string(),
+            package_name: id.to_string(),
+            package_source: PackageSource::Apt,
+            status: TaskQueueStatus::Completed,
+            queued_at: now - Duration::seconds(started_secs_ago + 1),
+            started_at: Some(now - Duration::seconds(started_secs_ago)),
+            completed_at: Some(now - Duration::seconds(started_secs_ago - duration_secs)),
+            error: None,
+        };
+
+        let tasks = vec![
+            make_completed("a", 120, 30),
+            make_completed("b", 60, 30),
+            make_completed("c", 30, 30),
+        ];
+        assert_eq!(
+            queue_performance_hint(&tasks, 3).as_deref(),
+            Some("2.0 t/m • ETA 1m30s")
+        );
+        assert_eq!(
+            queue_performance_hint(&tasks, 0).as_deref(),
+            Some("2.0 t/m")
+        );
+    }
+
+    #[test]
+    fn queue_performance_hint_requires_sample_size() {
+        let app = App::new(
+            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(Mutex::new(None)),
+            None,
+            None,
+        );
+        assert_eq!(queue_performance_hint(&app.tasks, 4), None);
     }
 }
