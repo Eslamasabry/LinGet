@@ -12,11 +12,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Margin, Rect},
-    Terminal,
-};
+use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +28,15 @@ pub const MIN_HEIGHT: u16 = 15;
 const HALF_PAGE: usize = 10;
 const MAX_TASK_LOG_LINES: usize = 500;
 const QUEUE_AUTO_HIDE_AFTER: Duration = Duration::from_secs(10);
+
+fn rect_contains(rect: Rect, pos: (u16, u16)) -> bool {
+    rect.width > 0
+        && rect.height > 0
+        && pos.0 >= rect.x
+        && pos.0 < rect.x + rect.width
+        && pos.1 >= rect.y
+        && pos.1 < rect.y + rect.height
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filter {
@@ -288,6 +293,8 @@ pub struct App {
     pub task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
     pub refresh_after_idle: bool,
     pub cursor_anchor_id: Option<String>,
+    pub last_click: Option<(u16, u16, Instant)>,
+    pub deferred_confirm: Option<(Vec<Package>, TaskQueueAction)>,
 }
 
 impl App {
@@ -334,6 +341,8 @@ impl App {
             task_events_tx,
             refresh_after_idle: false,
             cursor_anchor_id: None,
+            last_click: None,
+            deferred_confirm: None,
         }
     }
 
@@ -1567,6 +1576,186 @@ impl App {
         self.handle_normal_key(key).await;
     }
 
+    pub fn handle_mouse(&mut self, event: MouseEvent, regions: &ui::LayoutRegions) {
+        const SCROLL_STEP: usize = 3;
+        const DOUBLE_CLICK_MS: u128 = 400;
+
+        match event.kind {
+            MouseEventKind::ScrollUp => {
+                let pos = (event.column, event.row);
+                if rect_contains(regions.packages, pos) {
+                    self.focus = Focus::Packages;
+                    for _ in 0..SCROLL_STEP {
+                        self.prev_package();
+                    }
+                } else if rect_contains(regions.sources, pos) {
+                    self.focus = Focus::Sources;
+                    self.prev_source();
+                } else if rect_contains(regions.expanded_queue, pos) {
+                    self.queue_log_scroll_up();
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                let pos = (event.column, event.row);
+                if rect_contains(regions.packages, pos) {
+                    self.focus = Focus::Packages;
+                    for _ in 0..SCROLL_STEP {
+                        self.next_package();
+                    }
+                } else if rect_contains(regions.sources, pos) {
+                    self.focus = Focus::Sources;
+                    self.next_source();
+                } else if rect_contains(regions.expanded_queue, pos) {
+                    self.queue_log_scroll_down();
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let col = event.column;
+                let row = event.row;
+                let pos = (col, row);
+
+                // Double-click detection
+                let is_double = self.last_click.take().is_some_and(|(lc, lr, lt)| {
+                    lc == col && lr == row && lt.elapsed().as_millis() < DOUBLE_CLICK_MS
+                });
+                self.last_click = Some((col, row, Instant::now()));
+
+                // Overlays first
+                if self.showing_help {
+                    self.showing_help = false;
+                    return;
+                }
+                if let Some(_confirming) = &self.confirming {
+                    self.handle_mouse_confirm(col, row, &regions.footer);
+                    return;
+                }
+
+                if rect_contains(regions.header, pos) {
+                    self.handle_mouse_header(col);
+                } else if rect_contains(regions.sources, pos) {
+                    self.handle_mouse_sources(row, &regions.sources);
+                } else if rect_contains(regions.packages, pos) {
+                    self.handle_mouse_packages(col, row, is_double, &regions.packages);
+                } else if rect_contains(regions.details, pos) {
+                    self.focus = Focus::Packages;
+                } else if rect_contains(regions.queue_bar, pos) {
+                    self.toggle_queue_expanded();
+                } else if rect_contains(regions.expanded_queue, pos) {
+                    self.handle_mouse_queue(row, &regions.expanded_queue);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_header(&mut self, col: u16) {
+        // Logo "◆ LinGet " takes ~10 cols, then tabs follow
+        // Each tab is roughly 12-15 chars wide; use approximate ranges
+        let tab_start: u16 = 10;
+        let tab_width: u16 = if self.compact { 10 } else { 14 };
+
+        if col >= tab_start && col < tab_start + tab_width {
+            self.filter = Filter::All;
+            self.apply_filters();
+        } else if col >= tab_start + tab_width && col < tab_start + tab_width * 2 {
+            self.filter = Filter::Installed;
+            self.apply_filters();
+        } else if col >= tab_start + tab_width * 2 && col < tab_start + tab_width * 3 {
+            self.filter = Filter::Updates;
+            self.apply_filters();
+        }
+    }
+
+    fn handle_mouse_sources(&mut self, row: u16, sources_rect: &Rect) {
+        self.focus = Focus::Sources;
+        // Account for border (1 row top)
+        let inner_y = row.saturating_sub(sources_rect.y + 1) as usize;
+        let visible = self.visible_sources();
+        let total = visible.len() + 1;
+        let selected = self.source_index();
+        let visible_rows = sources_rect.height.saturating_sub(2) as usize;
+        let start = ui::window_start(total, visible_rows, selected);
+        let clicked_index = start + inner_y;
+        if clicked_index < total {
+            self.set_source_by_index(clicked_index);
+        }
+    }
+
+    fn handle_mouse_packages(&mut self, col: u16, row: u16, is_double: bool, packages_rect: &Rect) {
+        self.focus = Focus::Packages;
+        // Header row (border + table header) = 2 rows from top of rect
+        let inner_y = row.saturating_sub(packages_rect.y + 2) as usize;
+        let visible_rows = packages_rect.height.saturating_sub(4) as usize;
+        let start = ui::window_start(self.filtered.len(), visible_rows.max(1), self.cursor);
+        let clicked_index = start + inner_y;
+
+        if clicked_index >= self.filtered.len() {
+            return;
+        }
+
+        // Check if click is on the selection marker column (first ~3 cols inside border)
+        let inner_col = col.saturating_sub(packages_rect.x + 1);
+        if inner_col < 2 {
+            // Toggle selection on clicked row
+            self.cursor = clicked_index;
+            self.toggle_selection_on_cursor();
+            return;
+        }
+
+        self.cursor = clicked_index;
+
+        if is_double {
+            if let Some(package) = self.current_package().cloned() {
+                let action = match package.status {
+                    PackageStatus::NotInstalled => Some(TaskQueueAction::Install),
+                    PackageStatus::UpdateAvailable => Some(TaskQueueAction::Update),
+                    PackageStatus::Installed => Some(TaskQueueAction::Remove),
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    self.prepare_action(action);
+                }
+            }
+        }
+    }
+
+    fn handle_mouse_queue(&mut self, row: u16, queue_rect: &Rect) {
+        self.focus = Focus::Queue;
+        let inner_y = row.saturating_sub(queue_rect.y + 1) as usize;
+        let visible = queue_rect.height.saturating_sub(2) as usize;
+        let start = ui::window_start(self.tasks.len(), visible.max(1), self.task_cursor);
+        let clicked_index = start + inner_y;
+        if clicked_index < self.tasks.len() {
+            self.set_task_cursor(clicked_index);
+        }
+    }
+
+    fn handle_mouse_confirm(&mut self, col: u16, _row: u16, footer_rect: &Rect) {
+        // Confirm footer: "Label  [y] yes  [n] cancel"
+        // Rough heuristic: scan for [y] and [n] positions
+        let inner_col = col.saturating_sub(footer_rect.x) as usize;
+        if let Some(confirming) = &self.confirming {
+            let label_len = confirming.label.len() + 2;
+            // [y] region
+            if inner_col >= label_len && inner_col < label_len + 8 {
+                // Simulate 'y'
+                let action = self.confirming.take();
+                if let Some(action) = action {
+                    let packages = action.packages;
+                    let task_action = action.action;
+                    // Can't await here; store for deferred execution
+                    self.confirming = None;
+                    // Re-wrap: use a sync-compatible approach
+                    self.deferred_confirm = Some((packages, task_action));
+                }
+            } else if inner_col >= label_len + 8 {
+                // [n] region
+                self.confirming = None;
+                self.set_status("Cancelled", true);
+            }
+        }
+    }
+
     pub async fn queue_tasks(&mut self, packages: Vec<Package>, action: TaskQueueAction) -> usize {
         let mut queued = 0usize;
         for package in packages {
@@ -1807,14 +1996,14 @@ pub fn action_label(action: TaskQueueAction) -> &'static str {
 pub async fn run() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         default_hook(info);
     }));
 
@@ -1833,7 +2022,11 @@ pub async fn run() -> Result<()> {
 
     let _ = std::panic::take_hook();
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result
@@ -1859,6 +2052,14 @@ async fn run_app(
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     app.handle_key(key).await;
+                }
+                Event::Mouse(mouse) => {
+                    let regions = ui::compute_layout(app, Rect::new(0, 0, size.width, size.height));
+                    app.handle_mouse(mouse, &regions);
+                    // Process deferred confirm (needs async)
+                    if let Some((pkgs, action)) = app.deferred_confirm.take() {
+                        app.queue_tasks(pkgs, action).await;
+                    }
                 }
                 _ => {}
             }

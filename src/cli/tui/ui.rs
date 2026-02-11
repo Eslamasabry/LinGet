@@ -15,6 +15,100 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+/// Regions of the TUI layout for mouse hit-testing.
+#[derive(Debug, Default)]
+pub struct LayoutRegions {
+    pub header: Rect,
+    pub sources: Rect,
+    pub packages: Rect,
+    pub details: Rect,
+    pub queue_bar: Rect,
+    pub expanded_queue: Rect,
+    pub footer: Rect,
+}
+
+/// Compute layout regions matching the draw logic, for mouse hit-testing.
+pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
+    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        return LayoutRegions::default();
+    }
+
+    let queue_height = if app.should_show_queue_bar() { 1 } else { 0 };
+    let constraints = vec![
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(queue_height),
+        Constraint::Length(1),
+    ];
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+
+    let header = chunks[0];
+    let main_area = chunks[1];
+    let (queue_bar, footer) = if queue_height == 1 {
+        (chunks[2], chunks[3])
+    } else {
+        (Rect::default(), chunks[2])
+    };
+
+    let (sources, packages, details, expanded_queue) = if app.compact {
+        compute_compact_regions(app, main_area)
+    } else {
+        compute_full_regions(app, main_area)
+    };
+
+    LayoutRegions {
+        header,
+        sources,
+        packages,
+        details,
+        queue_bar,
+        expanded_queue,
+        footer,
+    }
+}
+
+fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(18), Constraint::Min(1)])
+        .split(area);
+
+    let sources = columns[0];
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(columns[1]);
+
+    let packages = right[0];
+    if app.queue_expanded {
+        (sources, packages, Rect::default(), right[1])
+    } else {
+        (sources, packages, right[1], Rect::default())
+    }
+}
+
+fn compute_compact_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
+    let sources = Rect::default(); // hidden in compact mode
+    if app.queue_expanded {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(area);
+        (sources, chunks[0], Rect::default(), chunks[1])
+    } else if area.height < 4 {
+        (sources, area, Rect::default(), Rect::default())
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(2)])
+            .split(area);
+        (sources, chunks[0], chunks[1], Rect::default())
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
