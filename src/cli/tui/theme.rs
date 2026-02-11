@@ -1,5 +1,6 @@
 use crate::models::PackageSource;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::border;
 
 pub mod palette {
     use super::*;
@@ -21,7 +22,17 @@ pub mod palette {
     pub const LAVENDER: Color = Color::Rgb(189, 147, 249);
     pub const PINK: Color = Color::Rgb(255, 121, 198);
     pub const SKY: Color = Color::Rgb(137, 220, 235);
+
+    pub const SURFACE: Color = Color::Rgb(40, 42, 54);
+    pub const HEADER_BG: Color = Color::Rgb(30, 32, 46);
+    pub const BADGE_INSTALLED_BG: Color = Color::Rgb(30, 60, 20);
+    pub const BADGE_UPDATE_BG: Color = Color::Rgb(60, 55, 10);
+    pub const BADGE_NOT_INSTALLED_BG: Color = Color::Rgb(50, 50, 50);
+    pub const BADGE_PROGRESS_BG: Color = Color::Rgb(20, 50, 60);
+    pub const TAB_ACTIVE_BG: Color = Color::Rgb(55, 60, 80);
 }
+
+pub const ROUNDED: border::Set = border::ROUNDED;
 
 pub fn text() -> Style {
     Style::default().fg(palette::WHITE)
@@ -87,7 +98,7 @@ pub fn loading() -> Style {
 pub fn table_header() -> Style {
     Style::default()
         .fg(palette::CYAN)
-        .add_modifier(Modifier::BOLD)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
 pub fn italic_status() -> Style {
@@ -104,6 +115,60 @@ pub fn section_header() -> Style {
     Style::default()
         .fg(palette::MAGENTA)
         .add_modifier(Modifier::BOLD)
+}
+
+pub fn header_bar() -> Style {
+    Style::default().bg(palette::HEADER_BG)
+}
+
+pub fn tab_active() -> Style {
+    Style::default()
+        .fg(palette::CYAN)
+        .bg(palette::TAB_ACTIVE_BG)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn badge_installed() -> Style {
+    Style::default()
+        .fg(palette::GREEN)
+        .bg(palette::BADGE_INSTALLED_BG)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn badge_update() -> Style {
+    Style::default()
+        .fg(palette::YELLOW)
+        .bg(palette::BADGE_UPDATE_BG)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn badge_not_installed() -> Style {
+    Style::default()
+        .fg(palette::DARK_GRAY)
+        .bg(palette::BADGE_NOT_INSTALLED_BG)
+}
+
+pub fn badge_progress() -> Style {
+    Style::default()
+        .fg(palette::CYAN)
+        .bg(palette::BADGE_PROGRESS_BG)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn gauge_bar() -> Style {
+    Style::default().fg(palette::CYAN).bg(palette::SURFACE)
+}
+
+pub fn gauge_failed() -> Style {
+    Style::default().fg(palette::RED).bg(palette::SURFACE)
+}
+
+pub fn scrollbar_style() -> Style {
+    Style::default().fg(palette::DARK_GRAY)
+}
+
+pub fn scrollbar_thumb() -> Style {
+    Style::default().fg(palette::CYAN)
 }
 
 pub fn source_color(source: PackageSource) -> Style {

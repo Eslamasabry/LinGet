@@ -7,7 +7,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap},
+    widgets::{
+        Block, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table, Wrap,
+    },
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -48,7 +51,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_too_small(frame: &mut Frame, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title(" LinGet ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED)
+        .title(" LinGet ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -66,7 +72,23 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let mut left: Vec<Span> = vec![Span::styled("LinGet  ", accent())];
+    let mut left: Vec<Span> = vec![
+        Span::styled(
+            " ◆ ",
+            Style::default()
+                .fg(palette::CYAN)
+                .bg(palette::HEADER_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "LinGet ",
+            Style::default()
+                .fg(palette::WHITE)
+                .bg(palette::HEADER_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", header_bar()),
+    ];
     let installed_label = if app.compact { "Inst" } else { "Installed" };
     let updates_label = if app.compact { "Upd" } else { "Updates" };
 
@@ -116,7 +138,7 @@ fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let line = compose_left_right(left, right, area.width as usize);
-    let paragraph = Paragraph::new(line).style(text());
+    let paragraph = Paragraph::new(line).style(header_bar());
     frame.render_widget(paragraph, area);
 }
 
@@ -127,26 +149,48 @@ fn render_filter_tab(
     active: bool,
     searching: bool,
 ) -> Vec<Span<'static>> {
-    let key_style = if active && !searching {
-        key_hint()
+    if active && !searching {
+        vec![
+            Span::styled(" ", tab_active()),
+            Span::styled(
+                key.to_string(),
+                Style::default()
+                    .fg(palette::YELLOW)
+                    .bg(palette::TAB_ACTIVE_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ", tab_active()),
+            Span::styled(label.to_string(), tab_active()),
+            Span::styled(" ", tab_active()),
+            Span::styled(count.to_string(), tab_active()),
+            Span::styled(" ", tab_active()),
+        ]
     } else {
-        dim()
-    };
-    let label_style = if active && !searching {
-        accent()
-    } else {
-        dim()
-    };
-
-    vec![
-        Span::styled("[", dim()),
-        Span::styled(key.to_string(), key_style),
-        Span::raw(" "),
-        Span::styled(label.to_string(), label_style),
-        Span::raw(" "),
-        Span::styled(count.to_string(), label_style),
-        Span::styled("]", dim()),
-    ]
+        vec![
+            Span::styled(" ", header_bar()),
+            Span::styled(
+                key.to_string(),
+                Style::default()
+                    .fg(palette::DARK_GRAY)
+                    .bg(palette::HEADER_BG),
+            ),
+            Span::styled(" ", header_bar()),
+            Span::styled(
+                label.to_string(),
+                Style::default()
+                    .fg(palette::DARK_GRAY)
+                    .bg(palette::HEADER_BG),
+            ),
+            Span::styled(" ", header_bar()),
+            Span::styled(
+                count.to_string(),
+                Style::default()
+                    .fg(palette::DARK_GRAY)
+                    .bg(palette::HEADER_BG),
+            ),
+            Span::styled(" ", header_bar()),
+        ]
+    }
 }
 
 fn compose_left_right<'a>(mut left: Vec<Span<'a>>, right: Vec<Span<'a>>, width: usize) -> Line<'a> {
@@ -256,6 +300,7 @@ fn draw_compact_content(frame: &mut Frame, app: &App, area: Rect) {
 fn panel_block(title: String, focused: bool) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
+        .border_set(ROUNDED)
         .border_style(if focused {
             border_focused()
         } else {
@@ -282,8 +327,9 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
         let selected_row = idx == selected;
         let (label, label_style) = if idx == 0 {
             let count_str = match app.filter {
+                Filter::All => format!(" {}", app.filter_counts[0]),
+                Filter::Installed => format!(" {}", app.filter_counts[1]),
                 Filter::Updates => format!(" {}", app.filter_counts[2]),
-                _ => format!(" {}", app.filter_counts[1]),
             };
             (
                 format!("All{}", count_str),
@@ -291,10 +337,11 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
             )
         } else {
             let source = visible[idx - 1];
-            let counts = app.source_counts.get(&source).copied().unwrap_or((0, 0));
+            let counts = app.source_counts.get(&source).copied().unwrap_or((0, 0, 0));
             let count_str = match app.filter {
-                Filter::Updates => format!(" {}", counts.1),
-                _ => format!(" {}", counts.0),
+                Filter::All => format!(" {}", counts.0),
+                Filter::Installed => format!(" {}", counts.1),
+                Filter::Updates => format!(" {}", counts.2),
             };
             (
                 format!("{}{}", source, count_str),
@@ -313,6 +360,21 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
+
+    if total > visible_rows {
+        let mut scrollbar_state = ScrollbarState::new(total).position(selected);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(scrollbar_style())
+            .thumb_style(scrollbar_thumb());
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(ratatui::layout::Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) {
@@ -416,7 +478,7 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
         Constraint::Min(if compact { 12 } else { 22 }),
         Constraint::Min(if compact { 10 } else { 18 }),
         Constraint::Length(10),
-        Constraint::Length(6),
+        Constraint::Length(5),
     ];
 
     let table = Table::new(rows, widths)
@@ -424,6 +486,21 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
         .block(block)
         .column_spacing(1);
     frame.render_widget(table, area);
+
+    if app.filtered.len() > visible_rows {
+        let mut scrollbar_state = ScrollbarState::new(app.filtered.len()).position(app.cursor);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(scrollbar_style())
+            .thumb_style(scrollbar_thumb());
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(ratatui::layout::Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
@@ -526,48 +603,58 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
     let total = app.tasks.len();
     let done = completed + failed + cancelled;
 
-    let (message, style) = if running > 0 && failed > 0 {
-        (
-            format!("▶ {} running · {} failed  [l]", running, failed),
-            warning(),
-        )
-    } else if running > 0 {
+    if running > 0 {
         let active_label = app
             .tasks
             .iter()
             .find(|task| task.status == TaskQueueStatus::Running)
             .map(|task| format!("{} {}", action_label(task.action), task.package_name))
             .unwrap_or_else(|| "Working".to_string());
-        (
+        let progressed = (done + running).min(total);
+        let ratio = if total > 0 {
+            (progressed as f64 / total as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let label_text = if failed > 0 {
             format!(
-                "▶ {} ({}/{}) {}  [l]",
-                active_label,
-                done + 1,
-                total,
-                progress_bar(done + 1, total, 10)
-            ),
-            loading(),
-        )
-    } else if queued > 0 {
-        (format!("◻ {} tasks queued  [l expand]", queued), muted())
-    } else if failed > 0 {
-        (
-            format!(
-                "⚠ {} done, {} failed  [l details]",
-                completed + cancelled,
-                failed
-            ),
-            error(),
-        )
+                "▶ {} ({}/{}) · {} failed  [l]",
+                active_label, progressed, total, failed
+            )
+        } else {
+            format!("▶ {} ({}/{})  [l]", active_label, progressed, total)
+        };
+        let gauge_style = if failed > 0 {
+            gauge_failed()
+        } else {
+            gauge_bar()
+        };
+        let gauge = Gauge::default()
+            .gauge_style(gauge_style)
+            .label(Span::styled(label_text, text()))
+            .ratio(ratio);
+        frame.render_widget(gauge, area);
     } else {
-        (
-            format!("✓ {}/{} complete  [l details]", done, total),
-            success(),
-        )
-    };
-
-    let line = truncate_to_width(&message, area.width as usize);
-    frame.render_widget(Paragraph::new(line).style(style), area);
+        let (message, style) = if queued > 0 {
+            (format!("◻ {} tasks queued  [l expand]", queued), muted())
+        } else if failed > 0 {
+            (
+                format!(
+                    "⚠ {} done, {} failed  [l details]",
+                    completed + cancelled,
+                    failed
+                ),
+                error(),
+            )
+        } else {
+            (
+                format!("✓ {}/{} complete  [l details]", done, total),
+                success(),
+            )
+        };
+        let line = truncate_to_width(&message, area.width as usize);
+        frame.render_widget(Paragraph::new(line).style(style), area);
+    }
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
@@ -764,6 +851,7 @@ fn draw_help_overlay(frame: &mut Frame) {
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_set(ROUNDED)
         .border_style(border_focused())
         .title(" Help ")
         .title_style(accent());
@@ -842,22 +930,13 @@ fn format_package_version(package: &Package) -> String {
 
 fn package_status_short(status: PackageStatus) -> (&'static str, Style) {
     match status {
-        PackageStatus::Installed => ("✓", success()),
-        PackageStatus::UpdateAvailable => ("↑", warning()),
-        PackageStatus::NotInstalled => ("○", dim()),
-        PackageStatus::Installing => ("⟳i", loading()),
-        PackageStatus::Removing => ("⟳x", error()),
-        PackageStatus::Updating => ("⟳u", loading()),
+        PackageStatus::Installed => (" ✓ ", badge_installed()),
+        PackageStatus::UpdateAvailable => (" ↑ ", badge_update()),
+        PackageStatus::NotInstalled => (" ○ ", badge_not_installed()),
+        PackageStatus::Installing => (" ⟳ ", badge_progress()),
+        PackageStatus::Removing => (" ⟳ ", badge_progress()),
+        PackageStatus::Updating => (" ⟳ ", badge_progress()),
     }
-}
-
-fn progress_bar(done: usize, total: usize, width: usize) -> String {
-    if total == 0 || width == 0 {
-        return String::new();
-    }
-    let filled = ((done as f32 / total as f32) * width as f32).round() as usize;
-    let filled = filled.min(width);
-    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
 pub fn window_start(total: usize, visible: usize, selected: usize) -> usize {

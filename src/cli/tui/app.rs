@@ -272,7 +272,7 @@ pub struct App {
     pub tick: u64,
 
     pub available_sources: Vec<PackageSource>,
-    pub source_counts: HashMap<PackageSource, (usize, usize)>,
+    pub source_counts: HashMap<PackageSource, (usize, usize, usize)>,
 
     pub pm: Arc<Mutex<PackageManager>>,
     pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
@@ -384,7 +384,7 @@ impl App {
                 .filter(|s| {
                     self.source_counts
                         .get(s)
-                        .is_some_and(|(_, updates)| *updates > 0)
+                        .is_some_and(|(_, _, updates)| *updates > 0)
                 })
                 .copied()
                 .collect()
@@ -621,11 +621,13 @@ impl App {
         let mut n_installed = 0usize;
         let mut n_updates = 0usize;
 
-        let mut per_source: HashMap<PackageSource, (usize, usize)> = HashMap::new();
+        let mut per_source: HashMap<PackageSource, (usize, usize, usize)> = HashMap::new();
 
         for package in &self.packages {
             n_all += 1;
-            let entry = per_source.entry(package.source).or_insert((0, 0));
+            let entry = per_source.entry(package.source).or_insert((0, 0, 0));
+            entry.0 += 1;
+
             let is_installed = matches!(
                 package.status,
                 PackageStatus::Installed
@@ -638,13 +640,14 @@ impl App {
                 package.status,
                 PackageStatus::UpdateAvailable | PackageStatus::Updating
             );
+
             if is_installed {
                 n_installed += 1;
-                entry.0 += 1;
+                entry.1 += 1;
             }
             if is_update {
                 n_updates += 1;
-                entry.1 += 1;
+                entry.2 += 1;
             }
         }
         self.filter_counts = [n_all, n_installed, n_updates];
@@ -2045,6 +2048,44 @@ mod tests {
 
         assert_eq!(app.filtered.len(), 2);
         assert_eq!(app.filter_counts[2], 2);
+    }
+
+    #[test]
+    fn apply_filters_tracks_per_source_counts_and_resets_hidden_source() {
+        let mut app = test_app();
+        app.available_sources = vec![PackageSource::Apt, PackageSource::Snap];
+        app.packages = vec![
+            make_pkg(
+                "apt-installed",
+                PackageSource::Apt,
+                PackageStatus::Installed,
+            ),
+            make_pkg(
+                "apt-missing",
+                PackageSource::Apt,
+                PackageStatus::NotInstalled,
+            ),
+            make_pkg(
+                "snap-update",
+                PackageSource::Snap,
+                PackageStatus::UpdateAvailable,
+            ),
+        ];
+        app.filter = Filter::All;
+        app.apply_filters();
+
+        assert_eq!(app.source_counts.get(&PackageSource::Apt), Some(&(2, 1, 0)));
+        assert_eq!(
+            app.source_counts.get(&PackageSource::Snap),
+            Some(&(1, 1, 1))
+        );
+
+        app.source = Some(PackageSource::Apt);
+        app.filter = Filter::Updates;
+        app.apply_filters();
+
+        assert_eq!(app.visible_sources(), vec![PackageSource::Snap]);
+        assert_eq!(app.source, None);
     }
 
     #[test]
