@@ -1,7 +1,11 @@
-use super::app::{action_label, App, Filter, Focus, MIN_HEIGHT, MIN_WIDTH};
+use super::app::{
+    action_label, App, Filter, Focus, PendingAction, PreflightRiskLevel, MIN_HEIGHT, MIN_WIDTH,
+};
 use super::theme::*;
 use super::update_center;
-use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
+#[cfg(test)]
+use crate::models::history::TaskQueueAction;
+use crate::models::history::{TaskQueueEntry, TaskQueueStatus};
 use crate::models::{Package, PackageStatus};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -27,8 +31,8 @@ pub struct LayoutRegions {
     pub expanded_queue_tasks: Rect,
     pub expanded_queue_logs: Rect,
     pub expanded_queue_hints: Rect,
-    pub footer: Rect,
     pub palette: Rect,
+    pub preflight_modal: Rect,
 }
 
 /// Compute layout regions matching the draw logic, for mouse hit-testing.
@@ -56,7 +60,7 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         .split(header);
 
     let main_area = chunks[1];
-    let (queue_bar, footer) = if queue_height == 1 {
+    let (queue_bar, _footer) = if queue_height == 1 {
         (chunks[2], chunks[3])
     } else {
         (Rect::default(), chunks[2])
@@ -81,9 +85,13 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         expanded_queue_tasks,
         expanded_queue_logs,
         expanded_queue_hints,
-        footer,
         palette: if app.showing_palette {
             palette_overlay_rect(area)
+        } else {
+            Rect::default()
+        },
+        preflight_modal: if app.confirming.is_some() {
+            preflight_overlay_rect(area)
         } else {
             Rect::default()
         },
@@ -199,6 +207,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_palette_overlay(frame, app);
     } else if app.showing_help {
         draw_help_overlay(frame);
+    } else if let Some(confirming) = &app.confirming {
+        draw_preflight_overlay(frame, app, confirming);
     }
 }
 
@@ -375,6 +385,7 @@ fn render_filter_tab(
 pub enum QueueHintAction {
     Cancel,
     Retry,
+    Remediate,
     LogOlder,
     LogNewer,
 }
@@ -452,30 +463,43 @@ pub fn header_filter_hit_test(
     None
 }
 
-pub fn confirm_footer_hit_test(
-    confirming_label: &str,
-    footer_rect: Rect,
-    col: u16,
-    row: u16,
-) -> Option<bool> {
-    if footer_rect.width == 0 || footer_rect.height == 0 || row != footer_rect.y {
+pub fn preflight_modal_hit_test(modal_rect: Rect, col: u16, row: u16) -> Option<bool> {
+    if modal_rect.width <= 4 || modal_rect.height <= 4 {
         return None;
     }
-    if col < footer_rect.x || col >= footer_rect.x + footer_rect.width {
+    if col < modal_rect.x || col >= modal_rect.x + modal_rect.width {
+        return None;
+    }
+    if row < modal_rect.y || row >= modal_rect.y + modal_rect.height {
         return None;
     }
 
-    let label_width = UnicodeWidthStr::width(confirming_label);
-    let yes_start = label_width + 2;
-    let yes_width = UnicodeWidthStr::width("[y] yes");
-    let no_start = yes_start + UnicodeWidthStr::width("[y] yes  ");
-    let no_width = UnicodeWidthStr::width("[n] cancel");
+    let inner = modal_rect.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    if inner.height == 0 || inner.width == 0 {
+        return None;
+    }
 
-    let rel_col = (col - footer_rect.x) as usize;
-    if rel_col >= yes_start && rel_col < yes_start + yes_width {
+    let footer_row = inner.y + inner.height.saturating_sub(1);
+    if row != footer_row {
+        return None;
+    }
+    if col < inner.x || col >= inner.x + inner.width {
+        return None;
+    }
+
+    let rel_col = (col - inner.x) as usize;
+    let confirm_start = 0usize;
+    let confirm_width = UnicodeWidthStr::width("[y] confirm");
+    if rel_col >= confirm_start && rel_col < confirm_start + confirm_width {
         return Some(true);
     }
-    if rel_col >= no_start && rel_col < no_start + no_width {
+
+    let cancel_start = UnicodeWidthStr::width("[y] confirm  ");
+    let cancel_width = UnicodeWidthStr::width("[n] cancel");
+    if rel_col >= cancel_start && rel_col < cancel_start + cancel_width {
         return Some(false);
     }
 
@@ -507,8 +531,14 @@ pub fn queue_hint_hit_test(
         return Some(QueueHintAction::Retry);
     }
 
+    let remediate_start = UnicodeWidthStr::width("C cancel  R retry  ");
+    let remediate_width = UnicodeWidthStr::width("M remediate");
+    if rel_col >= remediate_start && rel_col < remediate_start + remediate_width {
+        return Some(QueueHintAction::Remediate);
+    }
+
     if has_log_actions {
-        let older_col = UnicodeWidthStr::width("C cancel  R retry  ↑↓ navigate  ");
+        let older_col = UnicodeWidthStr::width("C cancel  R retry  M remediate  ↑↓ navigate  ");
         if rel_col == older_col {
             return Some(QueueHintAction::LogOlder);
         }
@@ -1163,27 +1193,6 @@ fn format_eta_seconds(total_seconds: u64) -> String {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    if let Some(confirming) = &app.confirming {
-        let verb_style = match confirming.action {
-            TaskQueueAction::Install => success(),
-            TaskQueueAction::Remove => error(),
-            TaskQueueAction::Update => warning(),
-        };
-        let line = Line::from(vec![
-            Span::styled(
-                confirming.label.clone(),
-                verb_style.add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("[y]", key_hint()),
-            Span::styled(" yes  ", footer_label()),
-            Span::styled("[n]", key_hint()),
-            Span::styled(" cancel", footer_label()),
-        ]);
-        frame.render_widget(Paragraph::new(line), area);
-        return;
-    }
-
     let mut spans = Vec::new();
     push_hint(&mut spans, "↑↓", "nav");
     push_hint(&mut spans, ":", "cmd");
@@ -1198,6 +1207,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     push_hint(&mut spans, "i", "inst");
     push_hint(&mut spans, "x", "rm");
     push_hint(&mut spans, "u", "upd");
+    if app.queue_expanded {
+        push_hint(&mut spans, "m", "fix");
+    }
     push_hint(&mut spans, "q", "quit");
 
     let selection = if app.hidden_selected_count() > 0 {
@@ -1267,7 +1279,7 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
     for idx in start..end {
         let task = &app.tasks[idx];
         let selected = idx == app.task_cursor;
-        task_lines.push(render_task_line(task, selected, task_width));
+        task_lines.push(render_task_line(app, task, selected, task_width));
     }
     frame.render_widget(Paragraph::new(task_lines), sections[0]);
 
@@ -1276,9 +1288,44 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
         if let Some(task) = app.tasks.get(app.task_cursor) {
             let logs = app.task_logs.get(&task.id);
             let mut lines = vec![Line::from(Span::styled("Logs:", dim()))];
+
+            if task.status == TaskQueueStatus::Failed {
+                if let Some(category) = app.failure_category_for_task(task) {
+                    lines.push(Line::from(vec![
+                        Span::styled("Cause: ", dim()),
+                        Span::styled(category.label(), warning()),
+                        Span::styled(format!(" ({})", category.remediation_label()), muted()),
+                    ]));
+                    lines.push(Line::from(Span::styled(
+                        truncate_to_width(
+                            category.remediation_copy(),
+                            sections[1].width.saturating_sub(2) as usize,
+                        ),
+                        muted(),
+                    )));
+                }
+                if let Some(state) = app.recovery_state_for_task(&task.id) {
+                    let outcome = match state.last_outcome {
+                        Some(TaskQueueStatus::Completed) => "last retry: succeeded",
+                        Some(TaskQueueStatus::Failed) => "last retry: failed",
+                        _ => "last retry: n/a",
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("Recovery attempts: {} ({})", state.attempts, outcome),
+                        muted(),
+                    )));
+                }
+                lines.push(Line::from(""));
+            }
+
             if let Some(logs) = logs {
-                let max = sections[1].height.saturating_sub(1) as usize;
-                let (start, end, scroll) = task_log_window(logs.len(), max, app.task_log_scroll);
+                let reserved = lines.len().saturating_sub(1);
+                let max = sections[1]
+                    .height
+                    .saturating_sub(1)
+                    .saturating_sub(reserved as u16) as usize;
+                let (start, end, scroll) =
+                    task_log_window(logs.len(), max.max(1), app.task_log_scroll);
                 logs_scroll = scroll;
                 for line in logs.iter().skip(start).take(end.saturating_sub(start)) {
                     lines.push(Line::from(Span::styled(
@@ -1298,6 +1345,8 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" cancel  ", footer_label()),
                 Span::styled("R", key_hint()),
                 Span::styled(" retry  ", footer_label()),
+                Span::styled("M", key_hint()),
+                Span::styled(" remediate  ", footer_label()),
                 Span::styled("↑↓", key_hint()),
                 Span::styled(" navigate  ", footer_label()),
                 Span::styled("[ ]", key_hint()),
@@ -1318,7 +1367,9 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("C", key_hint()),
                 Span::styled(" cancel  ", footer_label()),
                 Span::styled("R", key_hint()),
-                Span::styled(" retry", footer_label()),
+                Span::styled(" retry  ", footer_label()),
+                Span::styled("M", key_hint()),
+                Span::styled(" remediate", footer_label()),
             ])),
             sections[1],
         );
@@ -1327,7 +1378,12 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 }
 
-fn render_task_line(task: &TaskQueueEntry, selected: bool, max_width: usize) -> Line<'static> {
+fn render_task_line(
+    app: &App,
+    task: &TaskQueueEntry,
+    selected: bool,
+    max_width: usize,
+) -> Line<'static> {
     let (symbol, style, status_text) = match task.status {
         TaskQueueStatus::Queued => ("◻", warning(), "queued"),
         TaskQueueStatus::Running => ("▶", loading(), "running"),
@@ -1344,6 +1400,9 @@ fn render_task_line(task: &TaskQueueEntry, selected: bool, max_width: usize) -> 
         status_text
     );
     if task.status == TaskQueueStatus::Failed {
+        if let Some(category) = app.failure_category_for_task(task) {
+            text_value.push_str(&format!(" [{}]", category.short()));
+        }
         if let Some(error_text) = &task.error {
             text_value.push_str(&format!(": {}", error_text));
         }
@@ -1354,6 +1413,155 @@ fn render_task_line(task: &TaskQueueEntry, selected: bool, max_width: usize) -> 
         Span::styled(if selected { "▸ " } else { "  " }, row_selected()),
         Span::styled(text_value, if selected { row_cursor() } else { style }),
     ])
+}
+
+fn preflight_overlay_rect(area: Rect) -> Rect {
+    centered_rect(area, 76, 76, 62, 16)
+}
+
+fn draw_preflight_overlay(frame: &mut Frame, _app: &App, confirming: &PendingAction) {
+    let area = preflight_overlay_rect(frame.area());
+    frame.render_widget(Clear, area);
+
+    let risk_style = match confirming.preflight.risk_level {
+        PreflightRiskLevel::Safe => success(),
+        PreflightRiskLevel::Caution => warning(),
+        PreflightRiskLevel::High => error(),
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED)
+        .border_style(border_focused())
+        .title(" Preflight ")
+        .title_style(accent());
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width <= 2 || inner.height <= 4 {
+        return;
+    }
+
+    let body_height = inner.height.saturating_sub(1);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: body_height,
+        });
+
+    let source_summary = if confirming.preflight.source_breakdown.is_empty() {
+        "none".to_string()
+    } else {
+        confirming
+            .preflight
+            .source_breakdown
+            .iter()
+            .map(|(source, count)| format!("{} {}", source, count))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Action: ", dim()),
+            Span::styled(action_label(confirming.preflight.action), accent()),
+            Span::raw("  "),
+            Span::styled("Risk: ", dim()),
+            Span::styled(confirming.preflight.risk_level.label(), risk_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Summary: ", dim()),
+            Span::styled(
+                truncate_to_width(
+                    &confirming.label,
+                    sections[0].width.saturating_sub(10) as usize,
+                ),
+                muted(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Targets: ", dim()),
+            Span::styled(
+                format!(
+                    "{} selected, {} executable, {} skipped",
+                    confirming.preflight.target_count,
+                    confirming.preflight.executable_count,
+                    confirming.preflight.skipped_count
+                ),
+                text(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Mode: ", dim()),
+            Span::styled(
+                if confirming.preflight.selection_mode {
+                    "selection"
+                } else {
+                    "current filter"
+                },
+                muted(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Sources: ", dim()),
+            Span::styled(
+                truncate_to_width(
+                    &source_summary,
+                    sections[0].width.saturating_sub(10) as usize,
+                ),
+                muted(),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            confirming.preflight.risk_level.copy(),
+            risk_style,
+        )),
+    ];
+
+    for reason in &confirming.preflight.risk_reasons {
+        lines.push(Line::from(vec![
+            Span::styled("• ", dim()),
+            Span::styled(
+                truncate_to_width(reason, sections[0].width.saturating_sub(3) as usize),
+                muted(),
+            ),
+        ]));
+    }
+
+    if confirming.preflight.risk_level == PreflightRiskLevel::High && !confirming.risk_acknowledged
+    {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "High-risk gate: first confirm acknowledges risk, second confirm queues tasks.",
+            warning(),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), sections[0]);
+
+    let confirm_label = if confirming.preflight.risk_level == PreflightRiskLevel::High
+        && !confirming.risk_acknowledged
+    {
+        " acknowledge"
+    } else {
+        " confirm"
+    };
+
+    let controls = Line::from(vec![
+        Span::styled("[y]", key_hint()),
+        Span::styled(confirm_label, footer_label()),
+        Span::styled("  [n]", key_hint()),
+        Span::styled(" cancel  ", footer_label()),
+        Span::styled("Esc", key_hint()),
+        Span::styled(" close", footer_label()),
+    ]);
+    frame.render_widget(Paragraph::new(controls), sections[1]);
 }
 
 fn palette_overlay_rect(area: Rect) -> Rect {
@@ -1500,7 +1708,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         Line::from("  ? help     q quit"),
         Line::from(""),
         Line::from(Span::styled("Queue (expanded)", section_header())),
-        Line::from("  C cancel queued   R retry failed   [ ] logs"),
+        Line::from("  C cancel queued   R retry failed   M remediate   [ ] logs"),
         Line::from(""),
         Line::from("  ? or Esc to close"),
     ];

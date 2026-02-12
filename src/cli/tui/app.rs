@@ -95,11 +95,109 @@ impl Focus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreflightRiskLevel {
+    Safe,
+    Caution,
+    High,
+}
+
+impl PreflightRiskLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Safe => "Safe",
+            Self::Caution => "Caution",
+            Self::High => "High Risk",
+        }
+    }
+
+    pub fn copy(self) -> &'static str {
+        match self {
+            Self::Safe => "No major risk signals detected for this queue operation.",
+            Self::Caution => "Review target scope and source mix before queueing.",
+            Self::High => {
+                "This operation is potentially destructive. Confirm only if this is intentional."
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PreflightSummary {
+    pub action: TaskQueueAction,
+    pub target_count: usize,
+    pub executable_count: usize,
+    pub skipped_count: usize,
+    pub source_breakdown: Vec<(PackageSource, usize)>,
+    pub risk_level: PreflightRiskLevel,
+    pub risk_reasons: Vec<String>,
+    pub selection_mode: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingAction {
     pub label: String,
     pub packages: Vec<Package>,
     pub action: TaskQueueAction,
+    pub preflight: PreflightSummary,
+    pub risk_acknowledged: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FailureCategory {
+    Permissions,
+    Network,
+    NotFound,
+    Conflict,
+    Unknown,
+}
+
+impl FailureCategory {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Permissions => "Permissions",
+            Self::Network => "Network",
+            Self::NotFound => "Not Found",
+            Self::Conflict => "Conflict",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::Permissions => "PERM",
+            Self::Network => "NET",
+            Self::NotFound => "MISS",
+            Self::Conflict => "CONF",
+            Self::Unknown => "UNK",
+        }
+    }
+
+    pub fn remediation_label(self) -> &'static str {
+        match self {
+            Self::Permissions => "Re-authenticate and retry",
+            Self::Network => "Refresh metadata and retry",
+            Self::NotFound => "Refresh sources and retry",
+            Self::Conflict => "Resolve locks/conflicts and retry",
+            Self::Unknown => "Retry task",
+        }
+    }
+
+    pub fn remediation_copy(self) -> &'static str {
+        match self {
+            Self::Permissions => "Authentication or privilege escalation was rejected.",
+            Self::Network => "Network issue detected while contacting package source.",
+            Self::NotFound => "Package or version was not found in enabled repositories.",
+            Self::Conflict => "Package manager reported lock/dependency conflicts.",
+            Self::Unknown => "No specific category matched this failure.",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RecoveryState {
+    pub attempts: usize,
+    pub last_outcome: Option<TaskQueueStatus>,
 }
 
 type LoadResult = Result<Vec<Package>, String>;
@@ -133,6 +231,7 @@ pub enum CommandId {
     ToggleQueue,
     QueueCancel,
     QueueRetry,
+    QueueRemediate,
     QueueLogOlder,
     QueueLogNewer,
 }
@@ -325,6 +424,12 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         enabled: command_queue_retry_enabled,
     },
     CommandDefinition {
+        id: CommandId::QueueRemediate,
+        label: "Apply remediation",
+        shortcut: "M",
+        enabled: command_queue_remediate_enabled,
+    },
+    CommandDefinition {
         id: CommandId::QueueLogOlder,
         label: "Show older queue logs",
         shortcut: "[",
@@ -357,6 +462,9 @@ pub struct App {
     pub task_log_scroll: usize,
     pub task_logs: HashMap<String, VecDeque<String>>,
     pub previous_statuses: HashMap<String, PackageStatus>,
+    pub task_failure_categories: HashMap<String, FailureCategory>,
+    pub task_recovery_states: HashMap<String, RecoveryState>,
+    pub retry_parent: HashMap<String, String>,
     pub queue_expanded: bool,
     pub queue_completed_at: Option<Instant>,
     pub executor_running: Arc<AtomicBool>,
@@ -417,6 +525,9 @@ impl App {
             task_log_scroll: 0,
             task_logs: HashMap::new(),
             previous_statuses: HashMap::new(),
+            task_failure_categories: HashMap::new(),
+            task_recovery_states: HashMap::new(),
+            retry_parent: HashMap::new(),
             queue_expanded: false,
             queue_completed_at: None,
             executor_running: Arc::new(AtomicBool::new(false)),
@@ -483,6 +594,7 @@ impl App {
                 .unwrap_or_default()
         };
         self.tasks = entries;
+        self.rebuild_failure_categories();
         self.clamp_task_cursor();
     }
 
@@ -633,6 +745,9 @@ impl App {
                 CommandId::ToggleQueue => "Queue is empty",
                 CommandId::QueueCancel => "Select a queued task in expanded queue",
                 CommandId::QueueRetry => "Select a failed task in expanded queue",
+                CommandId::QueueRemediate => {
+                    "Select a failed task in expanded queue to apply remediation"
+                }
                 CommandId::QueueLogOlder => "No older queue logs available",
                 CommandId::QueueLogNewer => "No newer queue logs available",
                 _ => "Command unavailable in current context",
@@ -850,6 +965,178 @@ impl App {
 
     fn can_queue_log_newer_command(&self) -> bool {
         self.queue_focus_active() && self.task_log_scroll > 0
+    }
+
+    fn can_queue_remediate_command(&self) -> bool {
+        self.queue_focus_active()
+            && self
+                .tasks
+                .get(self.task_cursor)
+                .is_some_and(|task| task.status == TaskQueueStatus::Failed)
+    }
+
+    fn classify_failure(error_text: &str) -> FailureCategory {
+        let lowered = error_text.to_lowercase();
+
+        if lowered.contains("lock")
+            || lowered.contains("conflict")
+            || lowered.contains("held broken")
+            || lowered.contains("another process")
+            || lowered.contains("already running")
+            || lowered.contains("dependency problem")
+            || lowered.contains("dpkg was interrupted")
+        {
+            return FailureCategory::Conflict;
+        }
+
+        if lowered.contains("permission denied")
+            || lowered.contains("not permitted")
+            || lowered.contains("operation not permitted")
+            || lowered.contains("must be root")
+            || lowered.contains("authentication")
+            || lowered.contains("authorization")
+            || lowered.contains("pkexec")
+            || lowered.contains("access denied")
+            || lowered.contains("eacces")
+            || lowered.contains("sudo")
+        {
+            return FailureCategory::Permissions;
+        }
+
+        if lowered.contains("timed out")
+            || lowered.contains("timeout")
+            || lowered.contains("temporary failure")
+            || lowered.contains("could not resolve")
+            || lowered.contains("name resolution")
+            || lowered.contains("network")
+            || lowered.contains("connection refused")
+            || lowered.contains("connection reset")
+            || lowered.contains("unreachable")
+            || lowered.contains("failed to fetch")
+        {
+            return FailureCategory::Network;
+        }
+
+        if lowered.contains("not found")
+            || lowered.contains("unable to locate")
+            || lowered.contains("no package")
+            || lowered.contains("could not find")
+            || lowered.contains("no matching")
+            || lowered.contains("404")
+        {
+            return FailureCategory::NotFound;
+        }
+
+        FailureCategory::Unknown
+    }
+
+    pub fn failure_category_for_task(&self, task: &TaskQueueEntry) -> Option<FailureCategory> {
+        if task.status != TaskQueueStatus::Failed {
+            return None;
+        }
+
+        self.task_failure_categories
+            .get(&task.id)
+            .copied()
+            .or_else(|| task.error.as_deref().map(Self::classify_failure))
+            .or(Some(FailureCategory::Unknown))
+    }
+
+    pub fn recovery_state_for_task(&self, task_id: &str) -> Option<&RecoveryState> {
+        self.task_recovery_states.get(task_id)
+    }
+
+    fn rebuild_failure_categories(&mut self) {
+        self.task_failure_categories.clear();
+        for task in &self.tasks {
+            if task.status == TaskQueueStatus::Failed {
+                let category = task
+                    .error
+                    .as_deref()
+                    .map(Self::classify_failure)
+                    .unwrap_or(FailureCategory::Unknown);
+                self.task_failure_categories
+                    .insert(task.id.clone(), category);
+            }
+        }
+    }
+
+    fn build_preflight_summary(
+        action: TaskQueueAction,
+        targets: &[Package],
+        valid: &[Package],
+        selection_mode: bool,
+    ) -> PreflightSummary {
+        let mut source_breakdown: HashMap<PackageSource, usize> = HashMap::new();
+        for package in valid {
+            *source_breakdown.entry(package.source).or_insert(0) += 1;
+        }
+
+        let mut source_breakdown: Vec<(PackageSource, usize)> =
+            source_breakdown.into_iter().collect();
+        source_breakdown.sort_by_key(|(source, _)| source.to_string());
+
+        let mut risk_reasons = Vec::new();
+        let mut risk_level = PreflightRiskLevel::Safe;
+
+        let has_system_source = valid.iter().any(|package| {
+            matches!(
+                package.source,
+                PackageSource::Apt
+                    | PackageSource::Dnf
+                    | PackageSource::Pacman
+                    | PackageSource::Zypper
+                    | PackageSource::Deb
+                    | PackageSource::Aur
+            )
+        });
+
+        match action {
+            TaskQueueAction::Remove => {
+                risk_level = PreflightRiskLevel::Caution;
+                risk_reasons.push("Removal operations can disrupt dependent tooling.".to_string());
+                if has_system_source {
+                    risk_level = PreflightRiskLevel::High;
+                    risk_reasons.push(
+                        "Includes system-level package sources (APT/DNF/Pacman/etc).".to_string(),
+                    );
+                }
+            }
+            TaskQueueAction::Update => {
+                if valid.len() >= 10 {
+                    risk_level = PreflightRiskLevel::Caution;
+                    risk_reasons
+                        .push("Large update batch may contain breaking changes.".to_string());
+                }
+            }
+            TaskQueueAction::Install => {
+                if valid.len() >= 15 {
+                    risk_level = PreflightRiskLevel::Caution;
+                    risk_reasons
+                        .push("Large install batch may pull significant dependencies.".to_string());
+                }
+            }
+        }
+
+        if valid.len() >= 20 {
+            risk_level = PreflightRiskLevel::High;
+            risk_reasons.push("Very large queue size; review before confirming.".to_string());
+        }
+
+        if risk_reasons.is_empty() {
+            risk_reasons.push("No additional guardrails triggered.".to_string());
+        }
+
+        PreflightSummary {
+            action,
+            target_count: targets.len(),
+            executable_count: valid.len(),
+            skipped_count: targets.len().saturating_sub(valid.len()),
+            source_breakdown,
+            risk_level,
+            risk_reasons,
+            selection_mode,
+        }
     }
 
     fn set_source_by_index(&mut self, index: usize) {
@@ -1311,23 +1598,57 @@ impl App {
         let valid: HashSet<&str> = self.tasks.iter().map(|task| task.id.as_str()).collect();
         self.task_logs
             .retain(|task_id, _| valid.contains(task_id.as_str()));
+        self.task_failure_categories
+            .retain(|task_id, _| valid.contains(task_id.as_str()));
+        self.task_recovery_states
+            .retain(|task_id, _| valid.contains(task_id.as_str()));
+        self.retry_parent.retain(|task_id, parent| {
+            valid.contains(task_id.as_str()) && valid.contains(parent.as_str())
+        });
     }
 
     fn apply_task_event(&mut self, event: TaskQueueEvent) {
         match event {
             TaskQueueEvent::Started(entry) => {
+                self.task_failure_categories.remove(&entry.id);
                 self.upsert_task(entry.clone());
                 self.mark_package_started(&entry);
                 self.queue_completed_at = None;
                 self.apply_filters();
             }
             TaskQueueEvent::Completed(entry) => {
+                if let Some(parent) = self.retry_parent.remove(&entry.id) {
+                    let state = self.task_recovery_states.entry(parent.clone()).or_default();
+                    state.last_outcome = Some(TaskQueueStatus::Completed);
+                    self.set_status(
+                        format!("Recovery retry succeeded for {}", entry.package_name),
+                        true,
+                    );
+                }
+                self.task_failure_categories.remove(&entry.id);
                 self.upsert_task(entry.clone());
                 self.mark_package_completed(&entry);
                 self.refresh_after_idle = true;
                 self.apply_filters();
             }
             TaskQueueEvent::Failed(entry) => {
+                let category = entry
+                    .error
+                    .as_deref()
+                    .map(Self::classify_failure)
+                    .unwrap_or(FailureCategory::Unknown);
+                self.task_failure_categories
+                    .insert(entry.id.clone(), category);
+
+                if let Some(parent) = self.retry_parent.remove(&entry.id) {
+                    let state = self.task_recovery_states.entry(parent).or_default();
+                    state.last_outcome = Some(TaskQueueStatus::Failed);
+                    self.set_status(
+                        format!("Recovery retry failed ({}).", category.label()),
+                        true,
+                    );
+                }
+
                 self.upsert_task(entry.clone());
                 self.mark_package_failed(&entry);
                 self.refresh_after_idle = true;
@@ -1396,6 +1717,9 @@ impl App {
             self.tasks.clear();
             self.task_logs.clear();
             self.previous_statuses.clear();
+            self.task_failure_categories.clear();
+            self.task_recovery_states.clear();
+            self.retry_parent.clear();
             self.task_cursor = 0;
             self.task_log_scroll = 0;
             self.queue_completed_at = None;
@@ -1607,17 +1931,18 @@ impl App {
         }
 
         let skipped = targets.len().saturating_sub(valid.len());
-        let label = Self::build_confirm_label(
-            action,
-            &valid,
-            targets.len(),
-            skipped,
-            !self.selected.is_empty(),
-        );
+        let selection_mode = !self.selected.is_empty();
+        let label =
+            Self::build_confirm_label(action, &valid, targets.len(), skipped, selection_mode);
+        let preflight = Self::build_preflight_summary(action, &targets, &valid, selection_mode);
+        let risk_acknowledged = preflight.risk_level != PreflightRiskLevel::High;
+
         self.confirming = Some(PendingAction {
             label,
             packages: valid,
             action,
+            preflight,
+            risk_acknowledged,
         });
     }
 
@@ -1774,7 +2099,20 @@ impl App {
 
     async fn handle_confirm_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                if let Some(confirming) = self.confirming.as_mut() {
+                    if confirming.preflight.risk_level == PreflightRiskLevel::High
+                        && !confirming.risk_acknowledged
+                    {
+                        confirming.risk_acknowledged = true;
+                        self.set_status(
+                            "High-risk operation acknowledged. Press y again to queue.",
+                            true,
+                        );
+                        return;
+                    }
+                }
+
                 if let Some(action) = self.confirming.take() {
                     let queued = self.queue_tasks(action.packages, action.action).await;
                     self.clear_selection();
@@ -1825,6 +2163,7 @@ impl App {
         match key.code {
             KeyCode::Char('c') | KeyCode::Char('C') => self.cancel_selected_task().await,
             KeyCode::Char('r') | KeyCode::Char('R') => self.retry_selected_task().await,
+            KeyCode::Char('m') | KeyCode::Char('M') => self.apply_selected_task_remediation().await,
             _ => {}
         }
     }
@@ -1941,6 +2280,7 @@ impl App {
             CommandId::ToggleQueue => self.toggle_queue_expanded(),
             CommandId::QueueCancel => self.cancel_selected_task().await,
             CommandId::QueueRetry => self.retry_selected_task().await,
+            CommandId::QueueRemediate => self.apply_selected_task_remediation().await,
             CommandId::QueueLogOlder => self.queue_log_scroll_up(),
             CommandId::QueueLogNewer => self.queue_log_scroll_down(),
         }
@@ -2149,6 +2489,7 @@ impl App {
             }
             KeyCode::Char('C') => self.execute_command(CommandId::QueueCancel).await,
             KeyCode::Char('R') => self.execute_command(CommandId::QueueRetry).await,
+            KeyCode::Char('M') => self.execute_command(CommandId::QueueRemediate).await,
             _ => {}
         }
     }
@@ -2263,7 +2604,8 @@ impl App {
                     return;
                 }
                 if self.confirming.is_some() {
-                    self.handle_mouse_confirm(col, row, &regions.footer).await;
+                    self.handle_mouse_confirm(col, row, &regions.preflight_modal)
+                        .await;
                     return;
                 }
 
@@ -2544,6 +2886,7 @@ impl App {
             match action {
                 ui::QueueHintAction::Cancel => self.cancel_selected_task().await,
                 ui::QueueHintAction::Retry => self.retry_selected_task().await,
+                ui::QueueHintAction::Remediate => self.apply_selected_task_remediation().await,
                 ui::QueueHintAction::LogOlder => self.queue_log_scroll_up(),
                 ui::QueueHintAction::LogNewer => self.queue_log_scroll_down(),
             }
@@ -2563,13 +2906,22 @@ impl App {
         }
     }
 
-    async fn handle_mouse_confirm(&mut self, col: u16, row: u16, footer_rect: &Rect) {
-        let Some(label) = self.confirming.as_ref().map(|action| action.label.clone()) else {
-            return;
-        };
-
-        match ui::confirm_footer_hit_test(&label, *footer_rect, col, row) {
+    async fn handle_mouse_confirm(&mut self, col: u16, row: u16, modal_rect: &Rect) {
+        match ui::preflight_modal_hit_test(*modal_rect, col, row) {
             Some(true) => {
+                if let Some(confirming) = self.confirming.as_mut() {
+                    if confirming.preflight.risk_level == PreflightRiskLevel::High
+                        && !confirming.risk_acknowledged
+                    {
+                        confirming.risk_acknowledged = true;
+                        self.set_status(
+                            "High-risk operation acknowledged. Click confirm again to queue.",
+                            true,
+                        );
+                        return;
+                    }
+                }
+
                 if let Some(action) = self.confirming.take() {
                     let queued = self.queue_tasks(action.packages, action.action).await;
                     self.clear_selection();
@@ -2588,7 +2940,12 @@ impl App {
                 self.confirming = None;
                 self.set_status("Cancelled", true);
             }
-            None => {}
+            None => {
+                if !rect_contains(*modal_rect, (col, row)) {
+                    self.confirming = None;
+                    self.set_status("Cancelled", true);
+                }
+            }
         }
     }
 
@@ -2703,6 +3060,14 @@ impl App {
             task.package_name.clone(),
             task.package_source,
         );
+
+        let state = self
+            .task_recovery_states
+            .entry(task.id.clone())
+            .or_default();
+        state.attempts += 1;
+        self.retry_parent.insert(retry.id.clone(), task.id.clone());
+
         self.enqueue_task_entry(retry).await;
         self.queue_completed_at = None;
         self.spawn_task_executor();
@@ -2714,6 +3079,59 @@ impl App {
             ),
             true,
         );
+    }
+
+    async fn apply_selected_task_remediation(&mut self) {
+        if !self.queue_expanded {
+            return;
+        }
+
+        let Some(task) = self.tasks.get(self.task_cursor).cloned() else {
+            self.set_status("No task selected", true);
+            return;
+        };
+        if task.status != TaskQueueStatus::Failed {
+            self.set_status("Select a failed task first", true);
+            return;
+        }
+
+        let category = self
+            .failure_category_for_task(&task)
+            .unwrap_or(FailureCategory::Unknown);
+
+        match category {
+            FailureCategory::Permissions => {
+                self.set_status("Remediation: retrying with fresh privilege prompt.", true);
+                self.retry_selected_task().await;
+            }
+            FailureCategory::Network => {
+                if !self.loading {
+                    let _ = self.start_loading();
+                }
+                self.set_status("Remediation: refreshed metadata and retrying.", true);
+                self.retry_selected_task().await;
+            }
+            FailureCategory::NotFound => {
+                if !self.loading {
+                    let _ = self.start_loading();
+                }
+                self.set_status(
+                    "Remediation: refreshed metadata; verify package/source, then retry.",
+                    true,
+                );
+            }
+            FailureCategory::Conflict => {
+                self.set_status(
+                    "Remediation: conflict detected. Ensure other package managers are idle, then retrying.",
+                    true,
+                );
+                self.retry_selected_task().await;
+            }
+            FailureCategory::Unknown => {
+                self.set_status("Remediation: retrying task.", true);
+                self.retry_selected_task().await;
+            }
+        }
     }
 
     pub fn queue_counts(&self) -> (usize, usize, usize, usize, usize) {
@@ -2829,6 +3247,10 @@ fn command_queue_retry_enabled(app: &App) -> bool {
     app.can_retry_selected_task_command()
 }
 
+fn command_queue_remediate_enabled(app: &App) -> bool {
+    app.can_queue_remediate_command()
+}
+
 fn command_queue_log_older_enabled(app: &App) -> bool {
     app.can_queue_log_older_command()
 }
@@ -2862,6 +3284,7 @@ fn command_group(command: CommandId) -> &'static str {
         CommandId::ToggleQueue
         | CommandId::QueueCancel
         | CommandId::QueueRetry
+        | CommandId::QueueRemediate
         | CommandId::QueueLogOlder
         | CommandId::QueueLogNewer => "Queue",
     }
@@ -3318,6 +3741,17 @@ mod tests {
             label: "x".into(),
             packages: Vec::new(),
             action: TaskQueueAction::Install,
+            preflight: PreflightSummary {
+                action: TaskQueueAction::Install,
+                target_count: 0,
+                executable_count: 0,
+                skipped_count: 0,
+                source_breakdown: Vec::new(),
+                risk_level: PreflightRiskLevel::Safe,
+                risk_reasons: vec!["No additional guardrails triggered.".to_string()],
+                selection_mode: false,
+            },
+            risk_acknowledged: true,
         });
         app.handle_key(key(KeyCode::Esc)).await;
         assert!(!app.showing_help);
@@ -3543,6 +3977,17 @@ mod tests {
                 PackageStatus::NotInstalled,
             )],
             action: TaskQueueAction::Install,
+            preflight: PreflightSummary {
+                action: TaskQueueAction::Install,
+                target_count: 1,
+                executable_count: 1,
+                skipped_count: 0,
+                source_breakdown: vec![(PackageSource::Deb, 1)],
+                risk_level: PreflightRiskLevel::Safe,
+                risk_reasons: vec!["No additional guardrails triggered.".to_string()],
+                selection_mode: false,
+            },
+            risk_acknowledged: true,
         });
 
         app.handle_key(key(KeyCode::Char('n'))).await;
@@ -3556,6 +4001,17 @@ mod tests {
                 PackageStatus::NotInstalled,
             )],
             action: TaskQueueAction::Install,
+            preflight: PreflightSummary {
+                action: TaskQueueAction::Install,
+                target_count: 1,
+                executable_count: 1,
+                skipped_count: 0,
+                source_breakdown: vec![(PackageSource::Deb, 1)],
+                risk_level: PreflightRiskLevel::Safe,
+                risk_reasons: vec!["No additional guardrails triggered.".to_string()],
+                selection_mode: false,
+            },
+            risk_acknowledged: true,
         });
         app.handle_key(key(KeyCode::Char('y'))).await;
         assert_eq!(app.tasks.len(), 1);
@@ -3594,6 +4050,114 @@ mod tests {
         app.handle_key(key(KeyCode::Char('R'))).await;
         assert_eq!(app.tasks.len(), before + 1);
         assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
+    }
+
+    #[test]
+    fn failure_classifier_maps_common_errors() {
+        assert_eq!(
+            App::classify_failure("permission denied while running command"),
+            FailureCategory::Permissions
+        );
+        assert_eq!(
+            App::classify_failure("temporary failure resolving archive.ubuntu.com"),
+            FailureCategory::Network
+        );
+        assert_eq!(
+            App::classify_failure("unable to locate package missing-pkg"),
+            FailureCategory::NotFound
+        );
+        assert_eq!(
+            App::classify_failure("dpkg was interrupted, lock is held by another process"),
+            FailureCategory::Conflict
+        );
+        assert_eq!(
+            App::classify_failure("unexpected parse issue"),
+            FailureCategory::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn high_risk_confirm_requires_explicit_ack_before_queue() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.confirming = Some(PendingAction {
+            label: "Remove pkg?".into(),
+            packages: vec![make_pkg(
+                "pkg",
+                PackageSource::Apt,
+                PackageStatus::Installed,
+            )],
+            action: TaskQueueAction::Remove,
+            preflight: PreflightSummary {
+                action: TaskQueueAction::Remove,
+                target_count: 1,
+                executable_count: 1,
+                skipped_count: 0,
+                source_breakdown: vec![(PackageSource::Apt, 1)],
+                risk_level: PreflightRiskLevel::High,
+                risk_reasons: vec![
+                    "Includes system-level package sources (APT/DNF/Pacman/etc).".to_string(),
+                ],
+                selection_mode: false,
+            },
+            risk_acknowledged: false,
+        });
+
+        app.handle_key(key(KeyCode::Char('y'))).await;
+        assert!(app.confirming.is_some());
+        assert_eq!(app.tasks.len(), 0);
+        assert!(app
+            .confirming
+            .as_ref()
+            .is_some_and(|pending| pending.risk_acknowledged));
+
+        app.handle_key(key(KeyCode::Char('y'))).await;
+        assert!(app.confirming.is_none());
+        assert_eq!(app.tasks.len(), 1);
+    }
+
+    #[test]
+    fn queue_remediate_command_enablement_follows_failed_selection() {
+        let mut app = test_app();
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("network timeout".into());
+        app.tasks = vec![failed];
+        app.task_cursor = 0;
+
+        assert!(app.command_enabled(CommandId::QueueRemediate));
+
+        app.tasks[0].status = TaskQueueStatus::Completed;
+        assert!(!app.command_enabled(CommandId::QueueRemediate));
+    }
+
+    #[tokio::test]
+    async fn remediation_not_found_guides_without_auto_retry() {
+        let mut app = test_app();
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:missing".into(),
+            "missing".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("unable to locate package missing".into());
+        app.tasks = vec![failed];
+        app.task_cursor = 0;
+
+        app.handle_key(key(KeyCode::Char('M'))).await;
+
+        assert_eq!(app.tasks.len(), 1);
+        assert!(app.status.contains("verify package/source"));
     }
 
     #[tokio::test]
@@ -3806,6 +4370,17 @@ mod tests {
                 PackageStatus::NotInstalled,
             )],
             action: TaskQueueAction::Install,
+            preflight: PreflightSummary {
+                action: TaskQueueAction::Install,
+                target_count: 1,
+                executable_count: 1,
+                skipped_count: 0,
+                source_breakdown: vec![(PackageSource::Deb, 1)],
+                risk_level: PreflightRiskLevel::Safe,
+                risk_reasons: vec!["No additional guardrails triggered.".to_string()],
+                selection_mode: false,
+            },
+            risk_acknowledged: true,
         });
         app.tasks.push(TaskQueueEntry::new(
             TaskQueueAction::Install,
@@ -3816,10 +4391,14 @@ mod tests {
 
         let regions = layout_regions(&app);
         let before = app.tasks.len();
-        let row = regions.footer.y;
-        let yes_col = (regions.footer.x..regions.footer.x + regions.footer.width)
+        let row = regions
+            .preflight_modal
+            .y
+            .saturating_add(regions.preflight_modal.height.saturating_sub(2));
+        let yes_col = (regions.preflight_modal.x
+            ..regions.preflight_modal.x + regions.preflight_modal.width)
             .find(|col| {
-                ui::confirm_footer_hit_test("Install pkg?", regions.footer, *col, row) == Some(true)
+                ui::preflight_modal_hit_test(regions.preflight_modal, *col, row) == Some(true)
             })
             .expect("yes area");
 
