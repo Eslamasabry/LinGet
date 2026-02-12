@@ -294,7 +294,7 @@ pub struct App {
     pub refresh_after_idle: bool,
     pub cursor_anchor_id: Option<String>,
     pub last_click: Option<(u16, u16, Instant)>,
-    pub deferred_confirm: Option<(Vec<Package>, TaskQueueAction)>,
+    pub drag_select_anchor: Option<usize>,
 }
 
 impl App {
@@ -342,7 +342,7 @@ impl App {
             refresh_after_idle: false,
             cursor_anchor_id: None,
             last_click: None,
-            deferred_confirm: None,
+            drag_select_anchor: None,
         }
     }
 
@@ -1576,183 +1576,321 @@ impl App {
         self.handle_normal_key(key).await;
     }
 
-    pub fn handle_mouse(&mut self, event: MouseEvent, regions: &ui::LayoutRegions) {
+    pub async fn handle_mouse(&mut self, event: MouseEvent, regions: &ui::LayoutRegions) {
         const SCROLL_STEP: usize = 3;
         const DOUBLE_CLICK_MS: u128 = 400;
 
+        let pos = (event.column, event.row);
         match event.kind {
             MouseEventKind::ScrollUp => {
-                let pos = (event.column, event.row);
-                if rect_contains(regions.packages, pos) {
+                if rect_contains(regions.expanded_queue_logs, pos) {
+                    self.focus = Focus::Queue;
+                    self.queue_log_scroll_up();
+                } else if rect_contains(regions.expanded_queue_tasks, pos) {
+                    self.focus = Focus::Queue;
+                    self.queue_prev();
+                } else if rect_contains(regions.packages, pos) {
                     self.focus = Focus::Packages;
                     for _ in 0..SCROLL_STEP {
                         self.prev_package();
                     }
                 } else if rect_contains(regions.sources, pos) {
                     self.focus = Focus::Sources;
-                    self.prev_source();
-                } else if rect_contains(regions.expanded_queue, pos) {
-                    self.queue_log_scroll_up();
+                    let idx = self.source_index();
+                    if idx > 0 {
+                        self.set_source_by_index(idx - 1);
+                    }
                 }
             }
             MouseEventKind::ScrollDown => {
-                let pos = (event.column, event.row);
-                if rect_contains(regions.packages, pos) {
+                if rect_contains(regions.expanded_queue_logs, pos) {
+                    self.focus = Focus::Queue;
+                    self.queue_log_scroll_down();
+                } else if rect_contains(regions.expanded_queue_tasks, pos) {
+                    self.focus = Focus::Queue;
+                    self.queue_next();
+                } else if rect_contains(regions.packages, pos) {
                     self.focus = Focus::Packages;
                     for _ in 0..SCROLL_STEP {
                         self.next_package();
                     }
                 } else if rect_contains(regions.sources, pos) {
                     self.focus = Focus::Sources;
-                    self.next_source();
-                } else if rect_contains(regions.expanded_queue, pos) {
-                    self.queue_log_scroll_down();
+                    let idx = self.source_index();
+                    if idx + 1 < self.source_count() {
+                        self.set_source_by_index(idx + 1);
+                    }
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let col = event.column;
                 let row = event.row;
-                let pos = (col, row);
 
-                // Double-click detection
                 let is_double = self.last_click.take().is_some_and(|(lc, lr, lt)| {
                     lc == col && lr == row && lt.elapsed().as_millis() < DOUBLE_CLICK_MS
                 });
                 self.last_click = Some((col, row, Instant::now()));
 
-                // Overlays first
                 if self.showing_help {
                     self.showing_help = false;
                     return;
                 }
-                if let Some(_confirming) = &self.confirming {
-                    self.handle_mouse_confirm(col, row, &regions.footer);
+                if self.confirming.is_some() {
+                    self.handle_mouse_confirm(col, row, &regions.footer).await;
                     return;
                 }
 
-                if rect_contains(regions.header, pos) {
-                    self.handle_mouse_header(col);
+                if rect_contains(regions.header_filter_row, pos) {
+                    self.handle_mouse_header(col, row, regions);
                 } else if rect_contains(regions.sources, pos) {
                     self.handle_mouse_sources(row, &regions.sources);
                 } else if rect_contains(regions.packages, pos) {
-                    self.handle_mouse_packages(col, row, is_double, &regions.packages);
+                    self.handle_mouse_packages_click(col, row, is_double, &regions.packages);
                 } else if rect_contains(regions.details, pos) {
                     self.focus = Focus::Packages;
                 } else if rect_contains(regions.queue_bar, pos) {
                     self.toggle_queue_expanded();
                 } else if rect_contains(regions.expanded_queue, pos) {
-                    self.handle_mouse_queue(row, &regions.expanded_queue);
+                    self.handle_mouse_expanded_queue_click(col, row, regions)
+                        .await;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if rect_contains(regions.packages, pos) {
+                    self.handle_mouse_packages_drag(event.row, &regions.packages);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag_select_anchor = None;
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if rect_contains(regions.packages, pos) {
+                    self.handle_mouse_packages_right_click(event.row, &regions.packages);
                 }
             }
             _ => {}
         }
     }
 
-    fn handle_mouse_header(&mut self, col: u16) {
-        // Logo "◆ LinGet " takes ~10 cols, then tabs follow
-        // Each tab is roughly 12-15 chars wide; use approximate ranges
-        let tab_start: u16 = 10;
-        let tab_width: u16 = if self.compact { 10 } else { 14 };
-
-        if col >= tab_start && col < tab_start + tab_width {
-            self.filter = Filter::All;
+    fn handle_mouse_header(&mut self, col: u16, row: u16, regions: &ui::LayoutRegions) {
+        if let Some(filter) = ui::header_filter_hit_test(self, regions.header_filter_row, col, row)
+        {
+            self.filter = filter;
             self.apply_filters();
-        } else if col >= tab_start + tab_width && col < tab_start + tab_width * 2 {
-            self.filter = Filter::Installed;
-            self.apply_filters();
-        } else if col >= tab_start + tab_width * 2 && col < tab_start + tab_width * 3 {
-            self.filter = Filter::Updates;
-            self.apply_filters();
+            return;
         }
+
+        if !self.searching {
+            self.searching = true;
+        }
+    }
+
+    fn source_index_from_mouse_row(&self, row: u16, sources_rect: &Rect) -> Option<usize> {
+        if sources_rect.width <= 2 || sources_rect.height <= 2 {
+            return None;
+        }
+
+        let top = sources_rect.y.saturating_add(1);
+        let visible_rows = sources_rect.height.saturating_sub(2) as usize;
+        if visible_rows == 0 {
+            return None;
+        }
+
+        if row < top || row >= top.saturating_add(visible_rows as u16) {
+            return None;
+        }
+
+        let total = self.visible_sources().len() + 1;
+        let start = ui::window_start(total, visible_rows, self.source_index());
+        let clicked_index = start + row.saturating_sub(top) as usize;
+        (clicked_index < total).then_some(clicked_index)
     }
 
     fn handle_mouse_sources(&mut self, row: u16, sources_rect: &Rect) {
         self.focus = Focus::Sources;
-        // Account for border (1 row top)
-        let inner_y = row.saturating_sub(sources_rect.y + 1) as usize;
-        let visible = self.visible_sources();
-        let total = visible.len() + 1;
-        let selected = self.source_index();
-        let visible_rows = sources_rect.height.saturating_sub(2) as usize;
-        let start = ui::window_start(total, visible_rows, selected);
-        let clicked_index = start + inner_y;
-        if clicked_index < total {
+        if let Some(clicked_index) = self.source_index_from_mouse_row(row, sources_rect) {
             self.set_source_by_index(clicked_index);
         }
     }
 
-    fn handle_mouse_packages(&mut self, col: u16, row: u16, is_double: bool, packages_rect: &Rect) {
-        self.focus = Focus::Packages;
-        // Header row (border + table header) = 2 rows from top of rect
-        let inner_y = row.saturating_sub(packages_rect.y + 2) as usize;
-        let visible_rows = packages_rect.height.saturating_sub(4) as usize;
-        let start = ui::window_start(self.filtered.len(), visible_rows.max(1), self.cursor);
-        let clicked_index = start + inner_y;
-
-        if clicked_index >= self.filtered.len() {
-            return;
+    fn package_index_from_mouse_row(&self, row: u16, packages_rect: &Rect) -> Option<usize> {
+        if packages_rect.width <= 2 || packages_rect.height <= 4 || self.filtered.is_empty() {
+            return None;
         }
 
-        // Check if click is on the selection marker column (first ~3 cols inside border)
-        let inner_col = col.saturating_sub(packages_rect.x + 1);
+        let first_row = packages_rect.y.saturating_add(2);
+        let visible_rows = packages_rect.height.saturating_sub(4) as usize;
+        if visible_rows == 0 {
+            return None;
+        }
+
+        if row < first_row || row >= first_row.saturating_add(visible_rows as u16) {
+            return None;
+        }
+
+        let start = ui::window_start(self.filtered.len(), visible_rows.max(1), self.cursor);
+        let clicked_index = start + row.saturating_sub(first_row) as usize;
+        (clicked_index < self.filtered.len()).then_some(clicked_index)
+    }
+
+    fn prepare_default_action_for_cursor(&mut self) {
+        let Some(package) = self.current_package() else {
+            return;
+        };
+        let action = match package.status {
+            PackageStatus::NotInstalled => Some(TaskQueueAction::Install),
+            PackageStatus::UpdateAvailable => Some(TaskQueueAction::Update),
+            PackageStatus::Installed => Some(TaskQueueAction::Remove),
+            _ => None,
+        };
+
+        if let Some(action) = action {
+            self.prepare_action(action);
+        } else {
+            self.set_status("No primary action for this package", true);
+        }
+    }
+
+    fn handle_mouse_packages_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        is_double: bool,
+        packages_rect: &Rect,
+    ) {
+        let Some(clicked_index) = self.package_index_from_mouse_row(row, packages_rect) else {
+            return;
+        };
+
+        self.focus = Focus::Packages;
+        self.cursor = clicked_index;
+        self.drag_select_anchor = Some(clicked_index);
+
+        let inner_col = col.saturating_sub(packages_rect.x.saturating_add(1));
         if inner_col < 2 {
-            // Toggle selection on clicked row
-            self.cursor = clicked_index;
             self.toggle_selection_on_cursor();
             return;
         }
 
-        self.cursor = clicked_index;
-
         if is_double {
-            if let Some(package) = self.current_package().cloned() {
-                let action = match package.status {
-                    PackageStatus::NotInstalled => Some(TaskQueueAction::Install),
-                    PackageStatus::UpdateAvailable => Some(TaskQueueAction::Update),
-                    PackageStatus::Installed => Some(TaskQueueAction::Remove),
-                    _ => None,
-                };
-                if let Some(action) = action {
-                    self.prepare_action(action);
+            self.prepare_default_action_for_cursor();
+        }
+    }
+
+    fn select_package_range(&mut self, start: usize, end: usize) {
+        let (from, to) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        for row_index in from..=to {
+            let Some(package_index) = self.filtered.get(row_index).copied() else {
+                continue;
+            };
+            let Some(package) = self.packages.get(package_index) else {
+                continue;
+            };
+            self.selected.insert(package.id());
+        }
+    }
+
+    fn handle_mouse_packages_drag(&mut self, row: u16, packages_rect: &Rect) {
+        let Some(anchor) = self.drag_select_anchor else {
+            return;
+        };
+        let Some(clicked_index) = self.package_index_from_mouse_row(row, packages_rect) else {
+            return;
+        };
+
+        self.focus = Focus::Packages;
+        self.cursor = clicked_index;
+        self.select_package_range(anchor, clicked_index);
+    }
+
+    fn handle_mouse_packages_right_click(&mut self, row: u16, packages_rect: &Rect) {
+        let Some(clicked_index) = self.package_index_from_mouse_row(row, packages_rect) else {
+            return;
+        };
+        self.focus = Focus::Packages;
+        self.cursor = clicked_index;
+        self.prepare_default_action_for_cursor();
+    }
+
+    fn task_index_from_mouse_row(&self, row: u16, task_rect: &Rect) -> Option<usize> {
+        if task_rect.width == 0 || task_rect.height == 0 || self.tasks.is_empty() {
+            return None;
+        }
+        if row < task_rect.y || row >= task_rect.y + task_rect.height {
+            return None;
+        }
+
+        let visible = task_rect.height as usize;
+        let start = ui::window_start(self.tasks.len(), visible.max(1), self.task_cursor);
+        let clicked = start + row.saturating_sub(task_rect.y) as usize;
+        (clicked < self.tasks.len()).then_some(clicked)
+    }
+
+    async fn handle_mouse_expanded_queue_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        regions: &ui::LayoutRegions,
+    ) {
+        if let Some(action) = ui::queue_hint_hit_test(
+            regions.expanded_queue_hints,
+            regions.expanded_queue_logs.width > 0,
+            col,
+            row,
+        ) {
+            self.focus = Focus::Queue;
+            match action {
+                ui::QueueHintAction::Cancel => self.cancel_selected_task().await,
+                ui::QueueHintAction::Retry => self.retry_selected_task().await,
+                ui::QueueHintAction::LogOlder => self.queue_log_scroll_up(),
+                ui::QueueHintAction::LogNewer => self.queue_log_scroll_down(),
+            }
+            return;
+        }
+
+        if let Some(clicked_index) =
+            self.task_index_from_mouse_row(row, &regions.expanded_queue_tasks)
+        {
+            self.focus = Focus::Queue;
+            self.set_task_cursor(clicked_index);
+            return;
+        }
+
+        if rect_contains(regions.expanded_queue_logs, (col, row)) {
+            self.focus = Focus::Queue;
+        }
+    }
+
+    async fn handle_mouse_confirm(&mut self, col: u16, row: u16, footer_rect: &Rect) {
+        let Some(label) = self.confirming.as_ref().map(|action| action.label.clone()) else {
+            return;
+        };
+
+        match ui::confirm_footer_hit_test(&label, *footer_rect, col, row) {
+            Some(true) => {
+                if let Some(action) = self.confirming.take() {
+                    let queued = self.queue_tasks(action.packages, action.action).await;
+                    self.clear_selection();
+                    self.set_status(
+                        format!(
+                            "Queued {} {} task{}",
+                            queued,
+                            action_label(action.action).to_lowercase(),
+                            if queued == 1 { "" } else { "s" }
+                        ),
+                        true,
+                    );
                 }
             }
-        }
-    }
-
-    fn handle_mouse_queue(&mut self, row: u16, queue_rect: &Rect) {
-        self.focus = Focus::Queue;
-        let inner_y = row.saturating_sub(queue_rect.y + 1) as usize;
-        let visible = queue_rect.height.saturating_sub(2) as usize;
-        let start = ui::window_start(self.tasks.len(), visible.max(1), self.task_cursor);
-        let clicked_index = start + inner_y;
-        if clicked_index < self.tasks.len() {
-            self.set_task_cursor(clicked_index);
-        }
-    }
-
-    fn handle_mouse_confirm(&mut self, col: u16, _row: u16, footer_rect: &Rect) {
-        // Confirm footer: "Label  [y] yes  [n] cancel"
-        // Rough heuristic: scan for [y] and [n] positions
-        let inner_col = col.saturating_sub(footer_rect.x) as usize;
-        if let Some(confirming) = &self.confirming {
-            let label_len = confirming.label.len() + 2;
-            // [y] region
-            if inner_col >= label_len && inner_col < label_len + 8 {
-                // Simulate 'y'
-                let action = self.confirming.take();
-                if let Some(action) = action {
-                    let packages = action.packages;
-                    let task_action = action.action;
-                    // Can't await here; store for deferred execution
-                    self.confirming = None;
-                    // Re-wrap: use a sync-compatible approach
-                    self.deferred_confirm = Some((packages, task_action));
-                }
-            } else if inner_col >= label_len + 8 {
-                // [n] region
+            Some(false) => {
                 self.confirming = None;
                 self.set_status("Cancelled", true);
             }
+            None => {}
         }
     }
 
@@ -2055,11 +2193,7 @@ async fn run_app(
                 }
                 Event::Mouse(mouse) => {
                     let regions = ui::compute_layout(app, Rect::new(0, 0, size.width, size.height));
-                    app.handle_mouse(mouse, &regions);
-                    // Process deferred confirm (needs async)
-                    if let Some((pkgs, action)) = app.deferred_confirm.take() {
-                        app.queue_tasks(pkgs, action).await;
-                    }
+                    app.handle_mouse(mouse, &regions).await;
                 }
                 _ => {}
             }
@@ -2112,6 +2246,19 @@ mod tests {
 
     fn ctrl(code: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL)
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn layout_regions(app: &App) -> ui::LayoutRegions {
+        ui::compute_layout(app, Rect::new(0, 0, 120, 40))
     }
 
     #[test]
@@ -2677,5 +2824,243 @@ mod tests {
 
         app.handle_key(ctrl('u')).await;
         assert_eq!(app.cursor, 0);
+    }
+
+    #[tokio::test]
+    async fn mouse_click_filter_tab_updates_filter() {
+        let mut app = test_app();
+        app.packages = vec![
+            make_pkg("a", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("b", PackageSource::Apt, PackageStatus::UpdateAvailable),
+        ];
+        app.apply_filters();
+
+        let regions = layout_regions(&app);
+        let row = regions.header_filter_row.y;
+        let installed_col = (regions.header_filter_row.x
+            ..regions.header_filter_row.x + regions.header_filter_row.width)
+            .find(|col| {
+                ui::header_filter_hit_test(&app, regions.header_filter_row, *col, row)
+                    == Some(Filter::Installed)
+            })
+            .expect("installed tab column");
+
+        app.handle_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), installed_col, row),
+            &regions,
+        )
+        .await;
+
+        assert_eq!(app.filter, Filter::Installed);
+    }
+
+    #[tokio::test]
+    async fn mouse_drag_selects_package_range() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = (0..6)
+            .map(|idx| {
+                make_pkg(
+                    &format!("pkg{}", idx),
+                    PackageSource::Apt,
+                    PackageStatus::Installed,
+                )
+            })
+            .collect();
+        app.apply_filters();
+
+        let regions = layout_regions(&app);
+        let col = regions.packages.x + 6;
+        let first_row = regions.packages.y + 2;
+        let third_row = first_row + 2;
+
+        app.handle_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), col, first_row),
+            &regions,
+        )
+        .await;
+        app.handle_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), col, third_row),
+            &regions,
+        )
+        .await;
+        app.handle_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), col, third_row),
+            &regions,
+        )
+        .await;
+
+        assert_eq!(app.selected.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn mouse_right_click_uses_default_package_action() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::NotInstalled,
+        )];
+        app.apply_filters();
+
+        let regions = layout_regions(&app);
+        let col = regions.packages.x + 6;
+        let row = regions.packages.y + 2;
+
+        app.handle_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Right), col, row),
+            &regions,
+        )
+        .await;
+
+        let confirming = app.confirming.as_ref().expect("confirming action");
+        assert_eq!(confirming.action, TaskQueueAction::Install);
+    }
+
+    #[tokio::test]
+    async fn mouse_confirm_yes_queues_action() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.confirming = Some(PendingAction {
+            label: "Install pkg?".into(),
+            packages: vec![make_pkg(
+                "pkg",
+                PackageSource::Deb,
+                PackageStatus::NotInstalled,
+            )],
+            action: TaskQueueAction::Install,
+        });
+        app.tasks.push(TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:seed".into(),
+            "seed".into(),
+            PackageSource::Apt,
+        ));
+
+        let regions = layout_regions(&app);
+        let before = app.tasks.len();
+        let row = regions.footer.y;
+        let yes_col = (regions.footer.x..regions.footer.x + regions.footer.width)
+            .find(|col| {
+                ui::confirm_footer_hit_test("Install pkg?", regions.footer, *col, row) == Some(true)
+            })
+            .expect("yes area");
+
+        app.handle_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), yes_col, row),
+            &regions,
+        )
+        .await;
+
+        assert!(app.confirming.is_none());
+        assert_eq!(app.tasks.len(), before + 1);
+    }
+
+    #[tokio::test]
+    async fn mouse_queue_scroll_respects_task_and_log_regions() {
+        let mut app = test_app();
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let first = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        let second = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:b".into(),
+            "b".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![first.clone(), second];
+        app.task_cursor = 1;
+        app.task_logs.insert(
+            first.id.clone(),
+            VecDeque::from(vec![
+                "one".to_string(),
+                "two".to_string(),
+                "three".to_string(),
+            ]),
+        );
+
+        let regions = layout_regions(&app);
+        assert!(regions.expanded_queue_tasks.width > 0);
+        assert!(regions.expanded_queue_logs.width > 0);
+
+        app.handle_mouse(
+            mouse(
+                MouseEventKind::ScrollUp,
+                regions.expanded_queue_tasks.x,
+                regions.expanded_queue_tasks.y,
+            ),
+            &regions,
+        )
+        .await;
+        assert_eq!(app.task_cursor, 0);
+
+        app.task_log_scroll = 0;
+        app.handle_mouse(
+            mouse(
+                MouseEventKind::ScrollUp,
+                regions.expanded_queue_logs.x,
+                regions.expanded_queue_logs.y,
+            ),
+            &regions,
+        )
+        .await;
+        assert_eq!(app.task_cursor, 0);
+        assert_eq!(app.task_log_scroll, 1);
+    }
+
+    #[tokio::test]
+    async fn mouse_queue_hint_clicks_cancel_and_retry() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let queued = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:b".into(),
+            "b".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("err".into());
+        app.tasks = vec![queued, failed];
+
+        let regions = layout_regions(&app);
+        let hint_row = regions.expanded_queue_hints.y;
+
+        app.task_cursor = 0;
+        app.handle_mouse(
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                regions.expanded_queue_hints.x,
+                hint_row,
+            ),
+            &regions,
+        )
+        .await;
+        assert_eq!(app.tasks[0].status, TaskQueueStatus::Cancelled);
+
+        app.task_cursor = 1;
+        let before = app.tasks.len();
+        let retry_col = regions.expanded_queue_hints.x + 10;
+        app.handle_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), retry_col, hint_row),
+            &regions,
+        )
+        .await;
+        assert_eq!(app.tasks.len(), before + 1);
+        assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
     }
 }

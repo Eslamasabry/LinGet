@@ -4,7 +4,7 @@ use super::update_center;
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
 use crate::models::{Package, PackageStatus};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -18,12 +18,15 @@ use unicode_width::UnicodeWidthStr;
 /// Regions of the TUI layout for mouse hit-testing.
 #[derive(Debug, Default)]
 pub struct LayoutRegions {
-    pub header: Rect,
+    pub header_filter_row: Rect,
     pub sources: Rect,
     pub packages: Rect,
     pub details: Rect,
     pub queue_bar: Rect,
     pub expanded_queue: Rect,
+    pub expanded_queue_tasks: Rect,
+    pub expanded_queue_logs: Rect,
+    pub expanded_queue_hints: Rect,
     pub footer: Rect,
 }
 
@@ -46,6 +49,11 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         .split(area);
 
     let header = chunks[0];
+    let header_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(header);
+
     let main_area = chunks[1];
     let (queue_bar, footer) = if queue_height == 1 {
         (chunks[2], chunks[3])
@@ -59,13 +67,19 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         compute_full_regions(app, main_area)
     };
 
+    let (expanded_queue_tasks, expanded_queue_logs, expanded_queue_hints) =
+        expanded_queue_sections(expanded_queue);
+
     LayoutRegions {
-        header,
+        header_filter_row: header_chunks[0],
         sources,
         packages,
         details,
         queue_bar,
         expanded_queue,
+        expanded_queue_tasks,
+        expanded_queue_logs,
+        expanded_queue_hints,
         footer,
     }
 }
@@ -91,7 +105,7 @@ fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
 }
 
 fn compute_compact_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
-    let sources = Rect::default(); // hidden in compact mode
+    let sources = Rect::default();
     if app.queue_expanded {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -109,6 +123,37 @@ fn compute_compact_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
     }
 }
 
+fn expanded_queue_sections(area: Rect) -> (Rect, Rect, Rect) {
+    if area.width <= 2 || area.height <= 2 {
+        return (Rect::default(), Rect::default(), Rect::default());
+    }
+
+    let inner = area.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    if inner.width == 0 || inner.height == 0 {
+        return (Rect::default(), Rect::default(), Rect::default());
+    }
+
+    if inner.height >= 8 {
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(55),
+                Constraint::Percentage(35),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+        (sections[0], sections[1], sections[2])
+    } else {
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        (sections[0], Rect::default(), sections[1])
+    }
+}
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
@@ -307,6 +352,146 @@ fn render_filter_tab(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueHintAction {
+    Cancel,
+    Retry,
+    LogOlder,
+    LogNewer,
+}
+
+pub fn header_filter_hit_test(
+    app: &App,
+    header_filter_row: Rect,
+    col: u16,
+    row: u16,
+) -> Option<Filter> {
+    if header_filter_row.width == 0 || header_filter_row.height == 0 || row != header_filter_row.y {
+        return None;
+    }
+    if col < header_filter_row.x || col >= header_filter_row.x + header_filter_row.width {
+        return None;
+    }
+
+    let installed_label = if app.compact { "Inst" } else { "Installed" };
+    let updates_label = if app.compact { "Upd" } else { "Updates" };
+
+    let tabs = [
+        (
+            "1",
+            "All",
+            app.filter_counts[0],
+            app.filter == Filter::All,
+            Filter::All,
+        ),
+        (
+            "2",
+            installed_label,
+            app.filter_counts[1],
+            app.filter == Filter::Installed,
+            Filter::Installed,
+        ),
+        (
+            "3",
+            updates_label,
+            app.filter_counts[2],
+            app.filter == Filter::Updates,
+            Filter::Updates,
+        ),
+    ];
+
+    let mut cursor = header_filter_row.x
+        + UnicodeWidthStr::width(" ◆ ") as u16
+        + UnicodeWidthStr::width("LinGet ") as u16
+        + 1;
+
+    for (index, (key, label, count, active, filter)) in tabs.iter().enumerate() {
+        let width = spans_width(&render_filter_tab(
+            key,
+            label,
+            *count,
+            *active,
+            app.searching,
+        )) as u16;
+        if col >= cursor && col < cursor.saturating_add(width) {
+            return Some(*filter);
+        }
+        cursor = cursor.saturating_add(width);
+        if index < tabs.len() - 1 {
+            cursor = cursor.saturating_add(1);
+        }
+    }
+
+    None
+}
+
+pub fn confirm_footer_hit_test(
+    confirming_label: &str,
+    footer_rect: Rect,
+    col: u16,
+    row: u16,
+) -> Option<bool> {
+    if footer_rect.width == 0 || footer_rect.height == 0 || row != footer_rect.y {
+        return None;
+    }
+    if col < footer_rect.x || col >= footer_rect.x + footer_rect.width {
+        return None;
+    }
+
+    let label_width = UnicodeWidthStr::width(confirming_label);
+    let yes_start = label_width + 2;
+    let yes_width = UnicodeWidthStr::width("[y] yes");
+    let no_start = yes_start + UnicodeWidthStr::width("[y] yes  ");
+    let no_width = UnicodeWidthStr::width("[n] cancel");
+
+    let rel_col = (col - footer_rect.x) as usize;
+    if rel_col >= yes_start && rel_col < yes_start + yes_width {
+        return Some(true);
+    }
+    if rel_col >= no_start && rel_col < no_start + no_width {
+        return Some(false);
+    }
+
+    None
+}
+
+pub fn queue_hint_hit_test(
+    hint_rect: Rect,
+    has_log_actions: bool,
+    col: u16,
+    row: u16,
+) -> Option<QueueHintAction> {
+    if hint_rect.width == 0 || hint_rect.height == 0 || row != hint_rect.y {
+        return None;
+    }
+    if col < hint_rect.x || col >= hint_rect.x + hint_rect.width {
+        return None;
+    }
+
+    let rel_col = (col - hint_rect.x) as usize;
+    let cancel_width = UnicodeWidthStr::width("C cancel");
+    if rel_col < cancel_width {
+        return Some(QueueHintAction::Cancel);
+    }
+
+    let retry_start = UnicodeWidthStr::width("C cancel  ");
+    let retry_width = UnicodeWidthStr::width("R retry");
+    if rel_col >= retry_start && rel_col < retry_start + retry_width {
+        return Some(QueueHintAction::Retry);
+    }
+
+    if has_log_actions {
+        let older_col = UnicodeWidthStr::width("C cancel  R retry  ↑↓ navigate  ");
+        if rel_col == older_col {
+            return Some(QueueHintAction::LogOlder);
+        }
+        if rel_col == older_col + 2 {
+            return Some(QueueHintAction::LogNewer);
+        }
+    }
+
+    None
+}
 fn compose_left_right<'a>(mut left: Vec<Span<'a>>, right: Vec<Span<'a>>, width: usize) -> Line<'a> {
     let left_width = spans_width(&left);
     let right_width = spans_width(&right);
