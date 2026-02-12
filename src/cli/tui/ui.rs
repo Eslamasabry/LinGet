@@ -235,6 +235,7 @@ fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     ];
     let installed_label = if app.compact { "Inst" } else { "Installed" };
     let updates_label = if app.compact { "Upd" } else { "Updates" };
+    let favorites_label = if app.compact { "Fav" } else { "Favorites" };
 
     left.extend(render_filter_tab(
         "1",
@@ -257,6 +258,14 @@ fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
         updates_label,
         app.filter_counts[2],
         app.filter == Filter::Updates,
+        app.searching,
+    ));
+    left.push(Span::raw(" "));
+    left.extend(render_filter_tab(
+        "4",
+        favorites_label,
+        app.filter_counts[3],
+        app.filter == Filter::Favorites,
         app.searching,
     ));
 
@@ -375,6 +384,7 @@ pub fn header_filter_hit_test(
 
     let installed_label = if app.compact { "Inst" } else { "Installed" };
     let updates_label = if app.compact { "Upd" } else { "Updates" };
+    let favorites_label = if app.compact { "Fav" } else { "Favorites" };
 
     let tabs = [
         (
@@ -397,6 +407,13 @@ pub fn header_filter_hit_test(
             app.filter_counts[2],
             app.filter == Filter::Updates,
             Filter::Updates,
+        ),
+        (
+            "4",
+            favorites_label,
+            app.filter_counts[3],
+            app.filter == Filter::Favorites,
+            Filter::Favorites,
         ),
     ];
 
@@ -627,11 +644,12 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
         let (label, label_style) = if idx == 0 {
             let count_str = source_count_label(
                 app.filter,
-                (
+                [
                     app.filter_counts[0],
                     app.filter_counts[1],
                     app.filter_counts[2],
-                ),
+                    app.filter_counts[3],
+                ],
             );
             (
                 format!("All{}", count_str),
@@ -639,7 +657,11 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
             )
         } else {
             let source = visible[idx - 1];
-            let counts = app.source_counts.get(&source).copied().unwrap_or((0, 0, 0));
+            let counts = app
+                .source_counts
+                .get(&source)
+                .copied()
+                .unwrap_or([0, 0, 0, 0]);
             let count_str = source_count_label(app.filter, counts);
             (
                 format!("{}{}", source, count_str),
@@ -675,17 +697,18 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn source_count_label(filter: Filter, counts: (usize, usize, usize)) -> String {
+fn source_count_label(filter: Filter, counts: [usize; 4]) -> String {
     match filter {
         Filter::All => {
-            if counts.2 > 0 {
-                format!(" {} (+{})", counts.0, counts.2)
+            if counts[2] > 0 {
+                format!(" {} (+{})", counts[0], counts[2])
             } else {
-                format!(" {}", counts.0)
+                format!(" {}", counts[0])
             }
         }
-        Filter::Installed => format!(" {}", counts.1),
-        Filter::Updates => format!(" {}", counts.2),
+        Filter::Installed => format!(" {}", counts[1]),
+        Filter::Updates => format!(" {}", counts[2]),
+        Filter::Favorites => format!(" {}", counts[3]),
     }
 }
 
@@ -721,6 +744,14 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
                 Line::from(Span::styled("No updates available", muted())),
                 Line::from(Span::styled("All packages are current", dim())),
             ]
+        } else if app.filter == Filter::Favorites {
+            vec![
+                Line::from(Span::styled("No favorites yet", muted())),
+                Line::from(Span::styled(
+                    "Press f to favorite the selected package",
+                    dim(),
+                )),
+            ]
         } else {
             vec![Line::from(Span::styled(
                 "No packages match this filter",
@@ -749,9 +780,11 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
         let package_id = package.id();
         let is_cursor = row_index == app.cursor;
         let is_selected = app.selected.contains(&package_id);
+        let is_favorite = app.is_favorite_id(&package_id);
         let row_style = if is_cursor { row_cursor() } else { text() };
 
         let marker = if is_selected { "☑" } else { " " };
+        let favorite_marker = if is_favorite { "★" } else { " " };
         let version = format_package_version(package);
         let source = package.source.to_string();
         let status = package_status_short(package.status);
@@ -763,11 +796,23 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
                     if is_selected { row_selected() } else { text() },
                 )),
                 Cell::from(Span::styled(
-                    truncate_middle_to_width(&package.name, if compact { 20 } else { 26 }),
+                    favorite_marker,
+                    if is_favorite {
+                        if is_cursor {
+                            row_style
+                        } else {
+                            warning()
+                        }
+                    } else {
+                        row_style
+                    },
+                )),
+                Cell::from(Span::styled(
+                    truncate_middle_to_width(&package.name, if compact { 18 } else { 24 }),
                     row_style,
                 )),
                 Cell::from(Span::styled(
-                    truncate_to_width(&version, if compact { 16 } else { 24 }),
+                    truncate_to_width(&version, if compact { 15 } else { 22 }),
                     row_style,
                 )),
                 Cell::from(Span::styled(
@@ -784,11 +829,13 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
         );
     }
 
-    let header = Row::new(vec!["", "Name", "Version", "Source", "Status"]).style(table_header());
+    let header =
+        Row::new(vec!["", "★", "Name", "Version", "Source", "Status"]).style(table_header());
     let widths = [
         Constraint::Length(2),
-        Constraint::Min(if compact { 12 } else { 22 }),
-        Constraint::Min(if compact { 10 } else { 18 }),
+        Constraint::Length(2),
+        Constraint::Min(if compact { 11 } else { 20 }),
+        Constraint::Min(if compact { 10 } else { 16 }),
         Constraint::Length(10),
         Constraint::Length(5),
     ];
@@ -1124,6 +1171,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     push_hint(&mut spans, "↑↓", "nav");
     push_hint(&mut spans, "/", "search");
     push_hint(&mut spans, "Space", "sel");
+    push_hint(&mut spans, "f", "fav");
     push_hint(&mut spans, "a", "all");
     push_hint(&mut spans, "i", "inst");
     push_hint(&mut spans, "x", "rm");
@@ -1303,10 +1351,10 @@ fn draw_help_overlay(frame: &mut Frame) {
         Line::from("  ^d/^u  half-page  Tab switch panel"),
         Line::from(""),
         Line::from(Span::styled("Filters", section_header())),
-        Line::from("  1 All    2 Installed    3 Updates"),
+        Line::from("  1 All    2 Installed    3 Updates    4 Favorites"),
         Line::from(""),
         Line::from(Span::styled("Actions", section_header())),
-        Line::from("  Space select   a select all"),
+        Line::from("  Space select   f favorite   a select all"),
         Line::from("  i install      x remove      u update"),
         Line::from("  Esc clear / back"),
         Line::from(""),
@@ -1554,10 +1602,11 @@ mod tests {
 
     #[test]
     fn source_count_label_snapshots() {
-        assert_eq!(source_count_label(Filter::All, (42, 31, 3)), " 42 (+3)");
-        assert_eq!(source_count_label(Filter::All, (42, 31, 0)), " 42");
-        assert_eq!(source_count_label(Filter::Installed, (42, 31, 3)), " 31");
-        assert_eq!(source_count_label(Filter::Updates, (42, 31, 3)), " 3");
+        assert_eq!(source_count_label(Filter::All, [42, 31, 3, 9]), " 42 (+3)");
+        assert_eq!(source_count_label(Filter::All, [42, 31, 0, 9]), " 42");
+        assert_eq!(source_count_label(Filter::Installed, [42, 31, 3, 9]), " 31");
+        assert_eq!(source_count_label(Filter::Updates, [42, 31, 3, 9]), " 3");
+        assert_eq!(source_count_label(Filter::Favorites, [42, 31, 3, 9]), " 9");
     }
 
     #[test]

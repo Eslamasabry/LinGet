@@ -2,8 +2,8 @@ use super::ui;
 use super::update_center;
 use crate::backend::{HistoryTracker, PackageManager, TaskQueueEvent, TaskQueueExecutor};
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
-use crate::models::{Package, PackageSource, PackageStatus};
-use anyhow::Result;
+use crate::models::{Config, Package, PackageSource, PackageStatus};
+use anyhow::{Context, Result};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -27,6 +27,10 @@ pub const MIN_WIDTH: u16 = 60;
 pub const MIN_HEIGHT: u16 = 15;
 const HALF_PAGE: usize = 10;
 const MAX_TASK_LOG_LINES: usize = 500;
+const FILTER_ALL_INDEX: usize = 0;
+const FILTER_INSTALLED_INDEX: usize = 1;
+const FILTER_UPDATES_INDEX: usize = 2;
+const FILTER_FAVORITES_INDEX: usize = 3;
 const QUEUE_AUTO_HIDE_AFTER: Duration = Duration::from_secs(10);
 
 fn rect_contains(rect: Rect, pos: (u16, u16)) -> bool {
@@ -43,6 +47,7 @@ pub enum Filter {
     All,
     Installed,
     Updates,
+    Favorites,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +80,8 @@ pub enum CommandId {
     FilterAll,
     FilterInstalled,
     FilterUpdates,
+    FilterFavorites,
+    ToggleFavorite,
     ToggleSelection,
     SelectAll,
     Install,
@@ -177,6 +184,18 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         enabled: command_always_enabled,
     },
     CommandDefinition {
+        id: CommandId::FilterFavorites,
+        label: "Filter favorites",
+        shortcut: "4",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::ToggleFavorite,
+        label: "Toggle favorite",
+        shortcut: "f",
+        enabled: command_toggle_favorite_enabled,
+    },
+    CommandDefinition {
         id: CommandId::ToggleSelection,
         label: "Toggle selection",
         shortcut: "Space",
@@ -253,9 +272,10 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
 pub struct App {
     pub packages: Vec<Package>,
     pub filtered: Vec<usize>,
-    pub filter_counts: [usize; 3],
+    pub filter_counts: [usize; 4],
     pub cursor: usize,
     pub selected: HashSet<String>,
+    pub favorite_packages: HashSet<String>,
 
     pub filter: Filter,
     pub source: Option<PackageSource>,
@@ -284,7 +304,7 @@ pub struct App {
     pub tick: u64,
 
     pub available_sources: Vec<PackageSource>,
-    pub source_counts: HashMap<PackageSource, (usize, usize, usize)>,
+    pub source_counts: HashMap<PackageSource, [usize; 4]>,
 
     pub pm: Arc<Mutex<PackageManager>>,
     pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
@@ -295,6 +315,8 @@ pub struct App {
     pub cursor_anchor_id: Option<String>,
     pub last_click: Option<(u16, u16, Instant)>,
     pub drag_select_anchor: Option<usize>,
+    pub favorites_persistence_enabled: bool,
+    pub favorites_dirty: bool,
 }
 
 impl App {
@@ -307,9 +329,10 @@ impl App {
         Self {
             packages: Vec::new(),
             filtered: Vec::new(),
-            filter_counts: [0, 0, 0],
+            filter_counts: [0, 0, 0, 0],
             cursor: 0,
             selected: HashSet::new(),
+            favorite_packages: HashSet::new(),
             filter: Filter::All,
             source: None,
             search: String::new(),
@@ -343,6 +366,8 @@ impl App {
             cursor_anchor_id: None,
             last_click: None,
             drag_select_anchor: None,
+            favorites_persistence_enabled: true,
+            favorites_dirty: false,
         }
     }
 
@@ -389,23 +414,51 @@ impl App {
             .sort_by_key(|source| source.to_string());
     }
 
+    pub fn load_favorites(&mut self) {
+        self.favorite_packages = Config::load().favorite_packages.into_iter().collect();
+        self.favorites_dirty = false;
+    }
+
+    fn persist_favorites(&mut self) -> Result<()> {
+        if !self.favorites_persistence_enabled || !self.favorites_dirty {
+            return Ok(());
+        }
+
+        let mut config = Config::load();
+        let mut favorites: Vec<String> = self.favorite_packages.iter().cloned().collect();
+        favorites.sort();
+        favorites.dedup();
+        config.favorite_packages = favorites;
+        config
+            .save()
+            .context("Failed to persist favorites to config")?;
+        self.favorites_dirty = false;
+        Ok(())
+    }
+
     pub fn source_count(&self) -> usize {
         self.visible_sources().len() + 1
     }
 
     pub fn visible_sources(&self) -> Vec<PackageSource> {
-        if self.filter == Filter::Updates {
-            self.available_sources
-                .iter()
-                .filter(|s| {
-                    self.source_counts
-                        .get(s)
-                        .is_some_and(|(_, _, updates)| *updates > 0)
-                })
-                .copied()
-                .collect()
-        } else {
-            self.available_sources.clone()
+        match self.filter {
+            Filter::Updates | Filter::Favorites => {
+                let count_index = if self.filter == Filter::Updates {
+                    FILTER_UPDATES_INDEX
+                } else {
+                    FILTER_FAVORITES_INDEX
+                };
+                self.available_sources
+                    .iter()
+                    .filter(|source| {
+                        self.source_counts
+                            .get(source)
+                            .is_some_and(|counts| counts[count_index] > 0)
+                    })
+                    .copied()
+                    .collect()
+            }
+            Filter::All | Filter::Installed => self.available_sources.clone(),
         }
     }
 
@@ -516,6 +569,10 @@ impl App {
     }
 
     fn can_toggle_selection_command(&self) -> bool {
+        self.current_package().is_some()
+    }
+
+    fn can_toggle_favorite_command(&self) -> bool {
         self.current_package().is_some()
     }
 
@@ -632,17 +689,22 @@ impl App {
             .saturating_sub(self.visible_selected_count())
     }
 
+    pub fn is_favorite_id(&self, package_id: &str) -> bool {
+        self.favorite_packages.contains(package_id)
+    }
+
     pub fn apply_filters(&mut self) {
         let mut n_all = 0usize;
         let mut n_installed = 0usize;
         let mut n_updates = 0usize;
+        let mut n_favorites = 0usize;
 
-        let mut per_source: HashMap<PackageSource, (usize, usize, usize)> = HashMap::new();
+        let mut per_source: HashMap<PackageSource, [usize; 4]> = HashMap::new();
 
         for package in &self.packages {
             n_all += 1;
-            let entry = per_source.entry(package.source).or_insert((0, 0, 0));
-            entry.0 += 1;
+            let entry = per_source.entry(package.source).or_insert([0, 0, 0, 0]);
+            entry[FILTER_ALL_INDEX] += 1;
 
             let is_installed = matches!(
                 package.status,
@@ -659,14 +721,18 @@ impl App {
 
             if is_installed {
                 n_installed += 1;
-                entry.1 += 1;
+                entry[FILTER_INSTALLED_INDEX] += 1;
             }
             if is_update {
                 n_updates += 1;
-                entry.2 += 1;
+                entry[FILTER_UPDATES_INDEX] += 1;
+            }
+            if self.favorite_packages.contains(&package.id()) {
+                n_favorites += 1;
+                entry[FILTER_FAVORITES_INDEX] += 1;
             }
         }
-        self.filter_counts = [n_all, n_installed, n_updates];
+        self.filter_counts = [n_all, n_installed, n_updates, n_favorites];
         self.source_counts = per_source;
 
         // Reset source if it's not visible under the current filter
@@ -682,7 +748,7 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, package)| {
-                Self::matches_filter(package, self.filter)
+                self.matches_filter(package, self.filter)
                     && self.source.is_none_or(|source| package.source == source)
                     && (query.is_empty()
                         || package.name.to_lowercase().contains(&query)
@@ -728,7 +794,7 @@ impl App {
         });
     }
 
-    fn matches_filter(package: &Package, filter: Filter) -> bool {
+    fn matches_filter(&self, package: &Package, filter: Filter) -> bool {
         match filter {
             Filter::All => true,
             Filter::Installed => matches!(
@@ -743,6 +809,7 @@ impl App {
                 package.status,
                 PackageStatus::UpdateAvailable | PackageStatus::Updating
             ),
+            Filter::Favorites => self.favorite_packages.contains(&package.id()),
         }
     }
 
@@ -1319,6 +1386,39 @@ impl App {
         }
     }
 
+    fn toggle_favorite_on_cursor(&mut self) {
+        let Some(package) = self.current_package() else {
+            return;
+        };
+
+        let package_id = package.id();
+        let package_name = package.name.clone();
+
+        let added = if self.favorite_packages.contains(&package_id) {
+            self.favorite_packages.remove(&package_id);
+            false
+        } else {
+            self.favorite_packages.insert(package_id);
+            true
+        };
+
+        self.favorites_dirty = true;
+        self.apply_filters();
+
+        match self.persist_favorites() {
+            Ok(()) => {
+                if added {
+                    self.set_status(format!("Added {} to favorites", package_name), true);
+                } else {
+                    self.set_status(format!("Removed {} from favorites", package_name), true);
+                }
+            }
+            Err(error) => {
+                self.set_status(format!("Failed to save favorites: {}", error), true);
+            }
+        }
+    }
+
     fn select_all_visible(&mut self) {
         for index in &self.filtered {
             if let Some(package) = self.packages.get(*index) {
@@ -1520,7 +1620,12 @@ impl App {
                 self.filter = Filter::Updates;
                 self.apply_filters();
             }
+            KeyCode::Char('4') => {
+                self.filter = Filter::Favorites;
+                self.apply_filters();
+            }
 
+            KeyCode::Char('f') => self.toggle_favorite_on_cursor(),
             KeyCode::Char(' ') => self.toggle_selection_on_cursor(),
             KeyCode::Char('a') => self.select_all_visible(),
 
@@ -1769,6 +1874,10 @@ impl App {
         let inner_col = col.saturating_sub(packages_rect.x.saturating_add(1));
         if inner_col < 2 {
             self.toggle_selection_on_cursor();
+            return;
+        }
+        if (3..5).contains(&inner_col) {
+            self.toggle_favorite_on_cursor();
             return;
         }
 
@@ -2083,6 +2192,10 @@ fn command_toggle_selection_enabled(app: &App) -> bool {
     app.can_toggle_selection_command()
 }
 
+fn command_toggle_favorite_enabled(app: &App) -> bool {
+    app.can_toggle_favorite_command()
+}
+
 fn command_select_all_enabled(app: &App) -> bool {
     app.can_select_all_command()
 }
@@ -2153,10 +2266,15 @@ pub async fn run() -> Result<()> {
     app.initialize_history_tracker().await;
     app.sync_task_queue_from_history().await;
     app.load_sources().await;
+    app.load_favorites();
     let _ = app.start_loading();
     app.spawn_task_executor();
 
     let result = run_app(&mut terminal, &mut app).await;
+
+    if let Err(error) = app.persist_favorites() {
+        error!(error = %error, "Failed to persist favorites");
+    }
 
     let _ = std::panic::take_hook();
     disable_raw_mode()?;
@@ -2232,12 +2350,14 @@ mod tests {
     }
 
     fn test_app() -> App {
-        App::new(
+        let mut app = App::new(
             Arc::new(Mutex::new(PackageManager::new())),
             Arc::new(Mutex::new(None)),
             None,
             None,
-        )
+        );
+        app.favorites_persistence_enabled = false;
+        app
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -2280,6 +2400,9 @@ mod tests {
             .any(|command| command.id == CommandId::FilterAll));
         assert!(registry
             .iter()
+            .any(|command| command.id == CommandId::FilterFavorites));
+        assert!(registry
+            .iter()
             .any(|command| command.id == CommandId::QueueCancel));
         assert!(registry
             .iter()
@@ -2304,6 +2427,7 @@ mod tests {
         app.apply_filters();
 
         assert!(app.command_enabled(CommandId::ToggleSelection));
+        assert!(app.command_enabled(CommandId::ToggleFavorite));
         assert!(app.command_enabled(CommandId::Install));
         assert!(!app.command_enabled(CommandId::Remove));
         assert!(!app.command_enabled(CommandId::Update));
@@ -2372,7 +2496,7 @@ mod tests {
         app.apply_filters();
 
         assert_eq!(app.filtered.len(), 3);
-        assert_eq!(app.filter_counts, [3, 2, 1]);
+        assert_eq!(app.filter_counts, [3, 2, 1, 0]);
     }
 
     #[test]
@@ -2406,6 +2530,25 @@ mod tests {
     }
 
     #[test]
+    fn apply_filters_favorites_filter_and_source_visibility() {
+        let mut app = test_app();
+        app.available_sources = vec![PackageSource::Apt, PackageSource::Snap];
+
+        let apt = make_pkg("apt", PackageSource::Apt, PackageStatus::Installed);
+        let snap = make_pkg("snap", PackageSource::Snap, PackageStatus::Installed);
+        app.favorite_packages.insert(apt.id());
+        app.packages = vec![apt, snap];
+
+        app.filter = Filter::Favorites;
+        app.apply_filters();
+
+        assert_eq!(app.filter_counts, [2, 2, 0, 1]);
+        assert_eq!(app.filtered.len(), 1);
+        assert_eq!(app.current_package().map(|p| p.name.as_str()), Some("apt"));
+        assert_eq!(app.visible_sources(), vec![PackageSource::Apt]);
+    }
+
+    #[test]
     fn apply_filters_tracks_per_source_counts_and_resets_hidden_source() {
         let mut app = test_app();
         app.available_sources = vec![PackageSource::Apt, PackageSource::Snap];
@@ -2429,10 +2572,13 @@ mod tests {
         app.filter = Filter::All;
         app.apply_filters();
 
-        assert_eq!(app.source_counts.get(&PackageSource::Apt), Some(&(2, 1, 0)));
+        assert_eq!(
+            app.source_counts.get(&PackageSource::Apt),
+            Some(&[2, 1, 0, 0])
+        );
         assert_eq!(
             app.source_counts.get(&PackageSource::Snap),
-            Some(&(1, 1, 1))
+            Some(&[1, 1, 1, 0])
         );
 
         app.source = Some(PackageSource::Apt);
@@ -2552,6 +2698,27 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('3'))).await;
         assert_eq!(app.filter, Filter::Updates);
+        assert_eq!(app.filtered.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn favorite_key_toggles_and_filter_four_shows_only_favorites() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![
+            make_pkg("a", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("b", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.apply_filters();
+
+        let favorite_id = app.packages[0].id();
+        app.handle_key(key(KeyCode::Char('f'))).await;
+
+        assert!(app.favorite_packages.contains(&favorite_id));
+        assert_eq!(app.filter_counts[3], 1);
+
+        app.handle_key(key(KeyCode::Char('4'))).await;
+        assert_eq!(app.filter, Filter::Favorites);
         assert_eq!(app.filtered.len(), 1);
     }
 
@@ -2891,6 +3058,32 @@ mod tests {
         .await;
 
         assert_eq!(app.selected.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn mouse_click_favorite_column_toggles_favorite() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+
+        let package_id = app.packages[0].id();
+        let regions = layout_regions(&app);
+        let favorite_col = regions.packages.x + 4;
+        let row = regions.packages.y + 2;
+
+        app.handle_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), favorite_col, row),
+            &regions,
+        )
+        .await;
+
+        assert!(app.favorite_packages.contains(&package_id));
+        assert_eq!(app.filter_counts[3], 1);
     }
 
     #[tokio::test]
