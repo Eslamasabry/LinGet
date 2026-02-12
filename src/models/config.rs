@@ -64,6 +64,26 @@ pub struct Config {
     #[serde(default)]
     pub favorite_packages: Vec<String>,
 
+    /// Last TUI filter key (all, installed, updates, favorites)
+    #[serde(default)]
+    pub tui_last_filter: Option<String>,
+
+    /// Last TUI focus pane (sources, packages, queue)
+    #[serde(default)]
+    pub tui_last_focus: Option<String>,
+
+    /// Last TUI search query
+    #[serde(default)]
+    pub tui_last_search: String,
+
+    /// Last TUI cursor row in the filtered package list
+    #[serde(default)]
+    pub tui_last_cursor: usize,
+
+    /// Favorites view sub-filter: only show favorites with updates
+    #[serde(default)]
+    pub tui_favorites_updates_only: bool,
+
     #[serde(default)]
     pub collections: HashMap<String, Vec<String>>,
 
@@ -395,6 +415,11 @@ impl Default for Config {
             layout_mode: LayoutMode::default(),
             last_source_filter: None,
             favorite_packages: Vec::new(),
+            tui_last_filter: None,
+            tui_last_focus: None,
+            tui_last_search: String::new(),
+            tui_last_cursor: 0,
+            tui_favorites_updates_only: false,
             collections: HashMap::new(),
             onboarding_completed: false,
             recent_searches: Vec::new(),

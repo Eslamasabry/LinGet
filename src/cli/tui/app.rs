@@ -50,11 +50,49 @@ pub enum Filter {
     Favorites,
 }
 
+impl Filter {
+    fn from_config_value(value: Option<&str>) -> Self {
+        match value.unwrap_or_default().to_lowercase().as_str() {
+            "installed" => Self::Installed,
+            "updates" => Self::Updates,
+            "favorites" => Self::Favorites,
+            _ => Self::All,
+        }
+    }
+
+    fn as_config_value(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Installed => "installed",
+            Self::Updates => "updates",
+            Self::Favorites => "favorites",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Sources,
     Packages,
     Queue,
+}
+
+impl Focus {
+    fn from_config_value(value: Option<&str>) -> Self {
+        match value.unwrap_or_default().to_lowercase().as_str() {
+            "packages" => Self::Packages,
+            "queue" => Self::Queue,
+            _ => Self::Sources,
+        }
+    }
+
+    fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Sources => "sources",
+            Self::Packages => "packages",
+            Self::Queue => "queue",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +108,7 @@ type LoadResult = Result<Vec<Package>, String>;
 pub enum CommandId {
     Quit,
     ShowHelp,
+    OpenPalette,
     CycleFocus,
     MoveUp,
     MoveDown,
@@ -82,6 +121,8 @@ pub enum CommandId {
     FilterUpdates,
     FilterFavorites,
     ToggleFavorite,
+    BulkToggleFavorite,
+    ToggleFavoritesUpdatesOnly,
     ToggleSelection,
     SelectAll,
     Install,
@@ -110,6 +151,16 @@ impl CommandDefinition {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PaletteCommandEntry {
+    pub id: CommandId,
+    pub label: &'static str,
+    pub shortcut: &'static str,
+    pub group: &'static str,
+    pub enabled: bool,
+    pub disabled_reason: Option<String>,
+}
+
 const COMMAND_REGISTRY: &[CommandDefinition] = &[
     CommandDefinition {
         id: CommandId::Quit,
@@ -122,6 +173,12 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         label: "Show help",
         shortcut: "?",
         enabled: command_always_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::OpenPalette,
+        label: "Open command palette",
+        shortcut: ": / Ctrl+P",
+        enabled: command_open_palette_enabled,
     },
     CommandDefinition {
         id: CommandId::CycleFocus,
@@ -194,6 +251,18 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         label: "Toggle favorite",
         shortcut: "f",
         enabled: command_toggle_favorite_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::BulkToggleFavorite,
+        label: "Bulk toggle favorites",
+        shortcut: "F",
+        enabled: command_bulk_toggle_favorite_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::ToggleFavoritesUpdatesOnly,
+        label: "Favorites updates only",
+        shortcut: "v",
+        enabled: command_toggle_favorites_updates_only_enabled,
     },
     CommandDefinition {
         id: CommandId::ToggleSelection,
@@ -276,6 +345,7 @@ pub struct App {
     pub cursor: usize,
     pub selected: HashSet<String>,
     pub favorite_packages: HashSet<String>,
+    pub favorites_updates_only: bool,
 
     pub filter: Filter,
     pub source: Option<PackageSource>,
@@ -296,6 +366,9 @@ pub struct App {
     pub compact: bool,
     pub confirming: Option<PendingAction>,
     pub showing_help: bool,
+    pub showing_palette: bool,
+    pub palette_query: String,
+    pub palette_cursor: usize,
 
     pub status: String,
     pub clear_status_on_key: bool,
@@ -316,6 +389,7 @@ pub struct App {
     pub last_click: Option<(u16, u16, Instant)>,
     pub drag_select_anchor: Option<usize>,
     pub favorites_persistence_enabled: bool,
+    pub session_persistence_enabled: bool,
     pub favorites_dirty: bool,
 }
 
@@ -333,6 +407,7 @@ impl App {
             cursor: 0,
             selected: HashSet::new(),
             favorite_packages: HashSet::new(),
+            favorites_updates_only: false,
             filter: Filter::All,
             source: None,
             search: String::new(),
@@ -350,6 +425,9 @@ impl App {
             compact: false,
             confirming: None,
             showing_help: false,
+            showing_palette: false,
+            palette_query: String::new(),
+            palette_cursor: 0,
             status: String::new(),
             clear_status_on_key: false,
             loading: false,
@@ -367,6 +445,7 @@ impl App {
             last_click: None,
             drag_select_anchor: None,
             favorites_persistence_enabled: true,
+            session_persistence_enabled: true,
             favorites_dirty: false,
         }
     }
@@ -417,6 +496,55 @@ impl App {
     pub fn load_favorites(&mut self) {
         self.favorite_packages = Config::load().favorite_packages.into_iter().collect();
         self.favorites_dirty = false;
+    }
+
+    pub fn load_session_state(&mut self) {
+        if !self.session_persistence_enabled {
+            return;
+        }
+
+        let config = Config::load();
+        self.apply_session_from_config(&config);
+    }
+
+    fn apply_session_from_config(&mut self, config: &Config) {
+        self.filter = Filter::from_config_value(config.tui_last_filter.as_deref());
+        self.focus = Focus::from_config_value(config.tui_last_focus.as_deref());
+        self.search = config.tui_last_search.clone();
+        self.source = config
+            .last_source_filter
+            .as_deref()
+            .and_then(PackageSource::from_str);
+        self.favorites_updates_only = config.tui_favorites_updates_only;
+        self.apply_filters();
+        self.cursor = config
+            .tui_last_cursor
+            .min(self.filtered.len().saturating_sub(1));
+
+        if self.focus == Focus::Queue && !self.queue_expanded {
+            self.focus = Focus::Packages;
+        }
+    }
+
+    fn write_session_to_config(&self, config: &mut Config) {
+        config.tui_last_filter = Some(self.filter.as_config_value().to_string());
+        config.tui_last_focus = Some(self.focus.as_config_value().to_string());
+        config.tui_last_search = self.search.clone();
+        config.tui_last_cursor = self.cursor;
+        config.tui_favorites_updates_only = self.favorites_updates_only;
+        config.last_source_filter = self.source.map(|source| source.as_config_str().to_string());
+    }
+
+    fn persist_session_state(&self) -> Result<()> {
+        if !self.session_persistence_enabled {
+            return Ok(());
+        }
+
+        let mut config = Config::load();
+        self.write_session_to_config(&mut config);
+        config
+            .save()
+            .context("Failed to persist TUI session state to config")
     }
 
     fn persist_favorites(&mut self) -> Result<()> {
@@ -474,6 +602,92 @@ impl App {
                     && definition.is_enabled(self)
             })
             .unwrap_or(false)
+    }
+
+    pub fn command_disabled_reason(&self, id: CommandId) -> Option<String> {
+        if self.command_enabled(id) {
+            return None;
+        }
+
+        Some(
+            match id {
+                CommandId::CycleFocus => {
+                    "Cycle focus is unavailable in compact layout or while queue is expanded"
+                }
+                CommandId::MoveUp
+                | CommandId::MoveDown
+                | CommandId::MoveTop
+                | CommandId::MoveBottom
+                | CommandId::PageUp
+                | CommandId::PageDown => "No further items in that direction",
+                CommandId::ToggleFavorite | CommandId::ToggleSelection => "Select a package first",
+                CommandId::BulkToggleFavorite => {
+                    "Select one or more packages (or place the cursor on a package)"
+                }
+                CommandId::ToggleFavoritesUpdatesOnly => "Switch to Favorites filter first",
+                CommandId::SelectAll => "No visible packages to select",
+                CommandId::Install => "No installable package in current selection",
+                CommandId::Remove => "No removable package in current selection",
+                CommandId::Update => "No updatable package in current selection",
+                CommandId::Refresh => "Refresh is already in progress",
+                CommandId::ToggleQueue => "Queue is empty",
+                CommandId::QueueCancel => "Select a queued task in expanded queue",
+                CommandId::QueueRetry => "Select a failed task in expanded queue",
+                CommandId::QueueLogOlder => "No older queue logs available",
+                CommandId::QueueLogNewer => "No newer queue logs available",
+                _ => "Command unavailable in current context",
+            }
+            .to_string(),
+        )
+    }
+
+    pub fn palette_entries(&self) -> Vec<PaletteCommandEntry> {
+        let query = self.palette_query.trim().to_lowercase();
+
+        let mut entries: Vec<(usize, usize, usize, PaletteCommandEntry)> = Self::command_registry()
+            .iter()
+            .enumerate()
+            .filter_map(|(order, definition)| {
+                let group = command_group(definition.id);
+                let haystack = format!(
+                    "{} {} {}",
+                    definition.label.to_lowercase(),
+                    definition.shortcut.to_lowercase(),
+                    group.to_lowercase()
+                );
+                let score = fuzzy_subsequence_score(&haystack, &query)?;
+                let enabled = self.command_enabled(definition.id);
+                Some((
+                    command_group_order(definition.id),
+                    score,
+                    order,
+                    PaletteCommandEntry {
+                        id: definition.id,
+                        label: definition.label,
+                        shortcut: definition.shortcut,
+                        group,
+                        enabled,
+                        disabled_reason: self.command_disabled_reason(definition.id),
+                    },
+                ))
+            })
+            .collect();
+
+        entries.sort_by_key(|(group, score, order, _)| (*group, *score, *order));
+        entries.into_iter().map(|(_, _, _, entry)| entry).collect()
+    }
+
+    pub fn palette_selected_entry(&self) -> Option<PaletteCommandEntry> {
+        self.palette_entries().get(self.palette_cursor).cloned()
+    }
+
+    fn clamp_palette_cursor(&mut self) {
+        let len = self.palette_entries().len();
+        self.palette_cursor = if len == 0 {
+            0
+        } else {
+            self.palette_cursor.min(len.saturating_sub(1))
+        };
     }
 
     fn command_definition(id: CommandId) -> Option<&'static CommandDefinition> {
@@ -578,6 +792,14 @@ impl App {
 
     fn can_select_all_command(&self) -> bool {
         !self.filtered.is_empty()
+    }
+
+    fn can_bulk_toggle_favorite_command(&self) -> bool {
+        !self.selected.is_empty() || self.current_package().is_some()
+    }
+
+    fn can_toggle_favorites_updates_only_command(&self) -> bool {
+        self.filter == Filter::Favorites
     }
 
     fn can_prepare_command(&self, action: TaskQueueAction) -> bool {
@@ -718,6 +940,8 @@ impl App {
                 package.status,
                 PackageStatus::UpdateAvailable | PackageStatus::Updating
             );
+            let is_favorite = self.favorite_packages.contains(&package.id());
+            let is_favorite_visible = is_favorite && (!self.favorites_updates_only || is_update);
 
             if is_installed {
                 n_installed += 1;
@@ -727,7 +951,7 @@ impl App {
                 n_updates += 1;
                 entry[FILTER_UPDATES_INDEX] += 1;
             }
-            if self.favorite_packages.contains(&package.id()) {
+            if is_favorite_visible {
                 n_favorites += 1;
                 entry[FILTER_FAVORITES_INDEX] += 1;
             }
@@ -759,6 +983,8 @@ impl App {
 
         if self.filter == Filter::Updates {
             self.sort_updates_by_priority();
+        } else {
+            self.sort_favorites_then_name();
         }
 
         self.cursor = self.cursor.min(self.filtered.len().saturating_sub(1));
@@ -794,6 +1020,20 @@ impl App {
         });
     }
 
+    fn sort_favorites_then_name(&mut self) {
+        self.filtered.sort_by(|left_idx, right_idx| {
+            let left = &self.packages[*left_idx];
+            let right = &self.packages[*right_idx];
+            let left_favorite = self.favorite_packages.contains(&left.id());
+            let right_favorite = self.favorite_packages.contains(&right.id());
+
+            right_favorite
+                .cmp(&left_favorite)
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                .then_with(|| left.source.cmp(&right.source))
+        });
+    }
+
     fn matches_filter(&self, package: &Package, filter: Filter) -> bool {
         match filter {
             Filter::All => true,
@@ -809,7 +1049,14 @@ impl App {
                 package.status,
                 PackageStatus::UpdateAvailable | PackageStatus::Updating
             ),
-            Filter::Favorites => self.favorite_packages.contains(&package.id()),
+            Filter::Favorites => {
+                self.favorite_packages.contains(&package.id())
+                    && (!self.favorites_updates_only
+                        || matches!(
+                            package.status,
+                            PackageStatus::UpdateAvailable | PackageStatus::Updating
+                        ))
+            }
         }
     }
 
@@ -1419,6 +1666,93 @@ impl App {
         }
     }
 
+    fn favorite_toggle_targets(&self) -> Vec<String> {
+        if self.selected.is_empty() {
+            return self
+                .current_package()
+                .map(Package::id)
+                .into_iter()
+                .collect();
+        }
+
+        self.packages
+            .iter()
+            .filter(|package| self.selected.contains(&package.id()))
+            .map(Package::id)
+            .collect()
+    }
+
+    fn bulk_toggle_favorites(&mut self) {
+        let mut targets = self.favorite_toggle_targets();
+        if targets.is_empty() {
+            self.set_status("No packages selected", true);
+            return;
+        }
+
+        targets.sort();
+        targets.dedup();
+
+        let all_favorited = targets
+            .iter()
+            .all(|package_id| self.favorite_packages.contains(package_id));
+
+        if all_favorited {
+            for package_id in &targets {
+                self.favorite_packages.remove(package_id);
+            }
+        } else {
+            for package_id in &targets {
+                self.favorite_packages.insert(package_id.clone());
+            }
+        }
+
+        self.favorites_dirty = true;
+        self.apply_filters();
+
+        let message = if all_favorited {
+            format!(
+                "Removed {} package{} from favorites",
+                targets.len(),
+                if targets.len() == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "Added {} package{} to favorites",
+                targets.len(),
+                if targets.len() == 1 { "" } else { "s" }
+            )
+        };
+
+        match self.persist_favorites() {
+            Ok(()) => self.set_status(message, true),
+            Err(error) => self.set_status(format!("Failed to save favorites: {}", error), true),
+        }
+    }
+
+    fn toggle_favorites_updates_only(&mut self) {
+        self.favorites_updates_only = !self.favorites_updates_only;
+        self.apply_filters();
+        if self.favorites_updates_only {
+            self.set_status("Favorites mode: updates only", true);
+        } else {
+            self.set_status("Favorites mode: all favorites", true);
+        }
+    }
+
+    fn open_palette(&mut self) {
+        self.showing_help = false;
+        self.searching = false;
+        self.showing_palette = true;
+        self.palette_query.clear();
+        self.palette_cursor = 0;
+    }
+
+    fn close_palette(&mut self) {
+        self.showing_palette = false;
+        self.palette_query.clear();
+        self.palette_cursor = 0;
+    }
+
     fn select_all_visible(&mut self) {
         for index in &self.filtered {
             if let Some(package) = self.packages.get(*index) {
@@ -1495,19 +1829,202 @@ impl App {
         }
     }
 
-    async fn handle_normal_key(&mut self, key: KeyEvent) {
+    pub async fn execute_command(&mut self, command: CommandId) {
+        let allow_invalid_execution = matches!(
+            command,
+            CommandId::Install | CommandId::Remove | CommandId::Update
+        );
+
+        if !allow_invalid_execution && !self.command_enabled(command) {
+            if let Some(reason) = self.command_disabled_reason(command) {
+                self.set_status(reason, true);
+            }
+            return;
+        }
+
+        match command {
+            CommandId::Quit => self.should_quit = true,
+            CommandId::ShowHelp => self.showing_help = true,
+            CommandId::OpenPalette => self.open_palette(),
+            CommandId::CycleFocus => {
+                self.focus = match self.focus {
+                    Focus::Sources => Focus::Packages,
+                    Focus::Packages | Focus::Queue => Focus::Sources,
+                };
+            }
+            CommandId::MoveUp => {
+                if self.queue_focus_active() {
+                    self.queue_prev();
+                } else {
+                    match self.focus {
+                        Focus::Sources => self.prev_source(),
+                        Focus::Packages | Focus::Queue => self.prev_package(),
+                    }
+                }
+            }
+            CommandId::MoveDown => {
+                if self.queue_focus_active() {
+                    self.queue_next();
+                } else {
+                    match self.focus {
+                        Focus::Sources => self.next_source(),
+                        Focus::Packages | Focus::Queue => self.next_package(),
+                    }
+                }
+            }
+            CommandId::MoveTop => {
+                if self.queue_focus_active() {
+                    self.queue_top();
+                } else {
+                    match self.focus {
+                        Focus::Sources => self.set_source_by_index(0),
+                        Focus::Packages | Focus::Queue => self.top(),
+                    }
+                }
+            }
+            CommandId::MoveBottom => {
+                if self.queue_focus_active() {
+                    self.queue_bottom();
+                } else {
+                    match self.focus {
+                        Focus::Sources => {
+                            self.set_source_by_index(self.source_count().saturating_sub(1))
+                        }
+                        Focus::Packages | Focus::Queue => self.bottom(),
+                    }
+                }
+            }
+            CommandId::PageUp => {
+                if self.queue_focus_active() {
+                    self.queue_page_up();
+                } else {
+                    self.page_up();
+                }
+            }
+            CommandId::PageDown => {
+                if self.queue_focus_active() {
+                    self.queue_page_down();
+                } else {
+                    self.page_down();
+                }
+            }
+            CommandId::FilterAll => {
+                self.filter = Filter::All;
+                self.apply_filters();
+            }
+            CommandId::FilterInstalled => {
+                self.filter = Filter::Installed;
+                self.apply_filters();
+            }
+            CommandId::FilterUpdates => {
+                self.filter = Filter::Updates;
+                self.apply_filters();
+            }
+            CommandId::FilterFavorites => {
+                self.filter = Filter::Favorites;
+                self.apply_filters();
+            }
+            CommandId::ToggleFavorite => self.toggle_favorite_on_cursor(),
+            CommandId::BulkToggleFavorite => self.bulk_toggle_favorites(),
+            CommandId::ToggleFavoritesUpdatesOnly => self.toggle_favorites_updates_only(),
+            CommandId::ToggleSelection => self.toggle_selection_on_cursor(),
+            CommandId::SelectAll => self.select_all_visible(),
+            CommandId::Install => self.prepare_action(TaskQueueAction::Install),
+            CommandId::Remove => self.prepare_action(TaskQueueAction::Remove),
+            CommandId::Update => self.prepare_action(TaskQueueAction::Update),
+            CommandId::Search => self.searching = true,
+            CommandId::Refresh => {
+                if !self.start_loading() {
+                    self.set_status("Already refreshing", true);
+                }
+            }
+            CommandId::ToggleQueue => self.toggle_queue_expanded(),
+            CommandId::QueueCancel => self.cancel_selected_task().await,
+            CommandId::QueueRetry => self.retry_selected_task().await,
+            CommandId::QueueLogOlder => self.queue_log_scroll_up(),
+            CommandId::QueueLogNewer => self.queue_log_scroll_down(),
+        }
+    }
+
+    async fn handle_palette_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
             return;
         }
 
         match key.code {
-            KeyCode::Char('q') if self.command_enabled(CommandId::Quit) => {
-                self.should_quit = true;
+            KeyCode::Esc => self.close_palette(),
+            KeyCode::Enter => {
+                let Some(entry) = self.palette_selected_entry() else {
+                    return;
+                };
+
+                if !entry.enabled {
+                    if let Some(reason) = entry.disabled_reason {
+                        self.set_status(reason, true);
+                    }
+                    return;
+                }
+
+                self.close_palette();
+                self.execute_command(entry.id).await;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.palette_cursor = self.palette_cursor.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let len = self.palette_entries().len();
+                if len > 0 {
+                    self.palette_cursor = (self.palette_cursor + 1).min(len - 1);
+                }
+            }
+            KeyCode::Home => {
+                self.palette_cursor = 0;
+            }
+            KeyCode::End => {
+                let len = self.palette_entries().len();
+                if len > 0 {
+                    self.palette_cursor = len - 1;
+                }
+            }
+            KeyCode::Backspace | KeyCode::Delete => {
+                self.palette_query.pop();
+                self.clamp_palette_cursor();
+            }
+            KeyCode::Char(ch)
+                if !ch.is_control()
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.palette_query.push(ch);
+                self.clamp_palette_cursor();
+            }
+            _ => {}
+        }
+
+        self.clamp_palette_cursor();
+    }
+
+    async fn handle_normal_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
+
+        if key.code == KeyCode::Char(':')
+            || (key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL))
+        {
+            self.execute_command(CommandId::OpenPalette).await;
+            return;
+        }
+
+        match key.code {
+            KeyCode::Char('q') => {
+                self.execute_command(CommandId::Quit).await;
                 return;
             }
-            KeyCode::Char('?') if self.command_enabled(CommandId::ShowHelp) => {
-                self.showing_help = true;
+            KeyCode::Char('?') => {
+                self.execute_command(CommandId::ShowHelp).await;
                 return;
             }
             _ => {}
@@ -1516,7 +2033,7 @@ impl App {
         if self.queue_expanded && self.focus == Focus::Queue {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('l') => {
-                    self.toggle_queue_expanded();
+                    self.execute_command(CommandId::ToggleQueue).await;
                     return;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -1544,11 +2061,11 @@ impl App {
                     return;
                 }
                 KeyCode::Char('[') => {
-                    self.queue_log_scroll_up();
+                    self.execute_command(CommandId::QueueLogOlder).await;
                     return;
                 }
                 KeyCode::Char(']') => {
-                    self.queue_log_scroll_down();
+                    self.execute_command(CommandId::QueueLogNewer).await;
                     return;
                 }
                 _ if key.code == KeyCode::Char('d')
@@ -1571,14 +2088,7 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Tab => {
-                if self.command_enabled(CommandId::CycleFocus) {
-                    self.focus = match self.focus {
-                        Focus::Sources => Focus::Packages,
-                        Focus::Packages | Focus::Queue => Focus::Sources,
-                    };
-                }
-            }
+            KeyCode::Tab => self.execute_command(CommandId::CycleFocus).await,
             KeyCode::Char('j') | KeyCode::Down => match self.focus {
                 Focus::Sources => self.next_source(),
                 Focus::Packages | Focus::Queue => self.next_package(),
@@ -1607,45 +2117,27 @@ impl App {
             {
                 self.page_up()
             }
-
-            KeyCode::Char('1') => {
-                self.filter = Filter::All;
-                self.apply_filters();
+            KeyCode::Char('1') => self.execute_command(CommandId::FilterAll).await,
+            KeyCode::Char('2') => self.execute_command(CommandId::FilterInstalled).await,
+            KeyCode::Char('3') => self.execute_command(CommandId::FilterUpdates).await,
+            KeyCode::Char('4') => self.execute_command(CommandId::FilterFavorites).await,
+            KeyCode::Char('f') => self.execute_command(CommandId::ToggleFavorite).await,
+            KeyCode::Char('F') => self.execute_command(CommandId::BulkToggleFavorite).await,
+            KeyCode::Char('v') => {
+                self.execute_command(CommandId::ToggleFavoritesUpdatesOnly)
+                    .await;
             }
-            KeyCode::Char('2') => {
-                self.filter = Filter::Installed;
-                self.apply_filters();
-            }
-            KeyCode::Char('3') => {
-                self.filter = Filter::Updates;
-                self.apply_filters();
-            }
-            KeyCode::Char('4') => {
-                self.filter = Filter::Favorites;
-                self.apply_filters();
-            }
-
-            KeyCode::Char('f') => self.toggle_favorite_on_cursor(),
-            KeyCode::Char(' ') => self.toggle_selection_on_cursor(),
-            KeyCode::Char('a') => self.select_all_visible(),
-
-            KeyCode::Char('i') => self.prepare_action(TaskQueueAction::Install),
-            KeyCode::Char('x') => self.prepare_action(TaskQueueAction::Remove),
-            KeyCode::Char('u') => self.prepare_action(TaskQueueAction::Update),
-
-            KeyCode::Char('/') => {
-                self.searching = true;
-            }
-            KeyCode::Char('r') => {
-                if !self.start_loading() {
-                    self.set_status("Already refreshing", true);
-                }
-            }
-            KeyCode::Char('l') => self.toggle_queue_expanded(),
-
+            KeyCode::Char(' ') => self.execute_command(CommandId::ToggleSelection).await,
+            KeyCode::Char('a') => self.execute_command(CommandId::SelectAll).await,
+            KeyCode::Char('i') => self.execute_command(CommandId::Install).await,
+            KeyCode::Char('x') => self.execute_command(CommandId::Remove).await,
+            KeyCode::Char('u') => self.execute_command(CommandId::Update).await,
+            KeyCode::Char('/') => self.execute_command(CommandId::Search).await,
+            KeyCode::Char('r') => self.execute_command(CommandId::Refresh).await,
+            KeyCode::Char('l') => self.execute_command(CommandId::ToggleQueue).await,
             KeyCode::Esc => {
                 if self.queue_expanded {
-                    self.toggle_queue_expanded();
+                    self.execute_command(CommandId::ToggleQueue).await;
                 } else if !self.search.is_empty() {
                     self.search.clear();
                     self.apply_filters();
@@ -1655,10 +2147,8 @@ impl App {
                     self.set_status("Selection cleared", true);
                 }
             }
-
-            KeyCode::Char('C') | KeyCode::Char('R') => {
-                self.handle_queue_shortcuts(key).await;
-            }
+            KeyCode::Char('C') => self.execute_command(CommandId::QueueCancel).await,
+            KeyCode::Char('R') => self.execute_command(CommandId::QueueRetry).await,
             _ => {}
         }
     }
@@ -1666,6 +2156,10 @@ impl App {
     pub async fn handle_key(&mut self, key: KeyEvent) {
         self.clear_status_if_needed();
 
+        if self.showing_palette {
+            self.handle_palette_key(key).await;
+            return;
+        }
         if self.showing_help {
             self.handle_help_key(key).await;
             return;
@@ -1686,6 +2180,34 @@ impl App {
         const DOUBLE_CLICK_MS: u128 = 400;
 
         let pos = (event.column, event.row);
+
+        if self.showing_palette {
+            match event.kind {
+                MouseEventKind::ScrollUp => {
+                    self.palette_cursor = self.palette_cursor.saturating_sub(1);
+                    self.clamp_palette_cursor();
+                }
+                MouseEventKind::ScrollDown => {
+                    let len = self.palette_entries().len();
+                    if len > 0 {
+                        self.palette_cursor = (self.palette_cursor + 1).min(len - 1);
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let col = event.column;
+                    let row = event.row;
+                    let is_double = self.last_click.take().is_some_and(|(lc, lr, lt)| {
+                        lc == col && lr == row && lt.elapsed().as_millis() < DOUBLE_CLICK_MS
+                    });
+                    self.last_click = Some((col, row, Instant::now()));
+                    self.handle_mouse_palette_click(col, row, is_double, &regions.palette)
+                        .await;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match event.kind {
             MouseEventKind::ScrollUp => {
                 if rect_contains(regions.expanded_queue_logs, pos) {
@@ -1775,6 +2297,73 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn palette_index_from_mouse_row(&self, row: u16, palette_rect: &Rect) -> Option<usize> {
+        if palette_rect.width <= 2 || palette_rect.height <= 4 {
+            return None;
+        }
+
+        let inner_y = palette_rect.y.saturating_add(1);
+        let inner_height = palette_rect.height.saturating_sub(2);
+        if inner_height < 3 {
+            return None;
+        }
+
+        let list_top = inner_y.saturating_add(1);
+        let visible_rows = inner_height.saturating_sub(2) as usize;
+        if visible_rows == 0 {
+            return None;
+        }
+        if row < list_top || row >= list_top.saturating_add(visible_rows as u16) {
+            return None;
+        }
+
+        let entries = self.palette_entries();
+        if entries.is_empty() {
+            return None;
+        }
+
+        let start = ui::window_start(entries.len(), visible_rows, self.palette_cursor);
+        let clicked = start + row.saturating_sub(list_top) as usize;
+        (clicked < entries.len()).then_some(clicked)
+    }
+
+    async fn handle_mouse_palette_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        is_double: bool,
+        palette_rect: &Rect,
+    ) {
+        if !rect_contains(*palette_rect, (col, row)) {
+            self.close_palette();
+            return;
+        }
+
+        let Some(index) = self.palette_index_from_mouse_row(row, palette_rect) else {
+            return;
+        };
+
+        self.palette_cursor = index;
+
+        if !is_double {
+            return;
+        }
+
+        let Some(entry) = self.palette_entries().get(index).cloned() else {
+            return;
+        };
+
+        if !entry.enabled {
+            if let Some(reason) = entry.disabled_reason {
+                self.set_status(reason, true);
+            }
+            return;
+        }
+
+        self.close_palette();
+        self.execute_command(entry.id).await;
     }
 
     fn handle_mouse_header(&mut self, col: u16, row: u16, regions: &ui::LayoutRegions) {
@@ -2160,6 +2749,10 @@ fn command_always_enabled(_: &App) -> bool {
     true
 }
 
+fn command_open_palette_enabled(app: &App) -> bool {
+    !app.showing_palette
+}
+
 fn command_cycle_focus_enabled(app: &App) -> bool {
     app.can_cycle_focus_command()
 }
@@ -2194,6 +2787,14 @@ fn command_toggle_selection_enabled(app: &App) -> bool {
 
 fn command_toggle_favorite_enabled(app: &App) -> bool {
     app.can_toggle_favorite_command()
+}
+
+fn command_bulk_toggle_favorite_enabled(app: &App) -> bool {
+    app.can_bulk_toggle_favorite_command()
+}
+
+fn command_toggle_favorites_updates_only_enabled(app: &App) -> bool {
+    app.can_toggle_favorites_updates_only_command()
 }
 
 fn command_select_all_enabled(app: &App) -> bool {
@@ -2236,6 +2837,71 @@ fn command_queue_log_newer_enabled(app: &App) -> bool {
     app.can_queue_log_newer_command()
 }
 
+fn command_group(command: CommandId) -> &'static str {
+    match command {
+        CommandId::Quit | CommandId::ShowHelp | CommandId::OpenPalette => "Global",
+        CommandId::CycleFocus
+        | CommandId::MoveUp
+        | CommandId::MoveDown
+        | CommandId::MoveTop
+        | CommandId::MoveBottom
+        | CommandId::PageUp
+        | CommandId::PageDown => "Navigation",
+        CommandId::FilterAll
+        | CommandId::FilterInstalled
+        | CommandId::FilterUpdates
+        | CommandId::FilterFavorites
+        | CommandId::Search
+        | CommandId::Refresh => "Views",
+        CommandId::ToggleFavorite
+        | CommandId::BulkToggleFavorite
+        | CommandId::ToggleFavoritesUpdatesOnly
+        | CommandId::ToggleSelection
+        | CommandId::SelectAll => "Selection",
+        CommandId::Install | CommandId::Remove | CommandId::Update => "Actions",
+        CommandId::ToggleQueue
+        | CommandId::QueueCancel
+        | CommandId::QueueRetry
+        | CommandId::QueueLogOlder
+        | CommandId::QueueLogNewer => "Queue",
+    }
+}
+
+fn command_group_order(command: CommandId) -> usize {
+    match command_group(command) {
+        "Global" => 0,
+        "Navigation" => 1,
+        "Views" => 2,
+        "Selection" => 3,
+        "Actions" => 4,
+        "Queue" => 5,
+        _ => usize::MAX,
+    }
+}
+
+fn fuzzy_subsequence_score(haystack: &str, query: &str) -> Option<usize> {
+    if query.is_empty() {
+        return Some(0);
+    }
+
+    let mut consumed = 0usize;
+    let mut score = 0usize;
+    for expected in query.chars() {
+        let mut found = None;
+        for (offset, ch) in haystack[consumed..].char_indices() {
+            if ch == expected {
+                found = Some((offset, ch.len_utf8()));
+                break;
+            }
+        }
+        let (offset, width) = found?;
+        score += offset;
+        consumed += offset + width;
+    }
+
+    Some(score)
+}
+
 pub fn action_label(action: TaskQueueAction) -> &'static str {
     match action {
         TaskQueueAction::Install => "Install",
@@ -2267,6 +2933,7 @@ pub async fn run() -> Result<()> {
     app.sync_task_queue_from_history().await;
     app.load_sources().await;
     app.load_favorites();
+    app.load_session_state();
     let _ = app.start_loading();
     app.spawn_task_executor();
 
@@ -2274,6 +2941,9 @@ pub async fn run() -> Result<()> {
 
     if let Err(error) = app.persist_favorites() {
         error!(error = %error, "Failed to persist favorites");
+    }
+    if let Err(error) = app.persist_session_state() {
+        error!(error = %error, "Failed to persist TUI session state");
     }
 
     let _ = std::panic::take_hook();
@@ -2357,6 +3027,7 @@ mod tests {
             None,
         );
         app.favorites_persistence_enabled = false;
+        app.session_persistence_enabled = false;
         app
     }
 
@@ -2407,6 +3078,12 @@ mod tests {
         assert!(registry
             .iter()
             .any(|command| command.id == CommandId::ShowHelp));
+        assert!(registry
+            .iter()
+            .any(|command| command.id == CommandId::OpenPalette));
+        assert!(registry
+            .iter()
+            .any(|command| command.id == CommandId::BulkToggleFavorite));
     }
 
     #[test]
@@ -2428,6 +3105,8 @@ mod tests {
 
         assert!(app.command_enabled(CommandId::ToggleSelection));
         assert!(app.command_enabled(CommandId::ToggleFavorite));
+        assert!(app.command_enabled(CommandId::BulkToggleFavorite));
+        assert!(!app.command_enabled(CommandId::ToggleFavoritesUpdatesOnly));
         assert!(app.command_enabled(CommandId::Install));
         assert!(!app.command_enabled(CommandId::Remove));
         assert!(!app.command_enabled(CommandId::Update));
@@ -2437,6 +3116,10 @@ mod tests {
 
         assert!(app.command_enabled(CommandId::Remove));
         assert!(app.command_enabled(CommandId::Update));
+
+        app.filter = Filter::Favorites;
+        app.apply_filters();
+        assert!(app.command_enabled(CommandId::ToggleFavoritesUpdatesOnly));
     }
 
     #[test]
@@ -3255,5 +3938,149 @@ mod tests {
         .await;
         assert_eq!(app.tasks.len(), before + 1);
         assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
+    }
+
+    #[test]
+    fn palette_entries_include_disabled_reasons_and_fuzzy_filter() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::NotInstalled,
+        )];
+        app.apply_filters();
+        app.palette_query = "remove".to_string();
+
+        let entries = app.palette_entries();
+        let remove = entries
+            .iter()
+            .find(|entry| entry.id == CommandId::Remove)
+            .expect("remove command present");
+        assert!(!remove.enabled);
+        assert!(remove
+            .disabled_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("removable package")));
+    }
+
+    #[tokio::test]
+    async fn execute_command_surfaces_disabled_reason_and_can_queue_install() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::NotInstalled,
+        )];
+        app.apply_filters();
+
+        app.execute_command(CommandId::Remove).await;
+        assert_eq!(app.status, "pkg is not installed");
+
+        app.execute_command(CommandId::Install).await;
+        assert!(app.confirming.is_some());
+    }
+
+    #[tokio::test]
+    async fn bulk_favorites_toggle_adds_and_removes_all_targets() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![
+            make_pkg("a", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("b", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.apply_filters();
+        app.selected.insert(app.packages[0].id());
+        app.selected.insert(app.packages[1].id());
+
+        app.execute_command(CommandId::BulkToggleFavorite).await;
+        assert_eq!(app.favorite_packages.len(), 2);
+
+        app.execute_command(CommandId::BulkToggleFavorite).await;
+        assert!(app.favorite_packages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn favorites_updates_only_mode_filters_favorites_view() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        let stale = make_pkg("stale", PackageSource::Apt, PackageStatus::Installed);
+        let update = make_pkg("update", PackageSource::Apt, PackageStatus::UpdateAvailable);
+        app.favorite_packages.insert(stale.id());
+        app.favorite_packages.insert(update.id());
+        app.packages = vec![stale, update];
+        app.filter = Filter::Favorites;
+        app.apply_filters();
+        assert_eq!(app.filtered.len(), 2);
+
+        app.execute_command(CommandId::ToggleFavoritesUpdatesOnly)
+            .await;
+        assert!(app.favorites_updates_only);
+        assert_eq!(app.filtered.len(), 1);
+        assert_eq!(
+            app.current_package().map(|pkg| pkg.name.as_str()),
+            Some("update")
+        );
+    }
+
+    #[test]
+    fn session_state_round_trip_config_helpers() {
+        let mut app = test_app();
+        let favorite = make_pkg("vim", PackageSource::Apt, PackageStatus::UpdateAvailable);
+        app.available_sources = vec![PackageSource::Apt, PackageSource::Snap];
+        app.favorite_packages.insert(favorite.id());
+        app.packages = vec![favorite.clone()];
+
+        let mut config = Config::default();
+        config.tui_last_filter = Some("favorites".to_string());
+        config.tui_last_focus = Some("queue".to_string());
+        config.tui_last_search = "vim".to_string();
+        config.tui_last_cursor = 9;
+        config.tui_favorites_updates_only = true;
+        config.last_source_filter = Some("apt".to_string());
+
+        app.apply_session_from_config(&config);
+        assert_eq!(app.filter, Filter::Favorites);
+        assert_eq!(app.focus, Focus::Packages);
+        assert_eq!(app.search, "vim");
+        assert_eq!(app.source, Some(PackageSource::Apt));
+        assert!(app.favorites_updates_only);
+        assert_eq!(app.cursor, 0);
+
+        let mut saved = Config::default();
+        app.write_session_to_config(&mut saved);
+        assert_eq!(saved.tui_last_filter.as_deref(), Some("favorites"));
+        assert_eq!(saved.tui_last_focus.as_deref(), Some("packages"));
+        assert_eq!(saved.tui_last_search, "vim");
+        assert_eq!(saved.tui_last_cursor, 0);
+        assert!(saved.tui_favorites_updates_only);
+        assert_eq!(saved.last_source_filter.as_deref(), Some("apt"));
+    }
+
+    #[tokio::test]
+    async fn palette_enter_executes_selected_command() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char(':'))).await;
+        assert!(app.showing_palette);
+
+        let entries = app.palette_entries();
+        let idx = entries
+            .iter()
+            .position(|entry| entry.id == CommandId::FilterFavorites)
+            .expect("favorites filter command present");
+        app.palette_cursor = idx;
+
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert!(!app.showing_palette);
+        assert_eq!(app.filter, Filter::Favorites);
     }
 }

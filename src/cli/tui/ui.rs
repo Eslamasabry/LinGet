@@ -28,6 +28,7 @@ pub struct LayoutRegions {
     pub expanded_queue_logs: Rect,
     pub expanded_queue_hints: Rect,
     pub footer: Rect,
+    pub palette: Rect,
 }
 
 /// Compute layout regions matching the draw logic, for mouse hit-testing.
@@ -81,6 +82,11 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         expanded_queue_logs,
         expanded_queue_hints,
         footer,
+        palette: if app.showing_palette {
+            palette_overlay_rect(area)
+        } else {
+            Rect::default()
+        },
     }
 }
 
@@ -189,7 +195,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     };
     draw_footer(frame, app, footer_chunk);
 
-    if app.showing_help {
+    if app.showing_palette {
+        draw_palette_overlay(frame, app);
+    } else if app.showing_help {
         draw_help_overlay(frame);
     }
 }
@@ -284,6 +292,8 @@ fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
             format!("{} refreshing", app.spinner_frame()),
             loading(),
         )]
+    } else if app.filter == Filter::Favorites && app.favorites_updates_only {
+        vec![Span::styled("Favorites: updates only [v]", muted())]
     } else if !app.status.is_empty() {
         vec![Span::styled(app.status.clone(), italic_status())]
     } else {
@@ -745,13 +755,20 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
                 Line::from(Span::styled("All packages are current", dim())),
             ]
         } else if app.filter == Filter::Favorites {
-            vec![
-                Line::from(Span::styled("No favorites yet", muted())),
-                Line::from(Span::styled(
-                    "Press f to favorite the selected package",
-                    dim(),
-                )),
-            ]
+            if app.favorites_updates_only {
+                vec![
+                    Line::from(Span::styled("No favorite updates available", muted())),
+                    Line::from(Span::styled("Press v to show all favorites", dim())),
+                ]
+            } else {
+                vec![
+                    Line::from(Span::styled("No favorites yet", muted())),
+                    Line::from(Span::styled(
+                        "Press f to favorite the selected package",
+                        dim(),
+                    )),
+                ]
+            }
         } else {
             vec![Line::from(Span::styled(
                 "No packages match this filter",
@@ -1169,9 +1186,14 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut spans = Vec::new();
     push_hint(&mut spans, "↑↓", "nav");
+    push_hint(&mut spans, ":", "cmd");
     push_hint(&mut spans, "/", "search");
     push_hint(&mut spans, "Space", "sel");
     push_hint(&mut spans, "f", "fav");
+    push_hint(&mut spans, "F", "fav±");
+    if app.filter == Filter::Favorites {
+        push_hint(&mut spans, "v", "upd-only");
+    }
     push_hint(&mut spans, "a", "all");
     push_hint(&mut spans, "i", "inst");
     push_hint(&mut spans, "x", "rm");
@@ -1334,6 +1356,119 @@ fn render_task_line(task: &TaskQueueEntry, selected: bool, max_width: usize) -> 
     ])
 }
 
+fn palette_overlay_rect(area: Rect) -> Rect {
+    centered_rect(area, 72, 72, 60, 14)
+}
+
+fn draw_palette_overlay(frame: &mut Frame, app: &App) {
+    let area = palette_overlay_rect(frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED)
+        .border_style(border_focused())
+        .title(" Command Palette ")
+        .title_style(accent());
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height < 3 {
+        return;
+    }
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let query_line = if app.palette_query.is_empty() {
+        Line::from(vec![
+            Span::styled("> ", key_hint()),
+            Span::styled("Type to filter commands", dim()),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("> ", key_hint()),
+            Span::styled(app.palette_query.clone(), text()),
+            Span::styled("█", accent()),
+        ])
+    };
+    frame.render_widget(Paragraph::new(query_line), sections[0]);
+
+    let entries = app.palette_entries();
+    let mut rows = Vec::new();
+    if entries.is_empty() {
+        rows.push(Line::from(Span::styled("No matching commands", muted())));
+    } else {
+        let visible_rows = sections[1].height as usize;
+        let start = window_start(entries.len(), visible_rows.max(1), app.palette_cursor);
+        let end = (start + visible_rows.max(1)).min(entries.len());
+
+        for (idx, entry) in entries
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+        {
+            let selected = idx == app.palette_cursor;
+            let label_style = if entry.enabled {
+                if selected {
+                    row_cursor()
+                } else {
+                    text()
+                }
+            } else {
+                dim()
+            };
+            let mut left = vec![Span::styled(
+                if selected { "▸ " } else { "  " },
+                row_selected(),
+            )];
+            left.push(Span::styled(format!("[{}] ", entry.group), dim()));
+            left.push(Span::styled(entry.label.to_string(), label_style));
+
+            let right = vec![Span::styled(
+                entry.shortcut.to_string(),
+                if entry.enabled { key_hint() } else { dim() },
+            )];
+            rows.push(compose_left_right(left, right, sections[1].width as usize));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(rows), sections[1]);
+
+    let footer = if let Some(entry) = entries.get(app.palette_cursor) {
+        if !entry.enabled {
+            Line::from(Span::styled(
+                format!(
+                    "Disabled: {}",
+                    entry
+                        .disabled_reason
+                        .clone()
+                        .unwrap_or_else(|| "Unavailable".to_string())
+                ),
+                error(),
+            ))
+        } else {
+            Line::from(vec![
+                Span::styled("Enter", key_hint()),
+                Span::styled(" run  ", footer_label()),
+                Span::styled("Esc", key_hint()),
+                Span::styled(" close", footer_label()),
+            ])
+        }
+    } else {
+        Line::from(Span::styled("Enter run  Esc close", footer_label()))
+    };
+    frame.render_widget(Paragraph::new(footer), sections[2]);
+}
+
 fn draw_help_overlay(frame: &mut Frame) {
     let area = centered_rect(frame.area(), 50, 80, 40, 18);
     frame.render_widget(Clear, area);
@@ -1347,24 +1482,25 @@ fn draw_help_overlay(frame: &mut Frame) {
 
     let lines = vec![
         Line::from(Span::styled("Navigation", section_header())),
-        Line::from("  ↑↓/jk  move      g/G top/bottom"),
-        Line::from("  ^d/^u  half-page  Tab switch panel"),
+        Line::from("  ↑↓/jk move   g/G top/bottom   ^d/^u half-page"),
+        Line::from("  Tab switch panel"),
         Line::from(""),
         Line::from(Span::styled("Filters", section_header())),
-        Line::from("  1 All    2 Installed    3 Updates    4 Favorites"),
+        Line::from("  1 All   2 Installed   3 Updates   4 Favorites"),
+        Line::from("  v favorites updates-only"),
         Line::from(""),
         Line::from(Span::styled("Actions", section_header())),
-        Line::from("  Space select   f favorite   a select all"),
-        Line::from("  i install      x remove      u update"),
-        Line::from("  Esc clear / back"),
+        Line::from("  Space select   f favorite   F bulk favorite"),
+        Line::from("  a select all   i install   x remove   u update"),
+        Line::from("  Esc clear/back"),
         Line::from(""),
         Line::from(Span::styled("Global", section_header())),
+        Line::from("  : or Ctrl+P command palette"),
         Line::from("  / search   r refresh   l queue log"),
         Line::from("  ? help     q quit"),
         Line::from(""),
         Line::from(Span::styled("Queue (expanded)", section_header())),
-        Line::from("  C cancel queued   R retry failed"),
-        Line::from("  [ ] logs older/newer"),
+        Line::from("  C cancel queued   R retry failed   [ ] logs"),
         Line::from(""),
         Line::from("  ? or Esc to close"),
     ];
