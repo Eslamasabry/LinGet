@@ -4066,6 +4066,14 @@ impl App {
         !self.tasks.is_empty()
     }
 
+    pub fn queue_bar_height(&self) -> u16 {
+        if !self.should_show_queue_bar() {
+            return 0;
+        }
+        let (_, running, _, _, _) = self.queue_counts();
+        if running > 0 { 2 } else { 1 }
+    }
+
     pub fn spinner_frame(&self) -> char {
         const FRAMES: [char; 4] = ['◐', '◓', '◑', '◒'];
         FRAMES[(self.tick as usize) % FRAMES.len()]

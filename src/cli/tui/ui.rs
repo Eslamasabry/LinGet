@@ -38,7 +38,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let show_legend = app.focus == Focus::Packages && area.height > 24;
     let header_height = if show_legend { 2 } else { 1 };
-    let queue_height = if app.should_show_queue_bar() { 1 } else { 0 };
+    let queue_height = app.queue_bar_height();
     let constraints = vec![
         Constraint::Length(header_height),
         Constraint::Min(1),
@@ -63,7 +63,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_main_content(frame, app, chunks[1]);
 
-    let footer_chunk = if queue_height == 1 {
+    let footer_chunk = if queue_height > 0 {
         draw_queue_bar(frame, app, chunks[2]);
         chunks[3]
     } else {
@@ -898,7 +898,6 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
         let active_label = active_task
             .map(|task| format!("{} {}", action_label(task.action), task.package_name))
             .unwrap_or_else(|| "Working".to_string());
-        let elapsed_hint = active_task.and_then(running_elapsed_hint);
         let task_eta_hint = active_task.and_then(|task| running_task_eta_hint(task, &app.tasks));
         let trust_hint = active_task.and_then(|task| running_task_signal_hint(app, task));
         let eta_confidence = queue_eta_confidence(&app.tasks, trust_hint.as_deref());
@@ -911,7 +910,15 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             0.0
         };
-        let label_text = build_running_queue_label(RunningQueueLabelArgs {
+
+        // Split area into two rows: status text on top, gauge on bottom
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(area);
+
+        // Row 1: concise status text
+        let status_text = build_running_queue_label(RunningQueueLabelArgs {
             spinner: app.spinner_frame(),
             phase_label: phase.label(),
             active_label: &active_label,
@@ -920,24 +927,25 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
             remaining: remaining_work.ceil().max(0.0) as usize,
             queued,
             failed,
-            performance_hint: performance_hint.as_deref(),
-            elapsed_hint: elapsed_hint.as_deref(),
-            task_eta_hint: task_eta_hint.as_deref(),
-            trust_hint: trust_hint.as_deref(),
         });
-        let gauge_style = if failed > 0 {
-            gauge_failed()
-        } else {
-            gauge_bar()
-        };
+        frame.render_widget(
+            Paragraph::new(truncate_to_width(&status_text, rows[0].width as usize)).style(text()),
+            rows[0],
+        );
+
+        // Row 2: progress gauge with ETA/performance in the label
+        let gauge_label = performance_hint
+            .or(task_eta_hint)
+            .unwrap_or_default();
+        let gauge_style = if failed > 0 { gauge_failed() } else { gauge_bar() };
         let gauge = Gauge::default()
             .gauge_style(gauge_style)
             .label(Span::styled(
-                truncate_to_width(&label_text, area.width.saturating_sub(1) as usize),
+                truncate_to_width(&gauge_label, rows[1].width.saturating_sub(1) as usize),
                 text(),
             ))
             .ratio(ratio);
-        frame.render_widget(gauge, area);
+        frame.render_widget(gauge, rows[1]);
     } else {
         let performance_hint = queue_performance_hint(
             &app.tasks,
@@ -1079,10 +1087,6 @@ struct RunningQueueLabelArgs<'a> {
     remaining: usize,
     queued: usize,
     failed: usize,
-    performance_hint: Option<&'a str>,
-    elapsed_hint: Option<&'a str>,
-    task_eta_hint: Option<&'a str>,
-    trust_hint: Option<&'a str>,
 }
 
 fn build_running_queue_label(args: RunningQueueLabelArgs<'_>) -> String {
@@ -1102,18 +1106,6 @@ fn build_running_queue_label(args: RunningQueueLabelArgs<'_>) -> String {
     }
     if args.remaining > 0 {
         parts.push(format!("{} left", args.remaining));
-    }
-    if let Some(hint) = args.elapsed_hint {
-        parts.push(hint.to_string());
-    }
-    if let Some(hint) = args.task_eta_hint {
-        parts.push(hint.to_string());
-    }
-    if let Some(hint) = args.trust_hint {
-        parts.push(hint.to_string());
-    }
-    if let Some(hint) = args.performance_hint {
-        parts.push(hint.to_string());
     }
 
     let mut text_value = parts.join(" · ");
@@ -1362,11 +1354,6 @@ fn task_runtime_hint(task: &TaskQueueEntry) -> Option<String> {
     let finished_at = task.completed_at.unwrap_or_else(Local::now);
     let elapsed_secs = finished_at.signed_duration_since(*started_at).num_seconds();
     (elapsed_secs > 0).then(|| format!("runtime {}", format_eta_seconds(elapsed_secs as u64)))
-}
-
-fn running_elapsed_hint(task: &TaskQueueEntry) -> Option<String> {
-    let elapsed_secs = running_elapsed_secs(task)?;
-    Some(format!("elapsed {}", format_eta_seconds(elapsed_secs)))
 }
 
 fn running_task_eta_hint(task: &TaskQueueEntry, tasks: &[TaskQueueEntry]) -> Option<String> {
@@ -3842,14 +3829,10 @@ mod tests {
             remaining: 5,
             queued: 4,
             failed: 1,
-            performance_hint: Some("2.0 t/m • ETA 2m30s (estimated)"),
-            elapsed_hint: Some("elapsed 12s"),
-            task_eta_hint: None,
-            trust_hint: None,
         });
         assert_eq!(
             line,
-            "◐ download · Update vim (2/8 done) · 4 queued · 1 failed · 5 left • elapsed 12s • 2.0 t/m • ETA 2m30s (estimated)  [l]"
+            "◐ download · Update vim · 2/8 done · 4 queued · 1 failed · 5 left  [l]"
         );
     }
 

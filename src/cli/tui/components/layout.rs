@@ -25,7 +25,7 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         return LayoutRegions::default();
     }
 
-    let queue_height = if app.should_show_queue_bar() { 1 } else { 0 };
+    let queue_height = app.queue_bar_height();
     let constraints = vec![
         Constraint::Length(2),
         Constraint::Min(1),
@@ -44,7 +44,7 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         .split(header);
 
     let main_area = chunks[1];
-    let (queue_bar, _footer) = if queue_height == 1 {
+    let (queue_bar, _footer) = if queue_height > 0 {
         (chunks[2], chunks[3])
     } else {
         (Rect::default(), chunks[2])
