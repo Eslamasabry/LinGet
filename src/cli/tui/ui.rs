@@ -4,6 +4,7 @@ use super::app::{
 };
 use super::theme::*;
 use super::update_center;
+pub use crate::cli::tui::components::layout::LayoutRegions;
 use crate::cli::tui::components::layout::sources_panel_width;
 use crate::cli::tui::components::packages::draw_packages_panel;
 use crate::cli::tui::components::sources::draw_sources_panel;
@@ -28,7 +29,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         draw_too_small(frame, area);
@@ -534,7 +535,7 @@ fn render_search_input(query: &str, max_width: usize) -> String {
     format!("...{}", out)
 }
 
-fn draw_main_content(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.compact {
         draw_compact_content(frame, app, area);
     } else {
@@ -542,30 +543,34 @@ fn draw_main_content(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_full_content(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_full_content(frame: &mut Frame, app: &mut App, area: Rect) {
     let source_width = sources_panel_width(app, area.width);
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(source_width), Constraint::Min(1)])
         .split(area);
 
-    draw_sources_panel(frame, app, columns[0]);
-
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
         .split(columns[1]);
 
-    draw_packages_panel(frame, app, right[0], false);
-
     if app.queue_expanded {
+        draw_sources_panel(frame, app, columns[0]);
+        draw_packages_panel(frame, app, right[0], false);
         draw_expanded_queue(frame, app, right[1]);
     } else {
-        draw_details_panel(frame, app, right[1]);
+        let regions = LayoutRegions {
+            sources: columns[0],
+            packages: right[0],
+            details: right[1],
+            ..LayoutRegions::default()
+        };
+        render_packages_or_sources(frame, app, &regions);
     }
 }
 
-fn draw_compact_content(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_compact_content(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.queue_expanded {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -586,10 +591,14 @@ fn draw_compact_content(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(area);
     draw_packages_panel(frame, app, chunks[0], true);
-    draw_compact_details_summary(frame, app, chunks[1]);
+    if app.focus == Focus::Sources {
+        draw_source_details_panel(frame, app, chunks[1]);
+    } else {
+        draw_compact_details_summary(frame, app, chunks[1]);
+    }
 }
 
-pub fn panel_block(title: String, focused: bool) -> Block<'static> {
+pub fn panel_block(title: String, focused: bool, _compact: bool) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_set(ROUNDED)
@@ -618,7 +627,7 @@ pub fn source_count_label(filter: Filter, counts: [usize; 4]) -> String {
 }
 
 fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let block = panel_block(" Details ".to_string(), false);
+    let block = panel_block(" Details ".to_string(), false, app.compact);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -790,6 +799,82 @@ fn draw_compact_details_summary(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled(second, muted())),
     ];
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_source_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.load_repositories(app.source.unwrap_or(PackageSource::Apt));
+
+    let source = app.source.unwrap_or(PackageSource::Apt);
+    let title = format!(" {} Details ", source);
+    let block = panel_block(title, app.focus == Focus::Sources, app.compact);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    if app.source_management.loading {
+        let loading_text = Paragraph::new(Line::from(vec![
+            Span::styled(app.spinner_frame().to_string(), loading()),
+            Span::styled(" Loading repositories...", muted()),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(loading_text, inner);
+        return;
+    }
+
+    let repos = &app.source_management.repositories;
+    if repos.is_empty() {
+        let empty_text = Paragraph::new(Span::styled("No repositories found or supported by this backend.", muted()))
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(empty_text, inner);
+        return;
+    }
+
+    let mut lines = Vec::new();
+    let enabled_count = repos.iter().filter(|r| r.enabled).count();
+    
+    lines.push(Line::from(vec![
+        Span::styled("Status: ", section_header()),
+        Span::styled(format!("{} / {} enabled", enabled_count, repos.len()), muted()),
+    ]));
+    lines.push(Line::from(""));
+
+    for repo in repos {
+        let status_icon = if repo.enabled {
+            Span::styled("✓ ", badge_installed())
+        } else {
+            Span::styled("✗ ", badge_not_installed())
+        };
+
+        lines.push(Line::from(vec![
+            status_icon,
+            Span::styled(&repo.name, text()),
+        ]));
+
+        if let Some(desc) = &repo.description {
+            if !desc.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(desc, muted()),
+                ]));
+            }
+        }
+        
+        if let Some(url) = &repo.url {
+            if !url.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(url, dim()),
+                ]));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+
+    frame.render_widget(Paragraph::new(lines).scroll((0, 0)), inner);
 }
 
 fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -1394,6 +1479,20 @@ fn format_eta_seconds(total_seconds: u64) -> String {
     format!("{}s", seconds)
 }
 
+pub fn render_packages_or_sources(frame: &mut Frame, app: &mut App, regions: &LayoutRegions) {
+    match app.focus {
+        Focus::Sources => {
+            app.load_repositories(app.source.unwrap_or(PackageSource::Apt));
+            draw_sources_panel(frame, app, regions.sources);
+            draw_source_details_panel(frame, app, regions.details);
+        }
+        Focus::Packages | Focus::Queue => {
+            draw_packages_panel(frame, app, regions.packages, app.compact);
+            draw_details_panel(frame, app, regions.details);
+        }
+    }
+}
+
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::new();
 
@@ -1464,6 +1563,7 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
             app.queue_failure_filter_label()
         ),
         focused,
+        app.compact,
     );
 
     if app.tasks.is_empty() {

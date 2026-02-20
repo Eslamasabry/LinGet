@@ -8,6 +8,7 @@ use crate::cli::tui::state::queue::{
     ClinicRemediationPlan, FailureCategory, QueueClinicActionability, QueueFailureFilter,
     QueueJourneyLane, RecoveryState,
 };
+use crate::cli::tui::state::sources::SourceManagementState;
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
 use crate::models::{ChangelogSummary, Config, Package, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
@@ -187,6 +188,7 @@ pub struct PendingAction {
 
 type LoadResult = Result<Vec<Package>, String>;
 type SearchResult = Result<Vec<Package>, String>;
+type RepositoriesResult = Result<Vec<crate::models::Repository>, String>;
 
 #[derive(Debug, Clone)]
 pub enum ChangelogState {
@@ -500,6 +502,7 @@ pub struct App {
 
     pub filter: Filter,
     pub source: Option<PackageSource>,
+    pub source_management: SourceManagementState,
     pub search: String,
     pub searching: bool,
 
@@ -545,6 +548,7 @@ pub struct App {
     pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
     pub load_rx: Option<mpsc::Receiver<LoadResult>>,
     pub search_rx: Option<mpsc::Receiver<SearchResult>>,
+    pub repositories_rx: Option<mpsc::Receiver<RepositoriesResult>>,
     pub task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
     pub task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
     changelog_rx: Option<mpsc::Receiver<ChangelogResult>>,
@@ -584,6 +588,7 @@ impl App {
             favorites_updates_only: false,
             filter: Filter::All,
             source: None,
+            source_management: SourceManagementState::new(),
             search: String::new(),
             searching: false,
             tasks: Vec::new(),
@@ -624,6 +629,7 @@ impl App {
             history_tracker,
             load_rx: None,
             search_rx: None,
+            repositories_rx: None,
             task_events_rx,
             task_events_tx,
             changelog_rx: Some(changelog_rx),
@@ -2072,6 +2078,57 @@ impl App {
                 self.set_status("Search failed: channel disconnected", true);
             }
         }
+    }
+
+    pub fn poll_repositories(&mut self) {
+        let Some(mut rx) = self.repositories_rx.take() else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(Ok(repos)) => {
+                self.source_management.repositories = repos;
+                self.source_management.loading = false;
+                self.set_status(format!("Loaded {} repositories", self.source_management.repositories.len()), true);
+            }
+            Ok(Err(error)) => {
+                self.source_management.loading = false;
+                self.set_status(format!("Failed to load repositories: {}", error), true);
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {
+                self.repositories_rx = Some(rx);
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.source_management.loading = false;
+                self.set_status("Failed to load repositories: channel disconnected", true);
+            }
+        }
+    }
+
+    pub fn load_repositories(&mut self, source: PackageSource) {
+        if self.source_management.loading && self.source_management.target_source == Some(source) {
+            return;
+        }
+
+        self.source_management.reset();
+        self.source_management.loading = true;
+        self.source_management.target_source = Some(source);
+        self.set_status(format!("Loading repositories for {}...", source), false);
+
+        let (tx, rx) = mpsc::channel(1);
+        self.repositories_rx = Some(rx);
+        let pm = self.pm.clone();
+
+        tokio::spawn(async move {
+            let result: RepositoriesResult = {
+                let manager = pm.lock().await;
+                match manager.list_repositories(source).await {
+                    Ok(repos) => Ok(repos),
+                    Err(error) => Err(error.to_string()),
+                }
+            };
+            let _ = tx.send(result).await;
+        });
     }
 
     async fn request_changelog_for_package(&mut self, package: Package, force_refresh: bool) {
@@ -4256,6 +4313,7 @@ async fn run_app(
 
         app.poll_loading();
         app.poll_search();
+        app.poll_repositories();
         app.poll_changelog();
         app.poll_preflight_verification();
         app.poll_task_events();

@@ -23,7 +23,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
         app.cursor + 1
     };
     let title = format!(" Packages ({}/{}) ", position, app.filtered.len());
-    let block = panel_block(title, focused);
+    let block = panel_block(title, focused, compact);
 
     if app.loading && app.filtered.is_empty() {
         let paragraph = Paragraph::new(format!("{} Loading packages...", app.spinner_frame()))

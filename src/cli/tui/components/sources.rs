@@ -13,7 +13,7 @@ use ratatui::{
 
 pub fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::Sources && !app.queue_expanded;
-    let block = panel_block(" Sources ".to_string(), focused);
+    let block = panel_block(" Sources ".to_string(), focused, app.compact);
     let inner = block.inner(area);
     let visible = app.visible_sources();
     let total = visible.len() + 1;
