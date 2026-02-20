@@ -1,7 +1,7 @@
 use crate::cli::tui::app::{App, MIN_HEIGHT, MIN_WIDTH};
+use crate::cli::tui::ui::{palette_overlay_rect, preflight_overlay_rect, source_count_label};
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use unicode_width::UnicodeWidthStr;
-use crate::cli::tui::ui::{source_count_label, palette_overlay_rect, preflight_overlay_rect};
 
 /// Regions of the TUI layout for mouse hit-testing.
 #[derive(Debug, Default)]

@@ -1,6 +1,6 @@
 use super::app::{
-    action_label, App, ChangelogState, CommandId, PendingAction,
-    PreflightCertainty, PreflightRiskLevel, PreflightSummary, MIN_HEIGHT, MIN_WIDTH,
+    action_label, App, ChangelogState, CommandId, PendingAction, PreflightCertainty,
+    PreflightRiskLevel, PreflightSummary, MIN_HEIGHT, MIN_WIDTH,
 };
 use super::theme::*;
 use super::update_center;
@@ -59,7 +59,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     } else {
         draw_filter_bar(frame, app, chunks[0]);
     }
-    
+
     draw_main_content(frame, app, chunks[1]);
 
     let footer_chunk = if queue_height == 1 {
@@ -601,7 +601,6 @@ pub fn panel_block(title: String, focused: bool) -> Block<'static> {
         .title_style(if focused { accent() } else { text() })
 }
 
-
 pub fn source_count_label(filter: Filter, counts: [usize; 4]) -> String {
     match filter {
         Filter::All => {
@@ -626,16 +625,13 @@ fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
         let paragraph = Paragraph::new("Loading details...")
             .style(loading())
             .alignment(ratatui::layout::Alignment::Center);
-        
+
         let vertical_padding = inner.height.saturating_sub(1) / 2;
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(vertical_padding),
-                Constraint::Min(1),
-            ])
+            .constraints([Constraint::Length(vertical_padding), Constraint::Min(1)])
             .split(inner);
-            
+
         frame.render_widget(paragraph, chunks[1]);
         return;
     }
@@ -678,7 +674,9 @@ fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
             ]),
         ];
 
-        if package.status == PackageStatus::UpdateAvailable || package.status == PackageStatus::Updating {
+        if package.status == PackageStatus::UpdateAvailable
+            || package.status == PackageStatus::Updating
+        {
             if let Some(priority) = update_priority_label(package) {
                 meta_lines.push(Line::from(vec![
                     Span::styled("Priority: ", dim()),
@@ -703,21 +701,25 @@ fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
         for line in wrap_text(&package.description, detail_width) {
             desc_lines.push(Line::from(Span::styled(line, muted())));
         }
-        frame.render_widget(Paragraph::new(desc_lines).wrap(Wrap { trim: true }), chunks[1]);
+        frame.render_widget(
+            Paragraph::new(desc_lines).wrap(Wrap { trim: true }),
+            chunks[1],
+        );
     } else {
         let paragraph = Paragraph::new("Select a package for details")
             .style(dim())
             .alignment(ratatui::layout::Alignment::Center);
-        
-        let vertical_padding = chunks[0].height.saturating_add(chunks[1].height).saturating_sub(1) / 2;
+
+        let vertical_padding = chunks[0]
+            .height
+            .saturating_add(chunks[1].height)
+            .saturating_sub(1)
+            / 2;
         let empty_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(vertical_padding),
-                Constraint::Min(1),
-            ])
+            .constraints([Constraint::Length(vertical_padding), Constraint::Min(1)])
             .split(inner.union(chunks[1])); // Use the upper area for centering
-            
+
         frame.render_widget(paragraph, empty_chunks[1]);
     }
 
@@ -999,10 +1001,13 @@ struct RunningQueueLabelArgs<'a> {
 
 fn build_running_queue_label(args: RunningQueueLabelArgs<'_>) -> String {
     let mut parts = Vec::new();
-    
-    parts.push(format!("{} {} · {}", args.spinner, args.phase_label, args.active_label));
+
+    parts.push(format!(
+        "{} {} · {}",
+        args.spinner, args.phase_label, args.active_label
+    ));
     parts.push(format!("{}/{} done", args.done, args.total));
-    
+
     if args.queued > 0 {
         parts.push(format!("{} queued", args.queued));
     }
@@ -1024,7 +1029,7 @@ fn build_running_queue_label(args: RunningQueueLabelArgs<'_>) -> String {
     if let Some(hint) = args.performance_hint {
         parts.push(hint.to_string());
     }
-    
+
     let mut text_value = parts.join(" · ");
     text_value.push_str("  [l]");
     text_value
@@ -1390,7 +1395,7 @@ fn format_eta_seconds(total_seconds: u64) -> String {
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::new();
-    
+
     // Contextual footer hints based on focus
     match app.focus {
         Focus::Sources => {
@@ -1415,7 +1420,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
-    
+
     // Always show palette and quit
     push_hint(&mut spans, ":", "cmd");
     push_hint(&mut spans, "q", "quit");
@@ -1563,13 +1568,16 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
     if sections.len() == 3 {
         if let Some(task) = selected_task {
             let logs = app.task_logs.get(&task.id);
-            
+
             // Create a distinct Recommendation Zone
             let rec_block = Block::default()
                 .borders(Borders::BOTTOM)
                 .border_style(border_unfocused());
-            frame.render_widget(Paragraph::new(recommendation_line.clone()).block(rec_block), sections[1]);
-            
+            frame.render_widget(
+                Paragraph::new(recommendation_line.clone()).block(rec_block),
+                sections[1],
+            );
+
             // Adjust the layout to account for the recommendation zone
             let log_area = Rect {
                 x: sections[1].x,
@@ -1578,9 +1586,7 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 height: sections[1].height.saturating_sub(2),
             };
 
-            let mut lines = vec![
-                Line::from(Span::styled("Logs:", dim())),
-            ];
+            let mut lines = vec![Line::from(Span::styled("Logs:", dim()))];
 
             let operation_summary = format!(
                 "{} · {} {} · {}",
@@ -1683,7 +1689,9 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                             },
                             if_blocked: category.remediation_copy().to_string(),
                             primary_action: match category {
-                                FailureCategory::Unknown => "Press R to retry selected task".to_string(),
+                                FailureCategory::Unknown => {
+                                    "Press R to retry selected task".to_string()
+                                }
                                 _ => "Press M to run filtered fix bundle".to_string(),
                             },
                             primary_style: primary_action_button(),

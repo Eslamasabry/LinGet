@@ -1,8 +1,8 @@
 use crate::cli::tui::app::App;
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::theme::{
-    dim, loading, muted, row_cursor, row_selected, scrollbar_style, scrollbar_thumb,
-    source_color, table_header, text, warning,
+    dim, loading, muted, row_cursor, row_selected, scrollbar_style, scrollbar_thumb, source_color,
+    table_header, text, warning,
 };
 use crate::cli::tui::ui::{
     format_package_version, package_status_short, panel_block, truncate_middle_to_width,

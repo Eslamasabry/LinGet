@@ -1,7 +1,9 @@
 use crate::cli::tui::app::App;
-use crate::cli::tui::ui::{panel_block, source_count_label, window_start};
 use crate::cli::tui::state::filters::Focus;
-use crate::cli::tui::theme::{accent, row_selected, scrollbar_style, scrollbar_thumb, source_color, text};
+use crate::cli::tui::theme::{
+    accent, row_selected, scrollbar_style, scrollbar_thumb, source_color, text,
+};
+use crate::cli::tui::ui::{panel_block, source_count_label, window_start};
 use ratatui::{
     layout::Rect,
     text::{Line, Span},
