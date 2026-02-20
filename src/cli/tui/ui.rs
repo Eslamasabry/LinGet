@@ -4,7 +4,9 @@ use super::app::{
 };
 use super::theme::*;
 use super::update_center;
-use crate::cli::tui::components::layout::*;
+use crate::cli::tui::components::layout::{sources_panel_width, *};
+use crate::cli::tui::components::packages::draw_packages_panel;
+use crate::cli::tui::components::sources::draw_sources_panel;
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::state::queue::{
     FailureCategory, QueueClinicActionability, QueueFailureFilter, QueueJourneyLane,
@@ -586,7 +588,7 @@ fn draw_compact_content(frame: &mut Frame, app: &App, area: Rect) {
     draw_compact_details_summary(frame, app, chunks[1]);
 }
 
-fn panel_block(title: String, focused: bool) -> Block<'static> {
+pub fn panel_block(title: String, focused: bool) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_set(ROUNDED)
@@ -599,75 +601,6 @@ fn panel_block(title: String, focused: bool) -> Block<'static> {
         .title_style(if focused { accent() } else { text() })
 }
 
-fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let focused = app.focus == Focus::Sources && !app.queue_expanded;
-    let block = panel_block(" Sources ".to_string(), focused);
-    let inner = block.inner(area);
-    let visible = app.visible_sources();
-    let total = visible.len() + 1;
-    let selected = app.source_index();
-    let visible_rows = inner.height as usize;
-    let start = window_start(total, visible_rows, selected);
-    let end = (start + visible_rows).min(total);
-
-    let mut items = Vec::new();
-    for idx in start..end {
-        let selected_row = idx == selected;
-        let (label, label_style) = if idx == 0 {
-            let count_str = source_count_label(
-                app.filter,
-                [
-                    app.filter_counts[0],
-                    app.filter_counts[1],
-                    app.filter_counts[2],
-                    app.filter_counts[3],
-                ],
-            );
-            (
-                format!("All{}", count_str),
-                if selected_row { accent() } else { text() },
-            )
-        } else {
-            let source = visible[idx - 1];
-            let counts = app
-                .source_counts
-                .get(&source)
-                .copied()
-                .unwrap_or([0, 0, 0, 0]);
-            let count_str = source_count_label(app.filter, counts);
-            (
-                format!("{}{}", source, count_str),
-                if selected_row {
-                    accent()
-                } else {
-                    source_color(source)
-                },
-            )
-        };
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(if selected_row { "▸ " } else { "  " }, row_selected()),
-            Span::styled(label, label_style),
-        ])));
-    }
-
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
-
-    if total > visible_rows {
-        let mut scrollbar_state = ScrollbarState::new(total).position(selected);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .style(scrollbar_style())
-            .thumb_style(scrollbar_thumb());
-        frame.render_stateful_widget(
-            scrollbar,
-            area.inner(ratatui::layout::Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
-    }
-}
 
 pub fn source_count_label(filter: Filter, counts: [usize; 4]) -> String {
     match filter {
@@ -681,191 +614,6 @@ pub fn source_count_label(filter: Filter, counts: [usize; 4]) -> String {
         Filter::Installed => format!(" {}", counts[1]),
         Filter::Updates => format!(" {}", counts[2]),
         Filter::Favorites => format!(" {}", counts[3]),
-    }
-}
-
-fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) {
-    let focused = app.focus == Focus::Packages && !app.queue_expanded;
-    let position = if app.filtered.is_empty() {
-        0
-    } else {
-        app.cursor + 1
-    };
-    let title = format!(" Packages ({}/{}) ", position, app.filtered.len());
-    let block = panel_block(title, focused);
-
-    if app.loading && app.filtered.is_empty() {
-        let paragraph = Paragraph::new(format!("{} Loading packages...", app.spinner_frame()))
-            .style(loading())
-            .alignment(ratatui::layout::Alignment::Center);
-        
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        
-        let vertical_padding = inner.height.saturating_sub(1) / 2;
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(vertical_padding),
-                Constraint::Min(1),
-            ])
-            .split(inner);
-            
-        frame.render_widget(paragraph, chunks[1]);
-        return;
-    }
-
-    if app.filtered.is_empty() {
-        let lines = if !app.search.is_empty() {
-            vec![
-                Line::from(Span::styled(
-                    format!("No results for '{}'", app.search),
-                    muted(),
-                )),
-                Line::from(Span::styled("Press Esc to clear search", dim())),
-            ]
-        } else if app.filter == Filter::Updates {
-            vec![
-                Line::from(Span::styled("No updates available", muted())),
-                Line::from(Span::styled("All packages are current", dim())),
-            ]
-        } else if app.filter == Filter::Favorites {
-            if app.favorites_updates_only {
-                vec![
-                    Line::from(Span::styled("No favorite updates available", muted())),
-                    Line::from(Span::styled("Press v to show all favorites", dim())),
-                ]
-            } else {
-                vec![
-                    Line::from(Span::styled("No favorites yet", muted())),
-                    Line::from(Span::styled(
-                        "Press f to favorite the selected package",
-                        dim(),
-                    )),
-                ]
-            }
-        } else {
-            vec![Line::from(Span::styled(
-                "No packages match this filter",
-                muted(),
-            ))]
-        };
-        let paragraph = Paragraph::new(lines)
-            .style(text())
-            .alignment(ratatui::layout::Alignment::Center);
-            
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        
-        let vertical_padding = inner.height.saturating_sub(2) / 2;
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(vertical_padding),
-                Constraint::Min(1),
-            ])
-            .split(inner);
-            
-        frame.render_widget(paragraph, chunks[1]);
-        return;
-    }
-
-    let inner = block.inner(area);
-    let visible_rows = inner.height.saturating_sub(2) as usize;
-    let start = window_start(app.filtered.len(), visible_rows.max(1), app.cursor);
-    let end = (start + visible_rows.max(1)).min(app.filtered.len());
-
-    let mut rows = Vec::new();
-    for row_index in start..end {
-        let Some(package_index) = app.filtered.get(row_index).copied() else {
-            continue;
-        };
-        let Some(package) = app.packages.get(package_index) else {
-            continue;
-        };
-
-        let package_id = package.id();
-        let is_cursor = row_index == app.cursor;
-        let is_selected = app.selected.contains(&package_id);
-        let is_favorite = app.is_favorite_id(&package_id);
-        let row_style = if is_cursor { row_cursor() } else { text() };
-
-        let marker = if is_selected { "☑" } else { " " };
-        let favorite_marker = if is_favorite { "★" } else { " " };
-        let version = format_package_version(package);
-        let source = package.source.to_string();
-        let status = package_status_short(package.status);
-
-        rows.push(
-            Row::new(vec![
-                Cell::from(Span::styled(
-                    marker,
-                    if is_selected { row_selected() } else { text() },
-                )),
-                Cell::from(Span::styled(
-                    favorite_marker,
-                    if is_favorite {
-                        if is_cursor {
-                            row_style
-                        } else {
-                            warning()
-                        }
-                    } else {
-                        row_style
-                    },
-                )),
-                Cell::from(Span::styled(
-                    truncate_middle_to_width(&package.name, if compact { 18 } else { 24 }),
-                    row_style,
-                )),
-                Cell::from(Span::styled(
-                    truncate_to_width(&version, if compact { 15 } else { 22 }),
-                    row_style,
-                )),
-                Cell::from(Span::styled(
-                    truncate_to_width(&source, 10),
-                    if is_cursor {
-                        row_style
-                    } else {
-                        source_color(package.source)
-                    },
-                )),
-                Cell::from(Span::styled(status.0, status.1)),
-            ])
-            .style(row_style),
-        );
-    }
-
-    let header =
-        Row::new(vec!["", "★", "Name", "Version", "Source", "Status"]).style(table_header());
-    let widths = [
-        Constraint::Length(2),
-        Constraint::Length(2),
-        Constraint::Min(if compact { 11 } else { 20 }),
-        Constraint::Min(if compact { 10 } else { 16 }),
-        Constraint::Length(10),
-        Constraint::Length(5),
-    ];
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(block)
-        .column_spacing(1);
-    frame.render_widget(table, area);
-
-    if app.filtered.len() > visible_rows {
-        let mut scrollbar_state = ScrollbarState::new(app.filtered.len()).position(app.cursor);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .style(scrollbar_style())
-            .thumb_style(scrollbar_thumb());
-        frame.render_stateful_widget(
-            scrollbar,
-            area.inner(ratatui::layout::Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
     }
 }
 
@@ -3129,7 +2877,7 @@ fn update_priority_label(package: &Package) -> Option<&'static str> {
     Some(candidate.lane.label())
 }
 
-fn format_package_version(package: &Package) -> String {
+pub fn format_package_version(package: &Package) -> String {
     match package.status {
         PackageStatus::UpdateAvailable | PackageStatus::Updating => {
             let available = package.available_version.as_deref().unwrap_or("?");
@@ -3143,7 +2891,7 @@ fn format_package_version(package: &Package) -> String {
     }
 }
 
-fn package_status_short(status: PackageStatus) -> (&'static str, Style) {
+pub fn package_status_short(status: PackageStatus) -> (&'static str, Style) {
     match status {
         PackageStatus::Installed => (" ✓ ", badge_installed()),
         PackageStatus::UpdateAvailable => (" ↑ ", badge_update()),
