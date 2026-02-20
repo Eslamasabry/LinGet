@@ -186,6 +186,7 @@ pub struct PendingAction {
 }
 
 type LoadResult = Result<Vec<Package>, String>;
+type SearchResult = Result<Vec<Package>, String>;
 
 #[derive(Debug, Clone)]
 pub enum ChangelogState {
@@ -487,6 +488,8 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
 ];
 
 pub struct App {
+    pub local_packages: Vec<Package>,
+    pub search_results: Option<Vec<Package>>,
     pub packages: Vec<Package>,
     pub filtered: Vec<usize>,
     pub filter_counts: [usize; 4],
@@ -541,6 +544,7 @@ pub struct App {
     pub pm: Arc<Mutex<PackageManager>>,
     pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
     pub load_rx: Option<mpsc::Receiver<LoadResult>>,
+    pub search_rx: Option<mpsc::Receiver<SearchResult>>,
     pub task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
     pub task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
     changelog_rx: Option<mpsc::Receiver<ChangelogResult>>,
@@ -569,6 +573,8 @@ impl App {
         let (changelog_tx, changelog_rx) = mpsc::channel(32);
         let (preflight_verification_tx, preflight_verification_rx) = mpsc::channel(32);
         Self {
+            local_packages: Vec::new(),
+            search_results: None,
             packages: Vec::new(),
             filtered: Vec::new(),
             filter_counts: [0, 0, 0, 0],
@@ -617,6 +623,7 @@ impl App {
             pm,
             history_tracker,
             load_rx: None,
+            search_rx: None,
             task_events_rx,
             task_events_tx,
             changelog_rx: Some(changelog_rx),
@@ -1953,6 +1960,40 @@ impl App {
         true
     }
 
+    pub fn start_search(&mut self) -> bool {
+        if self.loading {
+            self.set_status("Please wait for current operation to finish", true);
+            return false;
+        }
+
+        if self.search.trim().is_empty() {
+            self.set_status("Search query cannot be empty", true);
+            return false;
+        }
+
+        self.loading = true;
+        self.cursor_anchor_id = self.current_package_id();
+        self.set_status(format!("Searching for '{}'...", self.search), false);
+
+        let (tx, rx) = mpsc::channel(1);
+        self.search_rx = Some(rx);
+        let pm = self.pm.clone();
+        let query = self.search.clone();
+
+        tokio::spawn(async move {
+            let result: SearchResult = {
+                let manager = pm.lock().await;
+                match manager.search(&query).await {
+                    Ok(results) => Ok(results),
+                    Err(error) => Err(error.to_string()),
+                }
+            };
+            let _ = tx.send(result).await;
+        });
+
+        true
+    }
+
     fn restore_cursor_anchor(&mut self) {
         let Some(anchor_id) = self.cursor_anchor_id.take() else {
             return;
@@ -1973,7 +2014,10 @@ impl App {
 
         match rx.try_recv() {
             Ok(Ok(packages)) => {
-                self.packages = packages;
+                self.local_packages = packages;
+                if self.search_results.is_none() {
+                    self.packages = self.local_packages.clone();
+                }
                 self.cleanup_stale_selections();
                 self.previous_statuses.clear();
                 self.apply_filters();
@@ -1997,6 +2041,35 @@ impl App {
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 self.loading = false;
                 self.set_status("Load failed: channel disconnected", true);
+            }
+        }
+    }
+
+    pub fn poll_search(&mut self) {
+        let Some(mut rx) = self.search_rx.take() else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(Ok(packages)) => {
+                self.search_results = Some(packages.clone());
+                self.packages = packages;
+                self.cleanup_stale_selections();
+                self.apply_filters();
+                self.restore_cursor_anchor();
+                self.loading = false;
+                self.set_status(format!("Found {} packages", self.filter_counts[0]), true);
+            }
+            Ok(Err(error)) => {
+                self.loading = false;
+                self.set_status(format!("Search error: {}", error), true);
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {
+                self.search_rx = Some(rx);
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.loading = false;
+                self.set_status("Search failed: channel disconnected", true);
             }
         }
     }
@@ -3456,12 +3529,21 @@ impl App {
             KeyCode::Esc => {
                 self.searching = false;
                 self.search.clear();
+                self.search_results = None;
+                self.packages = self.local_packages.clone();
                 self.apply_filters();
                 self.set_status("Search cleared", true);
             }
             KeyCode::Enter => {
                 self.searching = false;
-                self.apply_filters();
+                if self.search.trim().is_empty() {
+                    self.search_results = None;
+                    self.packages = self.local_packages.clone();
+                    self.apply_filters();
+                    self.set_status("Search cleared", true);
+                } else {
+                    self.start_search();
+                }
             }
             KeyCode::Backspace | KeyCode::Delete => {
                 self.search.pop();
@@ -4173,6 +4255,7 @@ async fn run_app(
         app.compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
 
         app.poll_loading();
+        app.poll_search();
         app.poll_changelog();
         app.poll_preflight_verification();
         app.poll_task_events();

@@ -21,8 +21,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, Gauge, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Wrap,
+        Block, Borders, Clear, Gauge, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Wrap,
     },
     Frame,
 };
@@ -156,28 +156,29 @@ fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
         app.searching,
     ));
 
-    let right = if app.searching {
-        vec![Span::styled(
+    let mut right = Vec::new();
+
+    if app.loading {
+        right.push(Span::styled(format!("{} ", app.spinner_frame()), loading()));
+    }
+
+    if app.searching {
+        right.push(Span::styled(
             format!(
-                "/ {}█",
+                "/ {}█ ",
                 render_search_input(&app.search, area.width as usize / 3)
             ),
             accent(),
-        )]
+        ));
     } else if !app.search.is_empty() {
-        vec![Span::styled(format!("/ \"{}\"", app.search), muted())]
-    } else if app.loading {
-        vec![Span::styled(
-            format!("{} refreshing", app.spinner_frame()),
-            loading(),
-        )]
+        right.push(Span::styled(format!("/ \"{}\" ", app.search), muted()));
     } else if app.filter == Filter::Favorites && app.favorites_updates_only {
-        vec![Span::styled("Favorites: updates only [v]", muted())]
-    } else if !app.status.is_empty() {
-        vec![Span::styled(app.status.clone(), italic_status())]
-    } else {
-        Vec::new()
-    };
+        right.push(Span::styled("Favorites: updates only [v] ", muted()));
+    }
+
+    if !app.status.is_empty() && (!app.searching || area.width > 80) {
+        right.push(Span::styled(app.status.clone(), italic_status()));
+    }
 
     let line = compose_left_right(left, right, area.width as usize);
     let paragraph = Paragraph::new(line).style(header_bar());
