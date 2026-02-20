@@ -3790,6 +3790,24 @@ impl App {
         self.maybe_emit_queue_completion_digest();
     }
 
+    pub fn dismiss_all_failed_tasks(&mut self) {
+        let count = self
+            .tasks
+            .iter()
+            .filter(|t| t.status == TaskQueueStatus::Failed)
+            .count();
+        if count == 0 {
+            self.set_status("No failed tasks to dismiss", true);
+            return;
+        }
+        self.tasks
+            .retain(|t| t.status != TaskQueueStatus::Failed);
+        self.cleanup_task_logs();
+        self.clamp_task_cursor();
+        self.ensure_queue_cursor_matches_filter();
+        self.set_status(format!("Dismissed {count} failed task(s)"), true);
+    }
+
     async fn queue_retry_for_parent_task(&mut self, task: &TaskQueueEntry) {
         let retry = TaskQueueEntry::new(
             task.action,

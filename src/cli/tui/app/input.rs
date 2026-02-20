@@ -399,7 +399,15 @@ impl App {
                     self.set_status("Selection cleared", true);
                 }
             }
-            KeyCode::Char('C') => self.execute_command(CommandId::QueueCancel).await,
+            KeyCode::Char('C') => {
+                if !self.queue_expanded
+                    && self.tasks.iter().any(|t| t.status == TaskQueueStatus::Failed)
+                {
+                    self.dismiss_all_failed_tasks();
+                } else {
+                    self.execute_command(CommandId::QueueCancel).await;
+                }
+            }
             KeyCode::Char('R') => self.execute_command(CommandId::QueueRetry).await,
             KeyCode::Char('A') => self.execute_command(CommandId::QueueRetrySafe).await,
             KeyCode::Char('M') => self.execute_command(CommandId::QueueRemediate).await,
