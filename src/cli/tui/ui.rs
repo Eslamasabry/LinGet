@@ -1480,10 +1480,11 @@ fn format_eta_seconds(total_seconds: u64) -> String {
 }
 
 pub fn render_packages_or_sources(frame: &mut Frame, app: &mut App, regions: &LayoutRegions) {
+    draw_sources_panel(frame, app, regions.sources);
+
     match app.focus {
         Focus::Sources => {
             app.load_repositories(app.source.unwrap_or(PackageSource::Apt));
-            draw_sources_panel(frame, app, regions.sources);
             draw_source_details_panel(frame, app, regions.details);
         }
         Focus::Packages | Focus::Queue => {
