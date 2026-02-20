@@ -52,6 +52,13 @@ pub fn accent() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+pub fn primary_action_button() -> Style {
+    Style::default()
+        .bg(palette::CYAN)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD)
+}
+
 pub fn key_hint() -> Style {
     Style::default()
         .fg(palette::YELLOW)

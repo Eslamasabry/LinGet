@@ -214,9 +214,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         return;
     }
 
+    let show_legend = app.focus == Focus::Packages && area.height > 24;
+    let header_height = if show_legend { 2 } else { 1 };
     let queue_height = if app.should_show_queue_bar() { 1 } else { 0 };
     let constraints = vec![
-        Constraint::Length(2),
+        Constraint::Length(header_height),
         Constraint::Min(1),
         Constraint::Length(queue_height),
         Constraint::Length(1),
@@ -226,12 +228,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .constraints(constraints)
         .split(area);
 
-    let header_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(chunks[0]);
-    draw_filter_bar(frame, app, header_chunks[0]);
-    draw_status_legend(frame, header_chunks[1]);
+    if show_legend {
+        let header_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(chunks[0]);
+        draw_filter_bar(frame, app, header_chunks[0]);
+        draw_status_legend(frame, header_chunks[1]);
+    } else {
+        draw_filter_bar(frame, app, chunks[0]);
+    }
+    
     draw_main_content(frame, app, chunks[1]);
 
     let footer_chunk = if queue_height == 1 {
@@ -777,7 +784,6 @@ fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::Sources && !app.queue_expanded;
     let block = panel_block(" Sources ".to_string(), focused);
     let inner = block.inner(area);
-
     let visible = app.visible_sources();
     let total = visible.len() + 1;
     let selected = app.source_index();
@@ -871,9 +877,22 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
 
     if app.loading && app.filtered.is_empty() {
         let paragraph = Paragraph::new(format!("{} Loading packages...", app.spinner_frame()))
-            .block(block)
-            .style(loading());
-        frame.render_widget(paragraph, area);
+            .style(loading())
+            .alignment(ratatui::layout::Alignment::Center);
+        
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        
+        let vertical_padding = inner.height.saturating_sub(1) / 2;
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(vertical_padding),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+            
+        frame.render_widget(paragraph, chunks[1]);
         return;
     }
 
@@ -912,8 +931,23 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
                 muted(),
             ))]
         };
-        let paragraph = Paragraph::new(lines).block(block).style(text());
-        frame.render_widget(paragraph, area);
+        let paragraph = Paragraph::new(lines)
+            .style(text())
+            .alignment(ratatui::layout::Alignment::Center);
+            
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        
+        let vertical_padding = inner.height.saturating_sub(2) / 2;
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(vertical_padding),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+            
+        frame.render_widget(paragraph, chunks[1]);
         return;
     }
 
@@ -1018,83 +1052,115 @@ fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) 
 
 fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
     let block = panel_block(" Details ".to_string(), false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     if app.loading && app.current_package().is_none() {
-        frame.render_widget(
-            Paragraph::new("Loading details...")
-                .block(block)
-                .style(loading()),
-            area,
-        );
+        let paragraph = Paragraph::new("Loading details...")
+            .style(loading())
+            .alignment(ratatui::layout::Alignment::Center);
+        
+        let vertical_padding = inner.height.saturating_sub(1) / 2;
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(vertical_padding),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+            
+        frame.render_widget(paragraph, chunks[1]);
         return;
     }
 
-    let Some(package) = app.current_package() else {
-        let (now, next, attention, done) = app.queue_lane_counts();
-        let retryable = app.retryable_failed_task_count();
-        let detail_width = area.width.saturating_sub(4) as usize;
-        let mut lines = vec![
-            Line::from(Span::styled("Journey:", section_header())),
-            Line::from(vec![
-                Span::styled("Next: ", dim()),
-                Span::styled(app.recommended_action_label(), accent()),
-                Span::styled("  [w]", key_hint()),
-            ]),
-            Line::from(Span::styled(
-                truncate_to_width(&app.recommended_action_detail(), detail_width),
-                muted(),
-            )),
-            Line::from(vec![
-                Span::styled("Queue: ", dim()),
-                Span::styled(
-                    format!(
-                        "{} {} · {} {} · {} {} · {} {}",
-                        QueueJourneyLane::Now.label(),
-                        now,
-                        QueueJourneyLane::Next.label(),
-                        next,
-                        QueueJourneyLane::NeedsAttention.label(),
-                        attention,
-                        QueueJourneyLane::Done.label(),
-                        done
-                    ),
-                    muted(),
-                ),
-            ]),
-        ];
-        if attention > 0 {
-            lines.push(Line::from(vec![
-                Span::styled("Failed tasks: ", dim()),
-                Span::styled("R retry  M fix filtered", footer_label()),
-                if retryable > 0 {
-                    Span::styled(format!("  A retry safe ({})", retryable), warning())
-                } else {
-                    Span::styled("", footer_label())
-                },
-            ]));
-        }
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Select a package for details",
-            dim(),
-        )));
-        frame.render_widget(
-            Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
-            area,
-        );
-        return;
-    };
-
     let (now, next, attention, done) = app.queue_lane_counts();
     let retryable = app.retryable_failed_task_count();
-    let detail_width = area.width.saturating_sub(4) as usize;
+    let detail_width = inner.width as usize;
 
-    let mut lines = vec![
-        Line::from(Span::styled("Journey:", section_header())),
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6), // Metadata
+            Constraint::Min(1),    // Description
+            Constraint::Length(5), // NBA / Queue
+        ])
+        .split(inner);
+
+    // 1. Metadata Section
+    if let Some(package) = app.current_package() {
+        let mut meta_lines = vec![
+            Line::from(vec![
+                Span::styled("Name: ", dim()),
+                Span::styled(package.name.clone(), accent()),
+            ]),
+            Line::from(vec![
+                Span::styled("Version: ", dim()),
+                Span::styled(format_package_version(package), text()),
+            ]),
+            Line::from(vec![
+                Span::styled("Source: ", dim()),
+                Span::styled(package.source.to_string(), source_color(package.source)),
+            ]),
+            Line::from(vec![
+                Span::styled("Changelog: ", dim()),
+                if App::changelog_supported_for_source(package.source) {
+                    Span::styled("[c] view release notes", key_hint())
+                } else {
+                    Span::styled("not available for this source yet", dim())
+                },
+            ]),
+        ];
+
+        if package.status == PackageStatus::UpdateAvailable || package.status == PackageStatus::Updating {
+            if let Some(priority) = update_priority_label(package) {
+                meta_lines.push(Line::from(vec![
+                    Span::styled("Priority: ", dim()),
+                    Span::styled(priority, warning()),
+                ]));
+            }
+        }
+
+        if matches!(
+            package.status,
+            PackageStatus::Installing | PackageStatus::Removing | PackageStatus::Updating
+        ) {
+            meta_lines.push(Line::from(vec![
+                Span::styled("Status: ", dim()),
+                Span::styled("Operation in progress...", loading()),
+            ]));
+        }
+        frame.render_widget(Paragraph::new(meta_lines), chunks[0]);
+
+        // 2. Description Section
+        let mut desc_lines = vec![Line::from(Span::styled("Description:", dim()))];
+        for line in wrap_text(&package.description, detail_width) {
+            desc_lines.push(Line::from(Span::styled(line, muted())));
+        }
+        frame.render_widget(Paragraph::new(desc_lines).wrap(Wrap { trim: true }), chunks[1]);
+    } else {
+        let paragraph = Paragraph::new("Select a package for details")
+            .style(dim())
+            .alignment(ratatui::layout::Alignment::Center);
+        
+        let vertical_padding = chunks[0].height.saturating_add(chunks[1].height).saturating_sub(1) / 2;
+        let empty_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(vertical_padding),
+                Constraint::Min(1),
+            ])
+            .split(inner.union(chunks[1])); // Use the upper area for centering
+            
+        frame.render_widget(paragraph, empty_chunks[1]);
+    }
+
+    // 3. NBA / Queue Section
+    let nba_text = format!(" {} ", app.recommended_action_label());
+    let mut nba_lines = vec![
         Line::from(vec![
-            Span::styled("Next: ", dim()),
-            Span::styled(app.recommended_action_label(), accent()),
-            Span::styled("  [w]", key_hint()),
+            Span::styled("Next Best Action: ", dim()),
+            Span::styled(nba_text, primary_action_button()),
+            Span::styled("  [w] to execute", key_hint()),
         ]),
         Line::from(Span::styled(
             truncate_to_width(&app.recommended_action_detail(), detail_width),
@@ -1119,7 +1185,7 @@ fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
     if attention > 0 {
-        lines.push(Line::from(vec![
+        nba_lines.push(Line::from(vec![
             Span::styled("Failed tasks: ", dim()),
             Span::styled("R retry  M fix filtered", footer_label()),
             if retryable > 0 {
@@ -1129,61 +1195,7 @@ fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
             },
         ]));
     }
-    lines.push(Line::from(""));
-    lines.extend([
-        Line::from(vec![
-            Span::styled("Name: ", dim()),
-            Span::styled(package.name.clone(), accent()),
-        ]),
-        Line::from(vec![
-            Span::styled("Version: ", dim()),
-            Span::styled(format_package_version(package), text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Source: ", dim()),
-            Span::styled(package.source.to_string(), source_color(package.source)),
-        ]),
-        Line::from(vec![
-            Span::styled("Changelog: ", dim()),
-            if App::changelog_supported_for_source(package.source) {
-                Span::styled("[c] view release notes", key_hint())
-            } else {
-                Span::styled("not available for this source yet", dim())
-            },
-        ]),
-    ]);
-
-    if package.status == PackageStatus::UpdateAvailable || package.status == PackageStatus::Updating
-    {
-        if let Some(priority) = update_priority_label(package) {
-            lines.push(Line::from(vec![
-                Span::styled("Priority: ", dim()),
-                Span::styled(priority, warning()),
-            ]));
-        }
-    }
-
-    if matches!(
-        package.status,
-        PackageStatus::Installing | PackageStatus::Removing | PackageStatus::Updating
-    ) {
-        lines.push(Line::from(vec![
-            Span::styled("Status: ", dim()),
-            Span::styled("Operation in progress...", loading()),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Description:", dim())));
-
-    for line in wrap_text(&package.description, detail_width) {
-        lines.push(Line::from(Span::styled(line, muted())));
-    }
-
-    frame.render_widget(
-        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
-        area,
-    );
+    frame.render_widget(Paragraph::new(nba_lines), chunks[2]);
 }
 
 fn draw_compact_details_summary(frame: &mut Frame, app: &App, area: Rect) {
@@ -1419,35 +1431,34 @@ struct RunningQueueLabelArgs<'a> {
 }
 
 fn build_running_queue_label(args: RunningQueueLabelArgs<'_>) -> String {
-    let mut text_value = format!(
-        "{} {} · {} ({}/{} done)",
-        args.spinner, args.phase_label, args.active_label, args.done, args.total
-    );
+    let mut parts = Vec::new();
+    
+    parts.push(format!("{} {} · {}", args.spinner, args.phase_label, args.active_label));
+    parts.push(format!("{}/{} done", args.done, args.total));
+    
     if args.queued > 0 {
-        text_value.push_str(&format!(" · {} queued", args.queued));
+        parts.push(format!("{} queued", args.queued));
     }
     if args.failed > 0 {
-        text_value.push_str(&format!(" · {} failed", args.failed));
+        parts.push(format!("{} failed", args.failed));
     }
     if args.remaining > 0 {
-        text_value.push_str(&format!(" · {} left", args.remaining));
+        parts.push(format!("{} left", args.remaining));
     }
     if let Some(hint) = args.elapsed_hint {
-        text_value.push_str(" • ");
-        text_value.push_str(hint);
+        parts.push(hint.to_string());
     }
     if let Some(hint) = args.task_eta_hint {
-        text_value.push_str(" • ");
-        text_value.push_str(hint);
+        parts.push(hint.to_string());
     }
     if let Some(hint) = args.trust_hint {
-        text_value.push_str(" • ");
-        text_value.push_str(hint);
+        parts.push(hint.to_string());
     }
     if let Some(hint) = args.performance_hint {
-        text_value.push_str(" • ");
-        text_value.push_str(hint);
+        parts.push(hint.to_string());
     }
+    
+    let mut text_value = parts.join(" · ");
     text_value.push_str("  [l]");
     text_value
 }
@@ -1812,30 +1823,34 @@ fn format_eta_seconds(total_seconds: u64) -> String {
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::new();
-    push_hint(&mut spans, "↑↓", "nav");
+    
+    // Contextual footer hints based on focus
+    match app.focus {
+        Focus::Sources => {
+            push_hint(&mut spans, "↑↓", "nav");
+            push_hint(&mut spans, "Tab", "focus");
+            push_hint(&mut spans, "/", "search");
+        }
+        Focus::Packages => {
+            push_hint(&mut spans, "↑↓", "nav");
+            push_hint(&mut spans, "Space", "sel");
+            push_hint(&mut spans, "w", "next");
+            if app.command_enabled(CommandId::ViewChangelog) {
+                push_hint(&mut spans, "c", "changelog");
+            }
+        }
+        Focus::Queue => {
+            push_hint(&mut spans, "↑↓", "nav");
+            push_hint(&mut spans, "l", "close");
+            if app.queue_expanded {
+                push_hint(&mut spans, "m", "fix");
+                push_hint(&mut spans, "A", "retry-safe");
+            }
+        }
+    }
+    
+    // Always show palette and quit
     push_hint(&mut spans, ":", "cmd");
-    push_hint(&mut spans, "/", "search");
-    push_hint(&mut spans, "Space", "sel");
-    push_hint(&mut spans, "f", "fav");
-    push_hint(&mut spans, "F", "fav±");
-    if app.filter == Filter::Favorites {
-        push_hint(&mut spans, "v", "upd-only");
-    }
-    push_hint(&mut spans, "a", "all");
-    push_hint(&mut spans, "i", "inst");
-    push_hint(&mut spans, "x", "rm");
-    push_hint(&mut spans, "u", "upd");
-    push_hint(&mut spans, "w", "next");
-    if app.command_enabled(CommandId::ViewChangelog) {
-        push_hint(&mut spans, "c", "changelog");
-    } else if app.current_package().is_some() {
-        push_hint(&mut spans, "c", "changelog n/a");
-    }
-    if app.queue_expanded {
-        push_hint(&mut spans, "m", "fix");
-        push_hint(&mut spans, "A", "retry-safe");
-        push_hint(&mut spans, "1-4/0", "failures");
-    }
     push_hint(&mut spans, "q", "quit");
 
     let selection = if app.hidden_selected_count() > 0 {
@@ -1981,9 +1996,22 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
     if sections.len() == 3 {
         if let Some(task) = selected_task {
             let logs = app.task_logs.get(&task.id);
+            
+            // Create a distinct Recommendation Zone
+            let rec_block = Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(border_unfocused());
+            frame.render_widget(Paragraph::new(recommendation_line.clone()).block(rec_block), sections[1]);
+            
+            // Adjust the layout to account for the recommendation zone
+            let log_area = Rect {
+                x: sections[1].x,
+                y: sections[1].y + 2, // Space for recommendation + border
+                width: sections[1].width,
+                height: sections[1].height.saturating_sub(2),
+            };
+
             let mut lines = vec![
-                recommendation_line.clone(),
-                Line::from(""),
                 Line::from(Span::styled("Logs:", dim())),
             ];
 
@@ -1999,19 +2027,19 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     truncate_to_width(
                         &operation_summary,
-                        sections[1].width.saturating_sub(12) as usize,
+                        log_area.width.saturating_sub(12) as usize,
                     ),
                     muted(),
                 ),
             ]));
 
-            let compact_timeline = sections[1].width < 54;
+            let compact_timeline = log_area.width < 54;
             lines.push(Line::from(vec![
                 Span::styled("Plan: ", dim()),
                 Span::styled(
                     truncate_to_width(
                         &task_timeline_text(app, task, compact_timeline),
-                        sections[1].width.saturating_sub(7) as usize,
+                        log_area.width.saturating_sub(7) as usize,
                     ),
                     muted(),
                 ),
@@ -2063,7 +2091,7 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 if let Some(category) = app.failure_category_for_task(task) {
                     append_decision_card(
                         &mut lines,
-                        sections[1].width.saturating_sub(2) as usize,
+                        log_area.width.saturating_sub(2) as usize,
                         DecisionCardContent {
                             what_happens: format!(
                                 "{} for {} failed.",
@@ -2088,16 +2116,16 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                             },
                             if_blocked: category.remediation_copy().to_string(),
                             primary_action: match category {
-                                FailureCategory::Unknown => "[R] retry selected task".to_string(),
-                                _ => "[M] run filtered fix bundle".to_string(),
+                                FailureCategory::Unknown => "Press R to retry selected task".to_string(),
+                                _ => "Press M to run filtered fix bundle".to_string(),
                             },
-                            primary_style: footer_label(),
+                            primary_style: primary_action_button(),
                         },
                     );
                     lines.push(Line::from(Span::styled(
                         truncate_to_width(
                             &format!("Playbook: {}", category.action_hint()),
-                            sections[1].width.saturating_sub(2) as usize,
+                            log_area.width.saturating_sub(2) as usize,
                         ),
                         muted(),
                     )));
@@ -2117,7 +2145,7 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 if retryable > 0 {
                     lines.push(Line::from(Span::styled(
                         format!(
-                            "Optional: [A] retry safe failures for {} task{}",
+                            "Optional: Press A to retry safe failures for {} task{}",
                             retryable,
                             if retryable == 1 { "" } else { "s" }
                         ),
@@ -2129,7 +2157,7 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
 
             if let Some(logs) = logs {
                 let reserved = lines.len().saturating_sub(1);
-                let max = sections[1]
+                let max = log_area
                     .height
                     .saturating_sub(1)
                     .saturating_sub(reserved as u16) as usize;
@@ -2137,14 +2165,14 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                     task_log_window(logs.len(), max.max(1), app.task_log_scroll);
                 for line in logs.iter().skip(start).take(end.saturating_sub(start)) {
                     lines.push(Line::from(Span::styled(
-                        truncate_to_width(line, sections[1].width as usize),
+                        truncate_to_width(line, log_area.width as usize),
                         muted(),
                     )));
                 }
             } else {
                 lines.push(Line::from(Span::styled("No logs yet", dim())));
             }
-            frame.render_widget(Paragraph::new(lines), sections[1]);
+            frame.render_widget(Paragraph::new(lines), log_area);
         } else {
             frame.render_widget(
                 Paragraph::new(vec![
