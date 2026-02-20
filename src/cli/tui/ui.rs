@@ -1912,12 +1912,11 @@ fn render_task_line(
     };
 
     let mut text_value = format!(
-        "{} {}  {}  {} · {}",
+        "{} {}  {}  {}",
         symbol,
         task.package_name,
         action_label(task.action).to_lowercase(),
-        status_text,
-        app.queue_lane_for_task(task).label()
+        status_text
     );
     if let Some(parent) = app.retry_parent_for_task(&task.id) {
         let attempt = app.retry_attempt_for_task(&task.id).unwrap_or(1);
@@ -1935,17 +1934,24 @@ fn render_task_line(
     let mut badges: Vec<(String, Style)> = Vec::new();
     if task.status == TaskQueueStatus::Failed && !recovered {
         if let Some(category) = app.failure_category_for_task(task) {
-            badges.push((
-                format!(" [{}]", blocked_reason_badge(category)),
-                blocked_reason_badge_style(category, selected),
-            ));
-            badges.push((
-                format!(" [{}]", category.code()),
-                failure_code_badge_style(selected),
-            ));
+            if category != FailureCategory::Unknown {
+                badges.push((
+                    format!(" [{}]", blocked_reason_badge(category)),
+                    blocked_reason_badge_style(category, selected),
+                ));
+            }
         }
         if let Some(error_text) = &task.error {
-            text_value.push_str(&format!(": {}", error_text));
+            // Strip the common redundant "Failed to <verb> <mgr> package <name>: <detail>"
+            // prefix — the status/action/name are already shown in the row.
+            let detail = if error_text.starts_with("Failed to ") {
+                error_text.split_once(": ").map(|(_, rest)| rest.trim()).unwrap_or("")
+            } else {
+                error_text.trim()
+            };
+            if !detail.is_empty() {
+                text_value.push_str(&format!(": {}", detail));
+            }
         }
     }
 
@@ -1990,11 +1996,11 @@ fn queue_status_label(status: TaskQueueStatus) -> &'static str {
 
 fn blocked_reason_badge(category: FailureCategory) -> &'static str {
     match category {
-        FailureCategory::Permissions => "BLOCKED:PERM",
-        FailureCategory::Network => "BLOCKED:NET",
-        FailureCategory::NotFound => "BLOCKED:NOT_FOUND",
-        FailureCategory::Conflict => "BLOCKED:CONFLICT",
-        FailureCategory::Unknown => "BLOCKED:UNKNOWN",
+        FailureCategory::Permissions => "permission",
+        FailureCategory::Network => "network",
+        FailureCategory::NotFound => "not found",
+        FailureCategory::Conflict => "conflict",
+        FailureCategory::Unknown => "unknown",
     }
 }
 
@@ -2012,13 +2018,6 @@ fn blocked_reason_badge_style(category: FailureCategory, selected: bool) -> Styl
     }
 }
 
-fn failure_code_badge_style(selected: bool) -> Style {
-    if selected {
-        row_cursor()
-    } else {
-        dim()
-    }
-}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct QueueBlockedCategoryCounts {
@@ -4096,23 +4095,23 @@ mod tests {
     fn blocked_reason_badges_are_stable() {
         assert_eq!(
             blocked_reason_badge(FailureCategory::Permissions),
-            "BLOCKED:PERM"
+            "permission"
         );
         assert_eq!(
             blocked_reason_badge(FailureCategory::Network),
-            "BLOCKED:NET"
+            "network"
         );
         assert_eq!(
             blocked_reason_badge(FailureCategory::NotFound),
-            "BLOCKED:NOT_FOUND"
+            "not found"
         );
         assert_eq!(
             blocked_reason_badge(FailureCategory::Conflict),
-            "BLOCKED:CONFLICT"
+            "conflict"
         );
         assert_eq!(
             blocked_reason_badge(FailureCategory::Unknown),
-            "BLOCKED:UNKNOWN"
+            "unknown"
         );
     }
 
