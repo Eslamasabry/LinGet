@@ -453,7 +453,7 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
     },
     CommandDefinition {
         id: CommandId::QueueCancel,
-        label: "Cancel queued task",
+        label: "Cancel / dismiss task",
         shortcut: "C",
         enabled: command_queue_cancel_enabled,
     },
@@ -855,7 +855,7 @@ impl App {
                 }
                 CommandId::Refresh => "Refresh is already in progress",
                 CommandId::ToggleQueue => "Queue is empty",
-                CommandId::QueueCancel => "Select a queued task in expanded queue",
+                CommandId::QueueCancel => "Select a queued or failed task in expanded queue",
                 CommandId::QueueRetry => "Select a failed task in expanded queue",
                 CommandId::QueueRetrySafe => {
                     if self.queue_expanded && self.focus == Focus::Queue {
@@ -1064,7 +1064,7 @@ impl App {
             && self
                 .tasks
                 .get(self.task_cursor)
-                .is_some_and(|task| task.status == TaskQueueStatus::Queued)
+                .is_some_and(|task| matches!(task.status, TaskQueueStatus::Queued | TaskQueueStatus::Failed))
     }
 
     fn can_retry_selected_task_command(&self) -> bool {
@@ -3770,6 +3770,20 @@ impl App {
                 }
             }
             TaskQueueStatus::Running => self.set_status("Cannot cancel running task", true),
+            TaskQueueStatus::Failed => {
+                self.tasks.remove(self.task_cursor);
+                self.cleanup_task_logs();
+                self.clamp_task_cursor();
+                self.ensure_queue_cursor_matches_filter();
+                self.set_status(
+                    format!(
+                        "Dismissed {} failure for {}",
+                        action_label(task.action),
+                        task.package_name
+                    ),
+                    true,
+                );
+            }
             _ => self.set_status("Only queued tasks can be cancelled", true),
         }
 
