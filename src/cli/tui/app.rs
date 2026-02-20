@@ -2994,28 +2994,30 @@ impl App {
             return;
         }
 
-        let has_failures = self
-            .tasks
-            .iter()
-            .any(|task| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention);
-        if has_failures && !self.queue_failures_acknowledged {
+        // Batch complete: immediately drop successful/cancelled tasks, keep only failures.
+        let before = self.tasks.len();
+        self.tasks
+            .retain(|task| task.status == TaskQueueStatus::Failed);
+        if self.tasks.len() != before {
+            self.cleanup_task_logs();
+            self.clamp_task_cursor();
+            self.ensure_queue_cursor_matches_filter();
+            self.queue_completed_at = None;
+        }
+
+        // Failures remain — stay visible until the user retries/remediates/clears.
+        if !self.tasks.is_empty() {
             return;
         }
 
+        // All tasks succeeded: auto-hide after a brief delay so the user can see "done".
         let Some(completed_at) = self.queue_completed_at else {
             self.queue_completed_at = Some(Instant::now());
             return;
         };
 
         if completed_at.elapsed() > QUEUE_AUTO_HIDE_AFTER {
-            self.tasks.clear();
-            self.task_logs.clear();
-            self.task_last_log_at.clear();
             self.previous_statuses.clear();
-            self.task_failure_categories.clear();
-            self.task_recovery_states.clear();
-            self.retry_parent.clear();
-            self.retry_attempt.clear();
             self.task_cursor = 0;
             self.task_log_scroll = 0;
             self.queue_completed_at = None;
