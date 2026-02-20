@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use crate::models::{ScheduledTask, SchedulerState};
-use chrono::Local;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
@@ -51,20 +50,36 @@ where
             .build();
         scrolled.set_child(Some(&spinner));
     } else {
-        let pending_tasks: Vec<&ScheduledTask> = data.scheduler.pending_tasks();
-        let completed_tasks: Vec<&ScheduledTask> = data
+        let mut active_tasks: Vec<&ScheduledTask> = data.scheduler.pending_tasks();
+        active_tasks.sort_by_key(|task| task.scheduled_at);
+
+        let mut completed_tasks: Vec<&ScheduledTask> = data
             .scheduler
             .tasks
             .iter()
             .filter(|t| t.completed)
             .collect();
+        completed_tasks
+            .sort_by_key(|task| std::cmp::Reverse(task.completed_at.unwrap_or(task.scheduled_at)));
 
-        if pending_tasks.is_empty() && completed_tasks.is_empty() {
+        if let Some(summary) = build_queue_summary(
+            active_tasks.len(),
+            completed_tasks.len(),
+            completed_tasks
+                .iter()
+                .filter(|task| task.error.is_some())
+                .count(),
+            data.running_task_id.is_some(),
+        ) {
+            container.append(&summary);
+        }
+
+        if active_tasks.is_empty() && completed_tasks.is_empty() {
             let empty = build_empty_state();
             scrolled.set_child(Some(&empty));
         } else {
             let content = build_task_list(
-                &pending_tasks,
+                &active_tasks,
                 &completed_tasks,
                 data.running_task_id.as_deref(),
                 on_action,
@@ -127,6 +142,56 @@ where
     header
 }
 
+fn build_queue_summary(
+    active_count: usize,
+    completed_count: usize,
+    failed_count: usize,
+    running: bool,
+) -> Option<gtk::Box> {
+    let total = active_count + completed_count;
+    if total == 0 {
+        return None;
+    }
+
+    let wrapper = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .margin_start(24)
+        .margin_end(24)
+        .margin_bottom(8)
+        .build();
+
+    let status = if running { "running" } else { "idle" };
+    let label_text = if failed_count > 0 {
+        format!(
+            "{} active • {} completed ({} failed) • {}",
+            active_count, completed_count, failed_count, status
+        )
+    } else {
+        format!(
+            "{} active • {} completed • {}",
+            active_count, completed_count, status
+        )
+    };
+
+    let label = gtk::Label::builder()
+        .label(&label_text)
+        .xalign(0.0)
+        .css_classes(vec!["caption", "dim-label"])
+        .build();
+
+    let progress = gtk::ProgressBar::builder()
+        .fraction(completed_count as f64 / total as f64)
+        .show_text(true)
+        .build();
+    progress.add_css_class("osd");
+    progress.set_text(Some(&format!("{}/{} complete", completed_count, total)));
+
+    wrapper.append(&label);
+    wrapper.append(&progress);
+    Some(wrapper)
+}
+
 fn build_empty_state() -> gtk::Box {
     let container = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -162,7 +227,7 @@ fn build_empty_state() -> gtk::Box {
 }
 
 fn build_task_list<F>(
-    pending: &[&ScheduledTask],
+    active: &[&ScheduledTask],
     completed: &[&ScheduledTask],
     running_task_id: Option<&str>,
     on_action: F,
@@ -179,14 +244,14 @@ where
         .margin_end(24)
         .build();
 
-    if !pending.is_empty() {
-        let pending_count = pending.len();
+    if !active.is_empty() {
+        let active_count = active.len();
         let pending_group = adw::PreferencesGroup::builder()
-            .title(format!("Pending ({pending_count})"))
-            .description("Tasks waiting to run at their scheduled time")
+            .title(format!("Active Queue ({active_count})"))
+            .description("Queued, due, and running tasks")
             .build();
 
-        for task in pending {
+        for task in active {
             let is_running = running_task_id.is_some_and(|id| id == task.id);
             let row = build_pending_task_row(task, is_running, on_action.clone());
             pending_group.add(&row);
@@ -286,11 +351,7 @@ fn build_completed_task_row<F>(task: &ScheduledTask, on_action: F) -> adw::Actio
 where
     F: Fn(TaskQueueAction) + Clone + 'static,
 {
-    let completed_time = task
-        .scheduled_at
-        .with_timezone(&Local)
-        .format("%b %d, %I:%M %p")
-        .to_string();
+    let completed_time = task.completed_time_display();
 
     let status_text = if task.error.is_some() {
         "Failed"

@@ -862,6 +862,57 @@ impl PackageBackend for AptBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::{self, File};
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(target_os = "linux")]
+    fn create_fake_apt_script() -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Option<std::ffi::OsString>,
+    ) {
+        let base = std::env::temp_dir().join(format!(
+            "linget-apt-dry-run-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&base).expect("create temp fixture dir");
+
+        let log_path = base.join("args.txt");
+        let script_path = base.join("apt");
+
+        let mut script = File::create(script_path.as_path()).expect("create fake apt script");
+        writeln!(
+            script,
+            "#!/usr/bin/env sh\necho \"$*\" > \"{}\"\necho 'The following packages will be REMOVED:'\necho 'pkg-orphan'\necho '0 '",
+            log_path.to_string_lossy()
+        )
+        .expect("write fake apt script");
+
+        let mut perms = script
+            .metadata()
+            .expect("read script metadata")
+            .permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o755);
+        }
+        fs::set_permissions(script_path.as_path(), perms).expect("chmod fake apt");
+
+        let old_path = std::env::var_os("PATH");
+        let joined_path = match old_path.clone() {
+            Some(path) => format!("{}:{}", base.to_string_lossy(), path.to_string_lossy()),
+            None => base.to_string_lossy().into_owned(),
+        };
+        std::env::set_var("PATH", &joined_path);
+
+        (base, log_path, old_path)
+    }
 
     #[test]
     fn test_parse_sources_list_basic() {
@@ -938,5 +989,30 @@ deb http://enabled.example.com/repo stable main
         // This test verifies the availability check runs without panic
         // The result depends on whether apt/dpkg-query is installed
         let _available = AptBackend::is_available();
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn test_get_orphaned_packages_uses_dry_run_flag() {
+        use std::env;
+        let _path_env_guard = crate::backend::TEST_PATH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        let (fixture_dir, log_path, old_path) = create_fake_apt_script();
+        let backend = AptBackend::new();
+        let result = backend.get_orphaned_packages().await;
+        let args = fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(args.contains("autoremove") && args.contains("--dry-run"));
+        let packages = result.expect("orphan packages");
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "pkg-orphan");
+
+        if let Some(path) = old_path {
+            env::set_var("PATH", path);
+        } else {
+            env::remove_var("PATH");
+        }
+        fs::remove_dir_all(&fixture_dir).ok();
     }
 }

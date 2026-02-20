@@ -2,7 +2,7 @@ use super::ui;
 use super::update_center;
 use crate::backend::{HistoryTracker, PackageManager, TaskQueueEvent, TaskQueueExecutor};
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
-use crate::models::{Config, Package, PackageSource, PackageStatus};
+use crate::models::{ChangelogSummary, Config, Package, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
 use crossterm::{
     event::{
@@ -18,6 +18,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error};
 
@@ -122,6 +123,30 @@ impl PreflightRiskLevel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreflightCertainty {
+    Estimated,
+    Verified,
+}
+
+impl PreflightCertainty {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Estimated => "Estimated",
+            Self::Verified => "Verified",
+        }
+    }
+
+    pub fn copy(self) -> &'static str {
+        match self {
+            Self::Estimated => {
+                "Best-effort preview from current package state. Exact dependency resolution happens at execution time."
+            }
+            Self::Verified => "Preview was verified with source dependency impact probes.",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PreflightSummary {
     pub action: TaskQueueAction,
@@ -131,7 +156,70 @@ pub struct PreflightSummary {
     pub source_breakdown: Vec<(PackageSource, usize)>,
     pub risk_level: PreflightRiskLevel,
     pub risk_reasons: Vec<String>,
+    pub certainty: PreflightCertainty,
+    pub elevated_privileges_likely: bool,
+    pub dependency_impact_known: bool,
+    pub dependency_impact: Option<PreflightDependencyImpact>,
+    pub verification_in_progress: bool,
     pub selection_mode: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PreflightDependencyImpact {
+    pub install_count: usize,
+    pub upgrade_count: usize,
+    pub remove_count: usize,
+    pub held_back_count: usize,
+}
+
+impl PreflightDependencyImpact {
+    fn merge(&mut self, other: &Self) {
+        self.install_count += other.install_count;
+        self.upgrade_count += other.upgrade_count;
+        self.remove_count += other.remove_count;
+        self.held_back_count += other.held_back_count;
+    }
+
+    fn has_changes(&self) -> bool {
+        self.install_count > 0
+            || self.upgrade_count > 0
+            || self.remove_count > 0
+            || self.held_back_count > 0
+    }
+
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.install_count > 0 {
+            parts.push(format!(
+                "{} install{}",
+                self.install_count,
+                if self.install_count == 1 { "" } else { "s" }
+            ));
+        }
+        if self.upgrade_count > 0 {
+            parts.push(format!(
+                "{} upgrade{}",
+                self.upgrade_count,
+                if self.upgrade_count == 1 { "" } else { "s" }
+            ));
+        }
+        if self.remove_count > 0 {
+            parts.push(format!(
+                "{} removal{}",
+                self.remove_count,
+                if self.remove_count == 1 { "" } else { "s" }
+            ));
+        }
+        if self.held_back_count > 0 {
+            parts.push(format!("{} held back", self.held_back_count));
+        }
+
+        if parts.is_empty() {
+            "No transaction delta detected in source probe.".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -163,23 +251,13 @@ impl FailureCategory {
         }
     }
 
-    pub fn short(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
-            Self::Permissions => "PERM",
-            Self::Network => "NET",
-            Self::NotFound => "MISS",
-            Self::Conflict => "CONF",
-            Self::Unknown => "UNK",
-        }
-    }
-
-    pub fn remediation_label(self) -> &'static str {
-        match self {
-            Self::Permissions => "Re-authenticate and retry",
-            Self::Network => "Refresh metadata and retry",
-            Self::NotFound => "Refresh sources and retry",
-            Self::Conflict => "Resolve locks/conflicts and retry",
-            Self::Unknown => "Retry task",
+            Self::Permissions => "E_PERMISSION",
+            Self::Network => "E_NETWORK",
+            Self::NotFound => "E_NOT_FOUND",
+            Self::Conflict => "E_CONFLICT",
+            Self::Unknown => "E_UNKNOWN",
         }
     }
 
@@ -192,6 +270,16 @@ impl FailureCategory {
             Self::Unknown => "No specific category matched this failure.",
         }
     }
+
+    pub fn action_hint(self) -> &'static str {
+        match self {
+            Self::Permissions => "[M] re-authenticate, then [R] retry",
+            Self::Network => "[M] refresh metadata, then [R] retry",
+            Self::NotFound => "[M] refresh and verify package/source before retry",
+            Self::Conflict => "[M] resolve lock/conflict, then [R] retry",
+            Self::Unknown => "[R] retry, then [M] inspect remediation guidance",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -200,7 +288,111 @@ pub struct RecoveryState {
     pub last_outcome: Option<TaskQueueStatus>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueJourneyLane {
+    Now,
+    Next,
+    NeedsAttention,
+    Done,
+}
+
+impl QueueJourneyLane {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Now => "now",
+            Self::Next => "next",
+            Self::NeedsAttention => "needs attention",
+            Self::Done => "done",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueFailureFilter {
+    All,
+    Permissions,
+    Network,
+    Conflict,
+    Other,
+}
+
+impl QueueFailureFilter {
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Permissions => "permissions",
+            Self::Network => "network",
+            Self::Conflict => "conflict",
+            Self::Other => "other",
+        }
+    }
+
+    fn matches(self, category: FailureCategory) -> bool {
+        match self {
+            Self::All => true,
+            Self::Permissions => category == FailureCategory::Permissions,
+            Self::Network => category == FailureCategory::Network,
+            Self::Conflict => category == FailureCategory::Conflict,
+            Self::Other => matches!(
+                category,
+                FailureCategory::NotFound | FailureCategory::Unknown
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueClinicActionability {
+    pub failed_in_scope: usize,
+    pub safe_retry_count: usize,
+    pub remediation_retry_count: usize,
+    pub remediation_guidance_count: usize,
+    pub remediation_skipped_count: usize,
+}
+
+impl QueueClinicActionability {
+    pub fn remediation_actionable_count(self) -> usize {
+        self.remediation_retry_count + self.remediation_guidance_count
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ClinicRemediationPlan {
+    retries: Vec<TaskQueueEntry>,
+    guidance_only: usize,
+    skipped: usize,
+    preview_count: usize,
+}
+
 type LoadResult = Result<Vec<Package>, String>;
+
+#[derive(Debug, Clone)]
+pub enum ChangelogState {
+    Loading,
+    Ready {
+        content: String,
+        summary: ChangelogSummary,
+    },
+    Empty,
+    Error(String),
+}
+
+#[derive(Debug, Clone)]
+struct ChangelogResult {
+    package_id: String,
+    package_name: String,
+    result: Result<Option<String>, String>,
+}
+
+#[derive(Debug, Clone)]
+struct PreflightVerificationResult {
+    request_id: u64,
+    action: TaskQueueAction,
+    package_ids: Vec<String>,
+    dependency_impact_known: bool,
+    dependency_impact: Option<PreflightDependencyImpact>,
+    note: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommandId {
@@ -226,14 +418,26 @@ pub enum CommandId {
     Install,
     Remove,
     Update,
+    RunRecommended,
+    ViewChangelog,
     Search,
     Refresh,
     ToggleQueue,
     QueueCancel,
     QueueRetry,
+    QueueRetrySafe,
     QueueRemediate,
     QueueLogOlder,
     QueueLogNewer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecommendedAction {
+    RetrySafeFailures(usize),
+    ReviewFailures(usize),
+    QueueAllUpdates(usize),
+    ReviewQueue,
+    RefreshPackages,
 }
 
 #[derive(Clone, Copy)]
@@ -394,6 +598,18 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         enabled: command_update_enabled,
     },
     CommandDefinition {
+        id: CommandId::RunRecommended,
+        label: "Run recommended action",
+        shortcut: "w",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::ViewChangelog,
+        label: "View package changelog",
+        shortcut: "c",
+        enabled: command_view_changelog_enabled,
+    },
+    CommandDefinition {
         id: CommandId::Search,
         label: "Search packages",
         shortcut: "/",
@@ -422,6 +638,12 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         label: "Retry failed task",
         shortcut: "R",
         enabled: command_queue_retry_enabled,
+    },
+    CommandDefinition {
+        id: CommandId::QueueRetrySafe,
+        label: "Retry safe failed tasks",
+        shortcut: "A",
+        enabled: command_queue_retry_safe_enabled,
     },
     CommandDefinition {
         id: CommandId::QueueRemediate,
@@ -461,20 +683,28 @@ pub struct App {
     pub task_cursor: usize,
     pub task_log_scroll: usize,
     pub task_logs: HashMap<String, VecDeque<String>>,
+    task_last_log_at: HashMap<String, Instant>,
     pub previous_statuses: HashMap<String, PackageStatus>,
     pub task_failure_categories: HashMap<String, FailureCategory>,
     pub task_recovery_states: HashMap<String, RecoveryState>,
     pub retry_parent: HashMap<String, String>,
+    pub retry_attempt: HashMap<String, usize>,
     pub queue_expanded: bool,
+    pub queue_failure_filter: QueueFailureFilter,
     pub queue_completed_at: Option<Instant>,
     pub executor_running: Arc<AtomicBool>,
     pub queue_failures_acknowledged: bool,
+    pub queue_completion_digest_emitted: bool,
 
     pub focus: Focus,
     pub compact: bool,
     pub confirming: Option<PendingAction>,
     pub showing_help: bool,
     pub showing_palette: bool,
+    pub showing_changelog: bool,
+    pub changelog_diff_only: bool,
+    pub changelog_scroll: usize,
+    pub changelog_target_package_id: Option<String>,
     pub palette_query: String,
     pub palette_cursor: usize,
 
@@ -492,6 +722,13 @@ pub struct App {
     pub load_rx: Option<mpsc::Receiver<LoadResult>>,
     pub task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
     pub task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
+    changelog_rx: Option<mpsc::Receiver<ChangelogResult>>,
+    changelog_tx: Option<mpsc::Sender<ChangelogResult>>,
+    preflight_verification_rx: Option<mpsc::Receiver<PreflightVerificationResult>>,
+    preflight_verification_tx: Option<mpsc::Sender<PreflightVerificationResult>>,
+    next_preflight_verification_id: u64,
+    active_preflight_verification_id: Option<u64>,
+    changelog_cache: HashMap<String, ChangelogState>,
     pub refresh_after_idle: bool,
     pub cursor_anchor_id: Option<String>,
     pub last_click: Option<(u16, u16, Instant)>,
@@ -508,6 +745,8 @@ impl App {
         task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
         task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
     ) -> Self {
+        let (changelog_tx, changelog_rx) = mpsc::channel(32);
+        let (preflight_verification_tx, preflight_verification_rx) = mpsc::channel(32);
         Self {
             packages: Vec::new(),
             filtered: Vec::new(),
@@ -524,19 +763,27 @@ impl App {
             task_cursor: 0,
             task_log_scroll: 0,
             task_logs: HashMap::new(),
+            task_last_log_at: HashMap::new(),
             previous_statuses: HashMap::new(),
             task_failure_categories: HashMap::new(),
             task_recovery_states: HashMap::new(),
             retry_parent: HashMap::new(),
+            retry_attempt: HashMap::new(),
             queue_expanded: false,
+            queue_failure_filter: QueueFailureFilter::All,
             queue_completed_at: None,
             executor_running: Arc::new(AtomicBool::new(false)),
             queue_failures_acknowledged: false,
+            queue_completion_digest_emitted: false,
             focus: Focus::Sources,
             compact: false,
             confirming: None,
             showing_help: false,
             showing_palette: false,
+            showing_changelog: false,
+            changelog_diff_only: false,
+            changelog_scroll: 0,
+            changelog_target_package_id: None,
             palette_query: String::new(),
             palette_cursor: 0,
             status: String::new(),
@@ -551,6 +798,13 @@ impl App {
             load_rx: None,
             task_events_rx,
             task_events_tx,
+            changelog_rx: Some(changelog_rx),
+            changelog_tx: Some(changelog_tx),
+            preflight_verification_rx: Some(preflight_verification_rx),
+            preflight_verification_tx: Some(preflight_verification_tx),
+            next_preflight_verification_id: 1,
+            active_preflight_verification_id: None,
+            changelog_cache: HashMap::new(),
             refresh_after_idle: false,
             cursor_anchor_id: None,
             last_click: None,
@@ -586,16 +840,32 @@ impl App {
     }
 
     pub async fn sync_task_queue_from_history(&mut self) {
+        let retain_history = Config::load().retain_task_queue_history;
+        let mut save_error: Option<String> = None;
+
         let entries = {
-            let guard = self.history_tracker.lock().await;
-            guard
-                .as_ref()
-                .map(|tracker| tracker.history().task_queue.entries.clone())
-                .unwrap_or_default()
+            let mut guard = self.history_tracker.lock().await;
+            if let Some(tracker) = guard.as_mut() {
+                if !retain_history {
+                    tracker.history_mut().task_queue.retain_active();
+                    if let Err(error) = tracker.save().await {
+                        save_error = Some(error.to_string());
+                    }
+                }
+                tracker.history().task_queue.entries.clone()
+            } else {
+                Vec::new()
+            }
         };
-        self.tasks = entries;
+
+        if let Some(error) = save_error {
+            self.set_status(format!("Failed to prune queue history: {}", error), true);
+        }
+
+        self.tasks = Self::session_queue_entries(entries, retain_history);
         self.rebuild_failure_categories();
         self.clamp_task_cursor();
+        self.ensure_queue_cursor_matches_filter();
     }
 
     pub async fn load_sources(&mut self) {
@@ -741,12 +1011,29 @@ impl App {
                 CommandId::Install => "No installable package in current selection",
                 CommandId::Remove => "No removable package in current selection",
                 CommandId::Update => "No updatable package in current selection",
+                CommandId::RunRecommended => "No recommendation available",
+                CommandId::ViewChangelog => {
+                    if self.current_package().is_some() {
+                        "Changelog is not supported for this source yet"
+                    } else {
+                        "Select a package to view changelog"
+                    }
+                }
                 CommandId::Refresh => "Refresh is already in progress",
                 CommandId::ToggleQueue => "Queue is empty",
                 CommandId::QueueCancel => "Select a queued task in expanded queue",
                 CommandId::QueueRetry => "Select a failed task in expanded queue",
+                CommandId::QueueRetrySafe => {
+                    if self.queue_expanded && self.focus == Focus::Queue {
+                        return Some(self.safe_retry_unavailable_reason());
+                    }
+                    "Focus expanded queue to run safe retry bundle"
+                }
                 CommandId::QueueRemediate => {
-                    "Select a failed task in expanded queue to apply remediation"
+                    if self.queue_expanded && self.focus == Focus::Queue {
+                        return Some(self.remediation_unavailable_reason());
+                    }
+                    "Focus expanded queue to run remediation bundle"
                 }
                 CommandId::QueueLogOlder => "No older queue logs available",
                 CommandId::QueueLogNewer => "No newer queue logs available",
@@ -925,6 +1212,11 @@ impl App {
                 .any(|package| Self::is_valid_target(action, package))
     }
 
+    fn can_view_changelog_command(&self) -> bool {
+        self.current_package()
+            .is_some_and(|package| Self::changelog_supported_for_source(package.source))
+    }
+
     fn can_refresh_command(&self) -> bool {
         !self.loading
     }
@@ -949,6 +1241,10 @@ impl App {
                 .is_some_and(|task| task.status == TaskQueueStatus::Failed)
     }
 
+    fn can_retry_safe_failed_tasks_command(&self) -> bool {
+        self.queue_focus_active() && self.queue_clinic_actionability().safe_retry_count > 0
+    }
+
     fn queue_log_max_scroll(&self) -> usize {
         let Some(task) = self.tasks.get(self.task_cursor) else {
             return 0;
@@ -970,9 +1266,9 @@ impl App {
     fn can_queue_remediate_command(&self) -> bool {
         self.queue_focus_active()
             && self
-                .tasks
-                .get(self.task_cursor)
-                .is_some_and(|task| task.status == TaskQueueStatus::Failed)
+                .queue_clinic_actionability()
+                .remediation_actionable_count()
+                > 0
     }
 
     fn classify_failure(error_text: &str) -> FailureCategory {
@@ -1046,6 +1342,292 @@ impl App {
         self.task_recovery_states.get(task_id)
     }
 
+    pub fn retry_parent_for_task(&self, task_id: &str) -> Option<&TaskQueueEntry> {
+        let parent_id = self.retry_parent.get(task_id)?;
+        self.tasks.iter().find(|task| task.id == *parent_id)
+    }
+
+    pub fn retry_attempt_for_task(&self, task_id: &str) -> Option<usize> {
+        self.retry_attempt.get(task_id).copied()
+    }
+
+    pub fn task_last_log_age_secs(&self, task_id: &str) -> Option<u64> {
+        self.task_last_log_at
+            .get(task_id)
+            .map(|instant| instant.elapsed().as_secs())
+    }
+
+    pub fn queue_lane_for_task(&self, task: &TaskQueueEntry) -> QueueJourneyLane {
+        match task.status {
+            TaskQueueStatus::Running => QueueJourneyLane::Now,
+            TaskQueueStatus::Queued => QueueJourneyLane::Next,
+            TaskQueueStatus::Completed | TaskQueueStatus::Cancelled => QueueJourneyLane::Done,
+            TaskQueueStatus::Failed => {
+                let recovered = self
+                    .recovery_state_for_task(&task.id)
+                    .is_some_and(|state| state.last_outcome == Some(TaskQueueStatus::Completed));
+                if recovered {
+                    QueueJourneyLane::Done
+                } else {
+                    QueueJourneyLane::NeedsAttention
+                }
+            }
+        }
+    }
+
+    pub fn queue_lane_counts(&self) -> (usize, usize, usize, usize) {
+        let mut now = 0usize;
+        let mut next = 0usize;
+        let mut attention = 0usize;
+        let mut done = 0usize;
+        for task in &self.tasks {
+            match self.queue_lane_for_task(task) {
+                QueueJourneyLane::Now => now += 1,
+                QueueJourneyLane::Next => next += 1,
+                QueueJourneyLane::NeedsAttention => attention += 1,
+                QueueJourneyLane::Done => done += 1,
+            }
+        }
+        (now, next, attention, done)
+    }
+
+    pub fn queue_failure_filter_label(&self) -> &'static str {
+        self.queue_failure_filter.label()
+    }
+
+    pub fn queue_visible_task_indices(&self) -> Vec<usize> {
+        if self.queue_failure_filter == QueueFailureFilter::All {
+            return (0..self.tasks.len()).collect();
+        }
+
+        self.tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention)
+            .filter(|(_, task)| {
+                self.failure_category_for_task(task)
+                    .is_some_and(|category| self.queue_failure_filter.matches(category))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn queue_visible_cursor_position(&self, visible_indices: &[usize]) -> usize {
+        visible_indices
+            .iter()
+            .position(|index| *index == self.task_cursor)
+            .unwrap_or(0)
+    }
+
+    fn ensure_queue_cursor_matches_filter(&mut self) {
+        if self.tasks.is_empty() {
+            self.queue_failure_filter = QueueFailureFilter::All;
+            self.set_task_cursor(0);
+            return;
+        }
+
+        if self.queue_failure_filter != QueueFailureFilter::All
+            && self.unresolved_failure_count() == 0
+        {
+            self.queue_failure_filter = QueueFailureFilter::All;
+        }
+
+        let visible = self.queue_visible_task_indices();
+        if visible.is_empty() {
+            self.set_task_cursor(self.task_cursor.min(self.tasks.len() - 1));
+            return;
+        }
+
+        if !visible.contains(&self.task_cursor) {
+            self.set_task_cursor(visible[0]);
+        }
+    }
+
+    fn set_queue_failure_filter(&mut self, filter: QueueFailureFilter) {
+        self.queue_failure_filter = filter;
+        self.ensure_queue_cursor_matches_filter();
+
+        let visible = self.queue_visible_task_indices().len();
+        if visible == 0 && filter != QueueFailureFilter::All {
+            self.set_status(
+                format!(
+                    "Failure filter: {} (no matching failures, press 0 for all)",
+                    filter.label()
+                ),
+                true,
+            );
+            return;
+        }
+
+        self.set_status(
+            format!(
+                "Failure filter: {} ({} visible task{})",
+                filter.label(),
+                visible,
+                if visible == 1 { "" } else { "s" }
+            ),
+            true,
+        );
+    }
+
+    pub fn unresolved_failure_count(&self) -> usize {
+        self.tasks
+            .iter()
+            .filter(|task| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention)
+            .count()
+    }
+
+    pub fn retryable_failed_task_count(&self) -> usize {
+        let mut seen = HashSet::new();
+        self.tasks
+            .iter()
+            .filter(|task| {
+                self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention
+                    && self
+                        .failure_category_for_task(task)
+                        .is_some_and(Self::safe_retry_category)
+                    && !self.has_active_task_for_package(&task.package_id)
+                    && seen.insert(task.package_id.clone())
+            })
+            .count()
+    }
+
+    pub fn queue_clinic_actionability(&self) -> QueueClinicActionability {
+        let safe_retry_count = self.clinic_safe_retry_candidates().len();
+        let remediation = self.clinic_remediation_plan();
+
+        QueueClinicActionability {
+            failed_in_scope: remediation.preview_count,
+            safe_retry_count,
+            remediation_retry_count: remediation.retries.len(),
+            remediation_guidance_count: remediation.guidance_only,
+            remediation_skipped_count: remediation.skipped,
+        }
+    }
+
+    fn safe_retry_unavailable_reason(&self) -> String {
+        let scope = self.queue_failure_filter.label();
+        let actionability = self.queue_clinic_actionability();
+
+        if actionability.failed_in_scope == 0 {
+            if self.queue_failure_filter == QueueFailureFilter::All {
+                "No failed tasks in queue".to_string()
+            } else {
+                format!("No safe retries for {} failures (press 0 for all)", scope)
+            }
+        } else if actionability.remediation_skipped_count >= actionability.failed_in_scope {
+            format!("No safe retries for {} failures (already active)", scope)
+        } else {
+            format!("No safe retries for {} failures", scope)
+        }
+    }
+
+    fn remediation_unavailable_reason(&self) -> String {
+        let scope = self.queue_failure_filter.label();
+        let actionability = self.queue_clinic_actionability();
+
+        if actionability.failed_in_scope == 0 {
+            if self.queue_failure_filter == QueueFailureFilter::All {
+                "No failed tasks in queue".to_string()
+            } else {
+                format!(
+                    "No remediation needed for {} failures (press 0 for all)",
+                    scope
+                )
+            }
+        } else if actionability.remediation_skipped_count >= actionability.failed_in_scope {
+            format!(
+                "No remediation needed for {} failures (already active)",
+                scope
+            )
+        } else {
+            format!("No remediation needed for {} failures", scope)
+        }
+    }
+
+    pub fn update_candidate_count(&self) -> usize {
+        self.packages
+            .iter()
+            .filter(|package| package.status == PackageStatus::UpdateAvailable)
+            .count()
+    }
+
+    pub fn recommended_action_label(&self) -> String {
+        match self.recommended_action() {
+            RecommendedAction::RetrySafeFailures(count) => {
+                format!(
+                    "Retry {} safe failure{}",
+                    count,
+                    if count == 1 { "" } else { "s" }
+                )
+            }
+            RecommendedAction::ReviewFailures(count) => {
+                format!(
+                    "Review {} failure{}",
+                    count,
+                    if count == 1 { "" } else { "s" }
+                )
+            }
+            RecommendedAction::QueueAllUpdates(count) => format!(
+                "Queue {} update{}",
+                count,
+                if count == 1 { "" } else { "s" }
+            ),
+            RecommendedAction::ReviewQueue => "Review queue progress".to_string(),
+            RecommendedAction::RefreshPackages => "Refresh package metadata".to_string(),
+        }
+    }
+
+    pub fn recommended_action_detail(&self) -> String {
+        match self.recommended_action() {
+            RecommendedAction::RetrySafeFailures(_) => {
+                "Best next step: retry transient/system conflicts in one bundle.".to_string()
+            }
+            RecommendedAction::ReviewFailures(_) => {
+                "Best next step: inspect failed tasks and pick retry/remediation.".to_string()
+            }
+            RecommendedAction::QueueAllUpdates(_) => {
+                "Best next step: stage one update batch and confirm in preflight.".to_string()
+            }
+            RecommendedAction::ReviewQueue => {
+                "Best next step: open queue and monitor remaining work.".to_string()
+            }
+            RecommendedAction::RefreshPackages => {
+                "Best next step: refresh package index to discover available actions.".to_string()
+            }
+        }
+    }
+
+    fn recommended_action(&self) -> RecommendedAction {
+        let retryable = self.retryable_failed_task_count();
+        if retryable > 0 {
+            return RecommendedAction::RetrySafeFailures(retryable);
+        }
+
+        let unresolved = self.unresolved_failure_count();
+        if unresolved > 0 {
+            return RecommendedAction::ReviewFailures(unresolved);
+        }
+
+        let updates = self.update_candidate_count();
+        if updates > 0 {
+            return RecommendedAction::QueueAllUpdates(updates);
+        }
+
+        if !self.tasks.is_empty() {
+            return RecommendedAction::ReviewQueue;
+        }
+
+        RecommendedAction::RefreshPackages
+    }
+
+    fn safe_retry_category(category: FailureCategory) -> bool {
+        matches!(
+            category,
+            FailureCategory::Permissions | FailureCategory::Network | FailureCategory::Conflict
+        )
+    }
+
     fn rebuild_failure_categories(&mut self) {
         self.task_failure_categories.clear();
         for task in &self.tasks {
@@ -1076,20 +1658,82 @@ impl App {
             source_breakdown.into_iter().collect();
         source_breakdown.sort_by_key(|(source, _)| source.to_string());
 
-        let mut risk_reasons = Vec::new();
-        let mut risk_level = PreflightRiskLevel::Safe;
+        let has_system_source = source_breakdown
+            .iter()
+            .any(|(source, _)| Self::source_treated_as_system(*source));
+        let elevated_privileges_likely = valid
+            .iter()
+            .any(|package| Self::source_likely_requires_elevation(package.source));
+        let dependency_impact_known = false;
+        let verification_in_progress =
+            Self::preflight_dependency_verification_supported(action, valid);
+        let (risk_level, risk_reasons, certainty) = Self::assess_preflight(
+            action,
+            valid.len(),
+            has_system_source,
+            elevated_privileges_likely,
+            dependency_impact_known,
+            verification_in_progress,
+        );
 
-        let has_system_source = valid.iter().any(|package| {
-            matches!(
-                package.source,
+        PreflightSummary {
+            action,
+            target_count: targets.len(),
+            executable_count: valid.len(),
+            skipped_count: targets.len().saturating_sub(valid.len()),
+            source_breakdown,
+            risk_level,
+            risk_reasons,
+            certainty,
+            elevated_privileges_likely,
+            dependency_impact_known,
+            dependency_impact: None,
+            verification_in_progress,
+            selection_mode,
+        }
+    }
+
+    fn source_supports_dependency_verification(
+        action: TaskQueueAction,
+        source: PackageSource,
+    ) -> bool {
+        matches!(
+            (action, source),
+            (
+                TaskQueueAction::Remove,
                 PackageSource::Apt
                     | PackageSource::Dnf
                     | PackageSource::Pacman
                     | PackageSource::Zypper
-                    | PackageSource::Deb
-                    | PackageSource::Aur
+                    | PackageSource::Flatpak
+            ) | (
+                TaskQueueAction::Install | TaskQueueAction::Update,
+                PackageSource::Apt | PackageSource::Dnf
             )
-        });
+        )
+    }
+
+    fn preflight_dependency_verification_supported(
+        action: TaskQueueAction,
+        valid: &[Package],
+    ) -> bool {
+        let sources: HashSet<PackageSource> = valid.iter().map(|package| package.source).collect();
+        !sources.is_empty()
+            && sources
+                .iter()
+                .all(|source| Self::source_supports_dependency_verification(action, *source))
+    }
+
+    fn assess_preflight(
+        action: TaskQueueAction,
+        executable_count: usize,
+        has_system_source: bool,
+        elevated_privileges_likely: bool,
+        dependency_impact_known: bool,
+        verification_in_progress: bool,
+    ) -> (PreflightRiskLevel, Vec<String>, PreflightCertainty) {
+        let mut risk_reasons = Vec::new();
+        let mut risk_level = PreflightRiskLevel::Safe;
 
         match action {
             TaskQueueAction::Remove => {
@@ -1103,14 +1747,14 @@ impl App {
                 }
             }
             TaskQueueAction::Update => {
-                if valid.len() >= 10 {
+                if executable_count >= 10 {
                     risk_level = PreflightRiskLevel::Caution;
                     risk_reasons
                         .push("Large update batch may contain breaking changes.".to_string());
                 }
             }
             TaskQueueAction::Install => {
-                if valid.len() >= 15 {
+                if executable_count >= 15 {
                     risk_level = PreflightRiskLevel::Caution;
                     risk_reasons
                         .push("Large install batch may pull significant dependencies.".to_string());
@@ -1118,25 +1762,100 @@ impl App {
             }
         }
 
-        if valid.len() >= 20 {
+        if executable_count >= 20 {
             risk_level = PreflightRiskLevel::High;
             risk_reasons.push("Very large queue size; review before confirming.".to_string());
+        }
+
+        if elevated_privileges_likely {
+            if risk_level == PreflightRiskLevel::Safe {
+                risk_level = PreflightRiskLevel::Caution;
+            }
+            risk_reasons.push("This action may prompt for elevated privileges.".to_string());
+        }
+
+        if has_system_source && !dependency_impact_known {
+            if risk_level == PreflightRiskLevel::Safe {
+                risk_level = PreflightRiskLevel::Caution;
+            }
+            risk_reasons.push(
+                if verification_in_progress {
+                    "Dependency impact verification is in progress."
+                } else {
+                    "Dependency impact is estimated; exact changes are resolved at execution time."
+                }
+                .to_string(),
+            );
+        } else if dependency_impact_known {
+            risk_reasons.push(
+                "Dependency impact was verified through source capability probes.".to_string(),
+            );
         }
 
         if risk_reasons.is_empty() {
             risk_reasons.push("No additional guardrails triggered.".to_string());
         }
 
-        PreflightSummary {
-            action,
-            target_count: targets.len(),
-            executable_count: valid.len(),
-            skipped_count: targets.len().saturating_sub(valid.len()),
-            source_breakdown,
-            risk_level,
-            risk_reasons,
-            selection_mode,
+        let certainty = if dependency_impact_known {
+            PreflightCertainty::Verified
+        } else {
+            PreflightCertainty::Estimated
+        };
+
+        (risk_level, risk_reasons, certainty)
+    }
+
+    fn refresh_preflight_assessment(preflight: &mut PreflightSummary, note: Option<String>) {
+        let has_system_source = preflight
+            .source_breakdown
+            .iter()
+            .any(|(source, _)| Self::source_treated_as_system(*source));
+        let (risk_level, mut risk_reasons, certainty) = Self::assess_preflight(
+            preflight.action,
+            preflight.executable_count,
+            has_system_source,
+            preflight.elevated_privileges_likely,
+            preflight.dependency_impact_known,
+            preflight.verification_in_progress,
+        );
+        if let Some(note) = note {
+            risk_reasons.push(note);
         }
+
+        preflight.risk_level = risk_level;
+        preflight.risk_reasons = risk_reasons;
+        preflight.certainty = certainty;
+    }
+
+    fn preflight_target_ids(packages: &[Package]) -> Vec<String> {
+        let mut ids: Vec<String> = packages.iter().map(Package::id).collect();
+        ids.sort();
+        ids
+    }
+
+    fn source_treated_as_system(source: PackageSource) -> bool {
+        matches!(
+            source,
+            PackageSource::Apt
+                | PackageSource::Dnf
+                | PackageSource::Pacman
+                | PackageSource::Zypper
+                | PackageSource::Deb
+                | PackageSource::Aur
+        )
+    }
+
+    fn source_likely_requires_elevation(source: PackageSource) -> bool {
+        matches!(
+            source,
+            PackageSource::Apt
+                | PackageSource::Dnf
+                | PackageSource::Pacman
+                | PackageSource::Zypper
+                | PackageSource::Deb
+                | PackageSource::Aur
+                | PackageSource::Snap
+        )
     }
 
     fn set_source_by_index(&mut self, index: usize) {
@@ -1179,6 +1898,42 @@ impl App {
 
     fn current_package_id(&self) -> Option<String> {
         self.current_package().map(Package::id)
+    }
+
+    fn package_by_id(&self, package_id: &str) -> Option<&Package> {
+        self.packages
+            .iter()
+            .find(|package| package.id() == package_id)
+    }
+
+    pub fn changelog_target_package(&self) -> Option<&Package> {
+        self.changelog_target_package_id
+            .as_deref()
+            .and_then(|package_id| self.package_by_id(package_id))
+    }
+
+    pub fn changelog_state_for_target(&self) -> Option<&ChangelogState> {
+        self.changelog_target_package_id
+            .as_ref()
+            .and_then(|package_id| self.changelog_cache.get(package_id))
+    }
+
+    pub fn changelog_supported_for_source(source: PackageSource) -> bool {
+        matches!(
+            source,
+            PackageSource::Apt
+                | PackageSource::Dnf
+                | PackageSource::Pip
+                | PackageSource::Npm
+                | PackageSource::Cargo
+                | PackageSource::Conda
+                | PackageSource::Mamba
+        )
+    }
+
+    pub fn changelog_supported_for_target(&self) -> bool {
+        self.changelog_target_package()
+            .is_some_and(|package| Self::changelog_supported_for_source(package.source))
     }
 
     pub fn visible_selected_count(&self) -> usize {
@@ -1425,6 +2180,539 @@ impl App {
         }
     }
 
+    async fn request_changelog_for_package(&mut self, package: Package, force_refresh: bool) {
+        let package_id = package.id();
+        let package_name = package.name.clone();
+
+        if !force_refresh {
+            match self.changelog_cache.get(&package_id) {
+                Some(ChangelogState::Loading)
+                | Some(ChangelogState::Ready { .. })
+                | Some(ChangelogState::Empty) => return,
+                Some(ChangelogState::Error(_)) | None => {}
+            }
+        } else if matches!(
+            self.changelog_cache.get(&package_id),
+            Some(ChangelogState::Loading)
+        ) {
+            self.set_status(
+                format!("Changelog request already running for {}", package_name),
+                true,
+            );
+            return;
+        }
+
+        self.changelog_cache
+            .insert(package_id.clone(), ChangelogState::Loading);
+        self.set_status(format!("Loading changelog for {}...", package_name), false);
+
+        let Some(sender) = self.changelog_tx.clone() else {
+            self.changelog_cache.insert(
+                package_id,
+                ChangelogState::Error("changelog channel unavailable".to_string()),
+            );
+            self.set_status("Unable to load changelog right now", true);
+            return;
+        };
+
+        let pm = self.pm.clone();
+        tokio::spawn(async move {
+            let result = {
+                let manager = pm.lock().await;
+                manager.get_changelog(&package).await
+            }
+            .map_err(|error| error.to_string());
+
+            let _ = sender
+                .send(ChangelogResult {
+                    package_id,
+                    package_name,
+                    result,
+                })
+                .await;
+        });
+    }
+
+    async fn open_changelog_overlay(&mut self, force_refresh: bool) {
+        let Some(package) = self.current_package().cloned() else {
+            self.set_status("Select a package first", true);
+            return;
+        };
+
+        self.showing_changelog = true;
+        self.changelog_diff_only = matches!(
+            package.status,
+            PackageStatus::UpdateAvailable | PackageStatus::Updating
+        ) && package.available_version.is_some();
+        self.changelog_target_package_id = Some(package.id());
+        self.changelog_scroll = 0;
+        self.request_changelog_for_package(package, force_refresh)
+            .await;
+    }
+
+    fn close_changelog_overlay(&mut self) {
+        self.showing_changelog = false;
+        self.changelog_diff_only = false;
+        self.changelog_target_package_id = None;
+        self.changelog_scroll = 0;
+    }
+
+    async fn refresh_changelog_overlay(&mut self) {
+        let Some(package) = self.changelog_target_package().cloned() else {
+            self.set_status("Package details are no longer available", true);
+            return;
+        };
+        self.changelog_scroll = 0;
+        self.request_changelog_for_package(package, true).await;
+    }
+
+    pub fn poll_changelog(&mut self) {
+        let Some(mut rx) = self.changelog_rx.take() else {
+            return;
+        };
+
+        let mut events = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(event) => events.push(event),
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    self.changelog_rx = Some(rx);
+                    break;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.set_status("Changelog updates disconnected", true);
+                    break;
+                }
+            }
+        }
+
+        for event in events {
+            let is_active = self.changelog_target_package_id.as_deref() == Some(&event.package_id);
+            match event.result {
+                Ok(Some(content)) => {
+                    let summary = ChangelogSummary::parse(&content);
+                    self.changelog_cache
+                        .insert(event.package_id, ChangelogState::Ready { content, summary });
+                    if is_active {
+                        self.set_status(
+                            format!("Loaded changelog for {}", event.package_name),
+                            true,
+                        );
+                    }
+                }
+                Ok(None) => {
+                    self.changelog_cache
+                        .insert(event.package_id, ChangelogState::Empty);
+                    if is_active {
+                        self.set_status(
+                            format!("No changelog available for {}", event.package_name),
+                            true,
+                        );
+                    }
+                }
+                Err(error) => {
+                    self.changelog_cache
+                        .insert(event.package_id, ChangelogState::Error(error.clone()));
+                    if is_active {
+                        self.set_status(
+                            format!(
+                                "Failed to load changelog for {}: {}",
+                                event.package_name, error
+                            ),
+                            true,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn clear_preflight_verification_tracking(&mut self) {
+        self.active_preflight_verification_id = None;
+    }
+
+    fn start_preflight_verification(&mut self, action: TaskQueueAction, packages: Vec<Package>) {
+        self.clear_preflight_verification_tracking();
+
+        let Some(sender) = self.preflight_verification_tx.clone() else {
+            return;
+        };
+        if packages.is_empty()
+            || !Self::preflight_dependency_verification_supported(action, &packages)
+        {
+            return;
+        }
+
+        let request_id = self.next_preflight_verification_id;
+        self.next_preflight_verification_id = self.next_preflight_verification_id.saturating_add(1);
+        self.active_preflight_verification_id = Some(request_id);
+
+        let package_ids = Self::preflight_target_ids(&packages);
+        let pm = self.pm.clone();
+        let task = async move {
+            let (dependency_impact_known, dependency_impact, note) =
+                Self::run_preflight_verification_probe(pm, action, packages).await;
+            let _ = sender
+                .send(PreflightVerificationResult {
+                    request_id,
+                    action,
+                    package_ids,
+                    dependency_impact_known,
+                    dependency_impact,
+                    note,
+                })
+                .await;
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(task);
+            }
+            Err(_) => {
+                self.clear_preflight_verification_tracking();
+                if let Some(confirming) = self.confirming.as_mut() {
+                    confirming.preflight.verification_in_progress = false;
+                    Self::refresh_preflight_assessment(
+                        &mut confirming.preflight,
+                        Some(
+                            "Dependency verification unavailable without async runtime; using estimated impact."
+                                .to_string(),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    async fn run_preflight_verification_probe(
+        pm: Arc<Mutex<PackageManager>>,
+        action: TaskQueueAction,
+        packages: Vec<Package>,
+    ) -> (bool, Option<PreflightDependencyImpact>, Option<String>) {
+        let mut sources: HashSet<PackageSource> = HashSet::new();
+        let mut unsupported_sources: HashSet<PackageSource> = HashSet::new();
+        for package in &packages {
+            sources.insert(package.source);
+            if !Self::source_supports_dependency_verification(action, package.source) {
+                unsupported_sources.insert(package.source);
+            }
+        }
+
+        if !unsupported_sources.is_empty() {
+            let mut names: Vec<String> = unsupported_sources
+                .into_iter()
+                .map(|source| source.to_string())
+                .collect();
+            names.sort();
+            return (
+                false,
+                None,
+                Some(format!(
+                    "Dependency verification is unsupported for {}.",
+                    names.join(", ")
+                )),
+            );
+        }
+
+        match action {
+            TaskQueueAction::Remove => {
+                let mut impact = PreflightDependencyImpact {
+                    remove_count: packages.len(),
+                    ..PreflightDependencyImpact::default()
+                };
+                let manager = pm.lock().await;
+                for package in &packages {
+                    if let Err(error) = manager.get_reverse_dependencies(package).await {
+                        let detail = error
+                            .to_string()
+                            .lines()
+                            .next()
+                            .unwrap_or("unknown verification error")
+                            .to_string();
+                        return (
+                            false,
+                            None,
+                            Some(format!(
+                                "Dependency probe failed for {} ({}): {}",
+                                package.name, package.source, detail
+                            )),
+                        );
+                    }
+                }
+                impact.held_back_count = 0;
+                let mut source_names: Vec<String> = sources
+                    .into_iter()
+                    .map(|source| source.to_string())
+                    .collect();
+                source_names.sort();
+                return (
+                    true,
+                    Some(impact),
+                    Some(format!(
+                        "Dependency impact verified via reverse dependency probes for {}.",
+                        source_names.join(", ")
+                    )),
+                );
+            }
+            TaskQueueAction::Install | TaskQueueAction::Update => {}
+        }
+
+        let mut packages_by_source: HashMap<PackageSource, Vec<String>> = HashMap::new();
+        for package in &packages {
+            packages_by_source
+                .entry(package.source)
+                .or_default()
+                .push(package.name.clone());
+        }
+
+        let mut combined = PreflightDependencyImpact::default();
+        for (source, names) in packages_by_source {
+            let mut names = names;
+            names.sort();
+            names.dedup();
+
+            let source_impact = match source {
+                PackageSource::Apt => Self::probe_apt_transaction_impact(action, &names).await,
+                PackageSource::Dnf => Self::probe_dnf_transaction_impact(action, &names).await,
+                _ => Err(format!(
+                    "Dependency verification is unsupported for {}.",
+                    source
+                )),
+            };
+
+            match source_impact {
+                Ok(impact) => combined.merge(&impact),
+                Err(detail) => {
+                    return (
+                        false,
+                        None,
+                        Some(format!("{} probe failed: {}", source, detail)),
+                    );
+                }
+            }
+        }
+
+        let mut source_names: Vec<String> = sources
+            .into_iter()
+            .map(|source| source.to_string())
+            .collect();
+        source_names.sort();
+
+        (
+            true,
+            Some(combined),
+            Some(format!(
+                "Dependency impact verified via dry-run transaction probes for {}.",
+                source_names.join(", ")
+            )),
+        )
+    }
+
+    async fn probe_apt_transaction_impact(
+        action: TaskQueueAction,
+        package_names: &[String],
+    ) -> std::result::Result<PreflightDependencyImpact, String> {
+        let mut args = vec!["-s".to_string(), "install".to_string()];
+        if action == TaskQueueAction::Update {
+            args.push("--only-upgrade".to_string());
+        }
+        args.extend(package_names.iter().cloned());
+
+        let output = Command::new("apt-get")
+            .args(&args)
+            .output()
+            .await
+            .map_err(|error| format!("failed to run apt-get simulation: {}", error))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let merged = format!("{}\n{}", stdout, stderr);
+        if let Some(impact) = Self::parse_apt_dry_run_impact(&merged) {
+            return Ok(impact);
+        }
+
+        let detail = Self::first_non_empty_line(&stderr)
+            .or_else(|| Self::first_non_empty_line(&stdout))
+            .unwrap_or_else(|| format!("exit status {}", output.status));
+        Err(format!(
+            "apt-get simulation did not expose transaction summary ({})",
+            detail
+        ))
+    }
+
+    async fn probe_dnf_transaction_impact(
+        action: TaskQueueAction,
+        package_names: &[String],
+    ) -> std::result::Result<PreflightDependencyImpact, String> {
+        let mut args = vec![
+            match action {
+                TaskQueueAction::Install => "install".to_string(),
+                TaskQueueAction::Update => "upgrade".to_string(),
+                TaskQueueAction::Remove => "remove".to_string(),
+            },
+            "--assumeno".to_string(),
+            "--setopt=tsflags=test".to_string(),
+        ];
+        args.extend(package_names.iter().cloned());
+
+        let output = Command::new("dnf")
+            .args(&args)
+            .output()
+            .await
+            .map_err(|error| format!("failed to run dnf simulation: {}", error))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let merged = format!("{}\n{}", stdout, stderr);
+        if let Some(impact) = Self::parse_dnf_dry_run_impact(&merged) {
+            return Ok(impact);
+        }
+
+        let detail = Self::first_non_empty_line(&stderr)
+            .or_else(|| Self::first_non_empty_line(&stdout))
+            .unwrap_or_else(|| format!("exit status {}", output.status));
+        Err(format!(
+            "dnf simulation did not expose transaction summary ({})",
+            detail
+        ))
+    }
+
+    fn parse_apt_dry_run_impact(output: &str) -> Option<PreflightDependencyImpact> {
+        for line in output.lines() {
+            let normalized = line.trim();
+            if !normalized.contains("upgraded")
+                || !normalized.contains("newly installed")
+                || !normalized.contains("to remove")
+            {
+                continue;
+            }
+
+            let values: Vec<usize> = normalized
+                .split(|ch: char| !ch.is_ascii_digit())
+                .filter(|part| !part.is_empty())
+                .filter_map(|part| part.parse::<usize>().ok())
+                .collect();
+            if values.len() < 4 {
+                continue;
+            }
+
+            return Some(PreflightDependencyImpact {
+                upgrade_count: values[0],
+                install_count: values[1],
+                remove_count: values[2],
+                held_back_count: values[3],
+            });
+        }
+
+        None
+    }
+
+    fn parse_dnf_dry_run_impact(output: &str) -> Option<PreflightDependencyImpact> {
+        let mut in_summary = false;
+        let mut impact = PreflightDependencyImpact::default();
+
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                if in_summary && impact.has_changes() {
+                    break;
+                }
+                continue;
+            }
+
+            if trimmed.eq_ignore_ascii_case("Transaction Summary") {
+                in_summary = true;
+                continue;
+            }
+            if !in_summary {
+                continue;
+            }
+
+            let Some(value) = Self::first_usize(trimmed) else {
+                continue;
+            };
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.starts_with("install") || lower.starts_with("reinstall") {
+                impact.install_count += value;
+            } else if lower.starts_with("upgrade")
+                || lower.starts_with("upgrading")
+                || lower.starts_with("downgrade")
+            {
+                impact.upgrade_count += value;
+            } else if lower.starts_with("remove")
+                || lower.starts_with("removing")
+                || lower.starts_with("obsoleting")
+                || lower.starts_with("erase")
+            {
+                impact.remove_count += value;
+            } else if lower.starts_with("skip") {
+                impact.held_back_count += value;
+            }
+        }
+
+        impact.has_changes().then_some(impact)
+    }
+
+    fn first_usize(text: &str) -> Option<usize> {
+        text.split(|ch: char| !ch.is_ascii_digit())
+            .find(|part| !part.is_empty())
+            .and_then(|part| part.parse::<usize>().ok())
+    }
+
+    fn first_non_empty_line(text: &str) -> Option<String> {
+        text.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(ToString::to_string)
+    }
+
+    pub fn poll_preflight_verification(&mut self) {
+        let Some(mut rx) = self.preflight_verification_rx.take() else {
+            return;
+        };
+
+        let mut events = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(event) => events.push(event),
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    self.preflight_verification_rx = Some(rx);
+                    break;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.preflight_verification_rx = None;
+                    self.clear_preflight_verification_tracking();
+                    break;
+                }
+            }
+        }
+
+        for event in events {
+            let Some(active_request_id) = self.active_preflight_verification_id else {
+                continue;
+            };
+            if event.request_id != active_request_id {
+                continue;
+            }
+
+            let Some(confirming) = self.confirming.as_mut() else {
+                self.clear_preflight_verification_tracking();
+                continue;
+            };
+            if confirming.action != event.action
+                || Self::preflight_target_ids(&confirming.packages) != event.package_ids
+            {
+                continue;
+            }
+
+            confirming.preflight.dependency_impact_known = event.dependency_impact_known;
+            confirming.preflight.dependency_impact = event.dependency_impact;
+            confirming.preflight.verification_in_progress = false;
+            Self::refresh_preflight_assessment(&mut confirming.preflight, event.note);
+            self.clear_preflight_verification_tracking();
+        }
+    }
+
     fn merge_installed_with_updates(
         mut installed: Vec<Package>,
         updates: Vec<Package>,
@@ -1587,16 +2875,31 @@ impl App {
     }
 
     fn append_task_log(&mut self, entry_id: &str, line: String) {
+        let pin_manual_scroll = self
+            .tasks
+            .get(self.task_cursor)
+            .is_some_and(|task| task.id == entry_id)
+            && self.task_log_scroll > 0;
+
         let logs = self.task_logs.entry(entry_id.to_string()).or_default();
         logs.push_back(line);
+        self.task_last_log_at
+            .insert(entry_id.to_string(), Instant::now());
         while logs.len() > MAX_TASK_LOG_LINES {
             logs.pop_front();
+        }
+
+        // Keep older logs stable while the operator is manually scrolled up.
+        if pin_manual_scroll {
+            self.task_log_scroll = (self.task_log_scroll + 1).min(self.queue_log_max_scroll());
         }
     }
 
     fn cleanup_task_logs(&mut self) {
         let valid: HashSet<&str> = self.tasks.iter().map(|task| task.id.as_str()).collect();
         self.task_logs
+            .retain(|task_id, _| valid.contains(task_id.as_str()));
+        self.task_last_log_at
             .retain(|task_id, _| valid.contains(task_id.as_str()));
         self.task_failure_categories
             .retain(|task_id, _| valid.contains(task_id.as_str()));
@@ -1605,19 +2908,42 @@ impl App {
         self.retry_parent.retain(|task_id, parent| {
             valid.contains(task_id.as_str()) && valid.contains(parent.as_str())
         });
+        self.retry_attempt
+            .retain(|task_id, _| valid.contains(task_id.as_str()));
+    }
+
+    fn session_queue_entries(
+        entries: Vec<TaskQueueEntry>,
+        retain_history: bool,
+    ) -> Vec<TaskQueueEntry> {
+        if retain_history {
+            return entries;
+        }
+
+        entries
+            .into_iter()
+            .filter(|task| {
+                matches!(
+                    task.status,
+                    TaskQueueStatus::Queued | TaskQueueStatus::Running
+                )
+            })
+            .collect()
     }
 
     fn apply_task_event(&mut self, event: TaskQueueEvent) {
         match event {
             TaskQueueEvent::Started(entry) => {
                 self.task_failure_categories.remove(&entry.id);
+                self.task_last_log_at.remove(&entry.id);
                 self.upsert_task(entry.clone());
                 self.mark_package_started(&entry);
                 self.queue_completed_at = None;
+                self.queue_completion_digest_emitted = false;
                 self.apply_filters();
             }
             TaskQueueEvent::Completed(entry) => {
-                if let Some(parent) = self.retry_parent.remove(&entry.id) {
+                if let Some(parent) = self.retry_parent.get(&entry.id).cloned() {
                     let state = self.task_recovery_states.entry(parent.clone()).or_default();
                     state.last_outcome = Some(TaskQueueStatus::Completed);
                     self.set_status(
@@ -1640,11 +2966,26 @@ impl App {
                 self.task_failure_categories
                     .insert(entry.id.clone(), category);
 
-                if let Some(parent) = self.retry_parent.remove(&entry.id) {
+                if let Some(parent) = self.retry_parent.get(&entry.id).cloned() {
                     let state = self.task_recovery_states.entry(parent).or_default();
                     state.last_outcome = Some(TaskQueueStatus::Failed);
                     self.set_status(
-                        format!("Recovery retry failed ({}).", category.label()),
+                        format!(
+                            "Recovery retry failed [{}]. {}",
+                            category.code(),
+                            category.action_hint()
+                        ),
+                        true,
+                    );
+                } else {
+                    self.set_status(
+                        format!(
+                            "{} failed for {} [{}]. {}",
+                            action_label(entry.action),
+                            entry.package_name,
+                            category.code(),
+                            category.action_hint()
+                        ),
                         true,
                     );
                 }
@@ -1664,7 +3005,9 @@ impl App {
                 self.append_task_log(&entry_id, format!("[{}] {}", kind, text));
             }
         }
+        self.ensure_queue_cursor_matches_filter();
         self.cleanup_task_logs();
+        self.maybe_emit_queue_completion_digest();
     }
 
     fn clamp_task_cursor(&mut self) {
@@ -1703,7 +3046,7 @@ impl App {
         let has_failures = self
             .tasks
             .iter()
-            .any(|task| task.status == TaskQueueStatus::Failed);
+            .any(|task| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention);
         if has_failures && !self.queue_failures_acknowledged {
             return;
         }
@@ -1716,15 +3059,66 @@ impl App {
         if completed_at.elapsed() > QUEUE_AUTO_HIDE_AFTER {
             self.tasks.clear();
             self.task_logs.clear();
+            self.task_last_log_at.clear();
             self.previous_statuses.clear();
             self.task_failure_categories.clear();
             self.task_recovery_states.clear();
             self.retry_parent.clear();
+            self.retry_attempt.clear();
             self.task_cursor = 0;
             self.task_log_scroll = 0;
             self.queue_completed_at = None;
             self.queue_failures_acknowledged = false;
+            self.queue_completion_digest_emitted = false;
+            self.queue_failure_filter = QueueFailureFilter::All;
         }
+    }
+
+    fn maybe_emit_queue_completion_digest(&mut self) {
+        if self.queue_completion_digest_emitted || self.tasks.is_empty() {
+            return;
+        }
+
+        if self.tasks.iter().any(|task| {
+            matches!(
+                task.status,
+                TaskQueueStatus::Queued | TaskQueueStatus::Running
+            )
+        }) {
+            return;
+        }
+
+        let (_, _, completed, failed, cancelled) = self.queue_counts();
+        let recovered = self
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.status == TaskQueueStatus::Failed
+                    && self
+                        .recovery_state_for_task(&task.id)
+                        .is_some_and(|state| state.last_outcome == Some(TaskQueueStatus::Completed))
+            })
+            .count();
+
+        let mut message = format!("Queue finished: {} done", completed + cancelled);
+        if recovered > 0 {
+            message.push_str(&format!(", {} recovered", recovered));
+        }
+        if failed > 0 {
+            message.push_str(&format!(", {} need attention", failed));
+        }
+        message.push('.');
+        if failed > 0 {
+            if self.retryable_failed_task_count() > 0 {
+                message.push_str(" Press A for safe retries or l for failures.");
+            } else {
+                message.push_str(" Press l for failure details.");
+            }
+        } else {
+            message.push_str(" Press l for details.");
+        }
+        self.set_status(message, true);
+        self.queue_completion_digest_emitted = true;
     }
 
     pub fn toggle_queue_expanded(&mut self) {
@@ -1736,10 +3130,11 @@ impl App {
         if self.queue_expanded {
             self.focus = Focus::Queue;
             self.task_log_scroll = 0;
+            self.ensure_queue_cursor_matches_filter();
             if self
                 .tasks
                 .iter()
-                .any(|task| task.status == TaskQueueStatus::Failed)
+                .any(|task| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention)
             {
                 self.queue_failures_acknowledged = true;
             }
@@ -1782,36 +3177,57 @@ impl App {
     }
 
     fn queue_top(&mut self) {
-        self.set_task_cursor(0);
+        let visible = self.queue_visible_task_indices();
+        if let Some(first) = visible.first().copied() {
+            self.set_task_cursor(first);
+        }
     }
 
     fn queue_bottom(&mut self) {
-        if !self.tasks.is_empty() {
-            self.set_task_cursor(self.tasks.len() - 1);
+        let visible = self.queue_visible_task_indices();
+        if let Some(last) = visible.last().copied() {
+            self.set_task_cursor(last);
         }
     }
 
     fn queue_next(&mut self) {
-        if self.tasks.is_empty() {
-            self.set_task_cursor(0);
+        let visible = self.queue_visible_task_indices();
+        if visible.is_empty() {
             return;
         }
-        self.set_task_cursor((self.task_cursor + 1).min(self.tasks.len() - 1));
+        let position = self.queue_visible_cursor_position(&visible);
+        let next = (position + 1).min(visible.len() - 1);
+        self.set_task_cursor(visible[next]);
     }
 
     fn queue_prev(&mut self) {
-        self.set_task_cursor(self.task_cursor.saturating_sub(1));
+        let visible = self.queue_visible_task_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let position = self.queue_visible_cursor_position(&visible);
+        let previous = position.saturating_sub(1);
+        self.set_task_cursor(visible[previous]);
     }
 
     fn queue_page_down(&mut self) {
-        if self.tasks.is_empty() {
+        let visible = self.queue_visible_task_indices();
+        if visible.is_empty() {
             return;
         }
-        self.set_task_cursor((self.task_cursor + HALF_PAGE).min(self.tasks.len() - 1));
+        let position = self.queue_visible_cursor_position(&visible);
+        let next = (position + HALF_PAGE).min(visible.len() - 1);
+        self.set_task_cursor(visible[next]);
     }
 
     fn queue_page_up(&mut self) {
-        self.set_task_cursor(self.task_cursor.saturating_sub(HALF_PAGE));
+        let visible = self.queue_visible_task_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let position = self.queue_visible_cursor_position(&visible);
+        let previous = position.saturating_sub(HALF_PAGE);
+        self.set_task_cursor(visible[previous]);
     }
 
     fn queue_log_scroll_up(&mut self) {
@@ -1820,6 +3236,56 @@ impl App {
 
     fn queue_log_scroll_down(&mut self) {
         self.task_log_scroll = self.task_log_scroll.saturating_sub(1);
+    }
+
+    fn has_active_queue_tasks(&self) -> bool {
+        self.tasks.iter().any(|task| {
+            matches!(
+                task.status,
+                TaskQueueStatus::Queued | TaskQueueStatus::Running
+            )
+        })
+    }
+
+    fn has_active_task_for_package(&self, package_id: &str) -> bool {
+        self.tasks.iter().any(|task| {
+            task.package_id == package_id
+                && matches!(
+                    task.status,
+                    TaskQueueStatus::Queued | TaskQueueStatus::Running
+                )
+        })
+    }
+
+    fn prune_terminal_tasks(&mut self) -> bool {
+        let original_len = self.tasks.len();
+        self.tasks.retain(|task| !task.status.is_terminal());
+        self.cleanup_task_logs();
+        self.clamp_task_cursor();
+        self.ensure_queue_cursor_matches_filter();
+        if self.tasks.is_empty() {
+            self.queue_completed_at = None;
+            self.queue_failures_acknowledged = false;
+        }
+        self.tasks.len() != original_len
+    }
+
+    async fn persist_task_queue_state(&mut self) {
+        let persisted = {
+            let mut guard = self.history_tracker.lock().await;
+            if let Some(tracker) = guard.as_mut() {
+                tracker
+                    .replace_task_queue(self.tasks.clone())
+                    .await
+                    .map(|_| true)
+            } else {
+                Ok(false)
+            }
+        };
+
+        if let Err(error) = persisted {
+            self.set_status(format!("Failed to persist task queue: {}", error), true);
+        }
     }
 
     fn collect_action_targets(&self) -> Vec<Package> {
@@ -1870,6 +3336,22 @@ impl App {
         }
     }
 
+    fn queued_result_message(action: TaskQueueAction, queued: usize) -> String {
+        if queued == 0 {
+            return format!(
+                "No new {} tasks queued (already queued/running)",
+                action_label(action).to_lowercase()
+            );
+        }
+
+        format!(
+            "Queued {} {} task{}",
+            queued,
+            action_label(action).to_lowercase(),
+            if queued == 1 { "" } else { "s" }
+        )
+    }
+
     fn build_confirm_label(
         action: TaskQueueAction,
         valid: &[Package],
@@ -1906,9 +3388,14 @@ impl App {
         format!("{} {} packages?", verb, valid.len())
     }
 
-    fn prepare_action(&mut self, action: TaskQueueAction) {
-        let targets = self.collect_action_targets();
+    fn prepare_action_for_targets(
+        &mut self,
+        action: TaskQueueAction,
+        targets: Vec<Package>,
+        selection_mode: bool,
+    ) {
         if targets.is_empty() {
+            self.clear_preflight_verification_tracking();
             self.set_status("No package selected", true);
             return;
         }
@@ -1920,7 +3407,8 @@ impl App {
             .collect();
 
         if valid.is_empty() {
-            if self.selected.is_empty() {
+            self.clear_preflight_verification_tracking();
+            if !selection_mode {
                 if let Some(target) = targets.first() {
                     self.set_status(Self::invalid_single_target_message(action, target), true);
                 }
@@ -1931,11 +3419,12 @@ impl App {
         }
 
         let skipped = targets.len().saturating_sub(valid.len());
-        let selection_mode = !self.selected.is_empty();
         let label =
             Self::build_confirm_label(action, &valid, targets.len(), skipped, selection_mode);
         let preflight = Self::build_preflight_summary(action, &targets, &valid, selection_mode);
+        let verification_in_progress = preflight.verification_in_progress;
         let risk_acknowledged = preflight.risk_level != PreflightRiskLevel::High;
+        let verification_targets = valid.clone();
 
         self.confirming = Some(PendingAction {
             label,
@@ -1944,6 +3433,18 @@ impl App {
             preflight,
             risk_acknowledged,
         });
+
+        if verification_in_progress {
+            self.start_preflight_verification(action, verification_targets);
+        } else {
+            self.clear_preflight_verification_tracking();
+        }
+    }
+
+    fn prepare_action(&mut self, action: TaskQueueAction) {
+        let selection_mode = !self.selected.is_empty();
+        let targets = self.collect_action_targets();
+        self.prepare_action_for_targets(action, targets, selection_mode);
     }
 
     fn toggle_selection_on_cursor(&mut self) {
@@ -2114,21 +3615,15 @@ impl App {
                 }
 
                 if let Some(action) = self.confirming.take() {
+                    self.clear_preflight_verification_tracking();
                     let queued = self.queue_tasks(action.packages, action.action).await;
                     self.clear_selection();
-                    self.set_status(
-                        format!(
-                            "Queued {} {} task{}",
-                            queued,
-                            action_label(action.action).to_lowercase(),
-                            if queued == 1 { "" } else { "s" }
-                        ),
-                        true,
-                    );
+                    self.set_status(Self::queued_result_message(action.action, queued), true);
                 }
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 self.confirming = None;
+                self.clear_preflight_verification_tracking();
                 self.set_status("Cancelled", true);
             }
             _ => {}
@@ -2161,10 +3656,94 @@ impl App {
 
     async fn handle_queue_shortcuts(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('c') | KeyCode::Char('C') => self.cancel_selected_task().await,
-            KeyCode::Char('r') | KeyCode::Char('R') => self.retry_selected_task().await,
-            KeyCode::Char('m') | KeyCode::Char('M') => self.apply_selected_task_remediation().await,
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                self.execute_command(CommandId::QueueCancel).await;
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.execute_command(CommandId::QueueRetry).await;
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.execute_command(CommandId::QueueRetrySafe).await;
+            }
+            KeyCode::Char('m') | KeyCode::Char('M') => {
+                self.execute_command(CommandId::QueueRemediate).await;
+            }
+            KeyCode::Char('0') => self.set_queue_failure_filter(QueueFailureFilter::All),
+            KeyCode::Char('1') => self.set_queue_failure_filter(QueueFailureFilter::Permissions),
+            KeyCode::Char('2') => self.set_queue_failure_filter(QueueFailureFilter::Network),
+            KeyCode::Char('3') => self.set_queue_failure_filter(QueueFailureFilter::Conflict),
+            KeyCode::Char('4') => self.set_queue_failure_filter(QueueFailureFilter::Other),
             _ => {}
+        }
+    }
+
+    async fn handle_changelog_key(&mut self, key: KeyEvent) {
+        const CHANGELOG_STEP: usize = 3;
+        const CHANGELOG_PAGE: usize = 14;
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('c') => self.close_changelog_overlay(),
+            KeyCode::Char('r') => self.refresh_changelog_overlay().await,
+            KeyCode::Char('u') | KeyCode::Char('U') => {
+                self.queue_changelog_action(TaskQueueAction::Update);
+            }
+            KeyCode::Char('i') | KeyCode::Char('I') => {
+                self.queue_changelog_action(TaskQueueAction::Install);
+            }
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                self.queue_changelog_action(TaskQueueAction::Remove);
+            }
+            KeyCode::Char('v') => {
+                self.changelog_diff_only = !self.changelog_diff_only;
+                self.changelog_scroll = 0;
+                if self.changelog_diff_only {
+                    self.set_status("Changelog mode: version delta", true);
+                } else {
+                    self.set_status("Changelog mode: full history", true);
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.changelog_scroll = self.changelog_scroll.saturating_add(CHANGELOG_STEP);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.changelog_scroll = self.changelog_scroll.saturating_sub(CHANGELOG_STEP);
+            }
+            KeyCode::PageDown => {
+                self.changelog_scroll = self.changelog_scroll.saturating_add(CHANGELOG_PAGE);
+            }
+            KeyCode::PageUp => {
+                self.changelog_scroll = self.changelog_scroll.saturating_sub(CHANGELOG_PAGE);
+            }
+            _ if key.code == KeyCode::Char('d')
+                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.changelog_scroll = self.changelog_scroll.saturating_add(CHANGELOG_PAGE);
+            }
+            _ if key.code == KeyCode::Char('u')
+                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.changelog_scroll = self.changelog_scroll.saturating_sub(CHANGELOG_PAGE);
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.changelog_scroll = 0;
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                self.changelog_scroll = usize::MAX / 2;
+            }
+            _ => {}
+        }
+    }
+
+    fn queue_changelog_action(&mut self, action: TaskQueueAction) {
+        let Some(package) = self.changelog_target_package().cloned() else {
+            self.set_status("Package details are no longer available", true);
+            return;
+        };
+
+        let had_confirming = self.confirming.is_some();
+        self.prepare_action_for_targets(action, vec![package], false);
+        if !had_confirming && self.confirming.is_some() {
+            self.close_changelog_overlay();
         }
     }
 
@@ -2271,6 +3850,8 @@ impl App {
             CommandId::Install => self.prepare_action(TaskQueueAction::Install),
             CommandId::Remove => self.prepare_action(TaskQueueAction::Remove),
             CommandId::Update => self.prepare_action(TaskQueueAction::Update),
+            CommandId::RunRecommended => self.run_recommended_action().await,
+            CommandId::ViewChangelog => self.open_changelog_overlay(false).await,
             CommandId::Search => self.searching = true,
             CommandId::Refresh => {
                 if !self.start_loading() {
@@ -2280,6 +3861,7 @@ impl App {
             CommandId::ToggleQueue => self.toggle_queue_expanded(),
             CommandId::QueueCancel => self.cancel_selected_task().await,
             CommandId::QueueRetry => self.retry_selected_task().await,
+            CommandId::QueueRetrySafe => self.retry_safe_failed_tasks().await,
             CommandId::QueueRemediate => self.apply_selected_task_remediation().await,
             CommandId::QueueLogOlder => self.queue_log_scroll_up(),
             CommandId::QueueLogNewer => self.queue_log_scroll_down(),
@@ -2457,6 +4039,11 @@ impl App {
             {
                 self.page_up()
             }
+            KeyCode::Enter => {
+                if self.focus == Focus::Packages {
+                    self.prepare_default_action_for_cursor();
+                }
+            }
             KeyCode::Char('1') => self.execute_command(CommandId::FilterAll).await,
             KeyCode::Char('2') => self.execute_command(CommandId::FilterInstalled).await,
             KeyCode::Char('3') => self.execute_command(CommandId::FilterUpdates).await,
@@ -2472,6 +4059,8 @@ impl App {
             KeyCode::Char('i') => self.execute_command(CommandId::Install).await,
             KeyCode::Char('x') => self.execute_command(CommandId::Remove).await,
             KeyCode::Char('u') => self.execute_command(CommandId::Update).await,
+            KeyCode::Char('w') => self.execute_command(CommandId::RunRecommended).await,
+            KeyCode::Char('c') => self.execute_command(CommandId::ViewChangelog).await,
             KeyCode::Char('/') => self.execute_command(CommandId::Search).await,
             KeyCode::Char('r') => self.execute_command(CommandId::Refresh).await,
             KeyCode::Char('l') => self.execute_command(CommandId::ToggleQueue).await,
@@ -2489,6 +4078,7 @@ impl App {
             }
             KeyCode::Char('C') => self.execute_command(CommandId::QueueCancel).await,
             KeyCode::Char('R') => self.execute_command(CommandId::QueueRetry).await,
+            KeyCode::Char('A') => self.execute_command(CommandId::QueueRetrySafe).await,
             KeyCode::Char('M') => self.execute_command(CommandId::QueueRemediate).await,
             _ => {}
         }
@@ -2497,6 +4087,10 @@ impl App {
     pub async fn handle_key(&mut self, key: KeyEvent) {
         self.clear_status_if_needed();
 
+        if self.showing_changelog {
+            self.handle_changelog_key(key).await;
+            return;
+        }
         if self.showing_palette {
             self.handle_palette_key(key).await;
             return;
@@ -2543,6 +4137,23 @@ impl App {
                     self.last_click = Some((col, row, Instant::now()));
                     self.handle_mouse_palette_click(col, row, is_double, &regions.palette)
                         .await;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if self.showing_changelog {
+            match event.kind {
+                MouseEventKind::ScrollUp => {
+                    self.changelog_scroll = self.changelog_scroll.saturating_sub(SCROLL_STEP);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.changelog_scroll = self.changelog_scroll.saturating_add(SCROLL_STEP);
+                }
+                MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::Down(MouseButton::Right) => {
+                    self.close_changelog_overlay();
                 }
                 _ => {}
             }
@@ -2864,10 +4475,16 @@ impl App {
             return None;
         }
 
+        let visible_indices = self.queue_visible_task_indices();
+        if visible_indices.is_empty() {
+            return None;
+        }
+
         let visible = task_rect.height as usize;
-        let start = ui::window_start(self.tasks.len(), visible.max(1), self.task_cursor);
+        let cursor_pos = self.queue_visible_cursor_position(&visible_indices);
+        let start = ui::window_start(visible_indices.len(), visible.max(1), cursor_pos);
         let clicked = start + row.saturating_sub(task_rect.y) as usize;
-        (clicked < self.tasks.len()).then_some(clicked)
+        visible_indices.get(clicked).copied()
     }
 
     async fn handle_mouse_expanded_queue_click(
@@ -2884,11 +4501,13 @@ impl App {
         ) {
             self.focus = Focus::Queue;
             match action {
-                ui::QueueHintAction::Cancel => self.cancel_selected_task().await,
-                ui::QueueHintAction::Retry => self.retry_selected_task().await,
-                ui::QueueHintAction::Remediate => self.apply_selected_task_remediation().await,
-                ui::QueueHintAction::LogOlder => self.queue_log_scroll_up(),
-                ui::QueueHintAction::LogNewer => self.queue_log_scroll_down(),
+                ui::QueueHintAction::Retry => self.execute_command(CommandId::QueueRetry).await,
+                ui::QueueHintAction::RetrySafe => {
+                    self.execute_command(CommandId::QueueRetrySafe).await;
+                }
+                ui::QueueHintAction::Remediate => {
+                    self.execute_command(CommandId::QueueRemediate).await;
+                }
             }
             return;
         }
@@ -2923,26 +4542,21 @@ impl App {
                 }
 
                 if let Some(action) = self.confirming.take() {
+                    self.clear_preflight_verification_tracking();
                     let queued = self.queue_tasks(action.packages, action.action).await;
                     self.clear_selection();
-                    self.set_status(
-                        format!(
-                            "Queued {} {} task{}",
-                            queued,
-                            action_label(action.action).to_lowercase(),
-                            if queued == 1 { "" } else { "s" }
-                        ),
-                        true,
-                    );
+                    self.set_status(Self::queued_result_message(action.action, queued), true);
                 }
             }
             Some(false) => {
                 self.confirming = None;
+                self.clear_preflight_verification_tracking();
                 self.set_status("Cancelled", true);
             }
             None => {
                 if !rect_contains(*modal_rect, (col, row)) {
                     self.confirming = None;
+                    self.clear_preflight_verification_tracking();
                     self.set_status("Cancelled", true);
                 }
             }
@@ -2950,15 +4564,31 @@ impl App {
     }
 
     pub async fn queue_tasks(&mut self, packages: Vec<Package>, action: TaskQueueAction) -> usize {
+        if !self.has_active_queue_tasks() && self.prune_terminal_tasks() {
+            self.persist_task_queue_state().await;
+        }
+
         let mut queued = 0usize;
+        let mut seen_ids = HashSet::new();
+
         for package in packages {
+            let package_id = package.id();
+            if !seen_ids.insert(package_id.clone()) {
+                continue;
+            }
+            if self.has_active_task_for_package(&package_id) {
+                continue;
+            }
+
             let entry =
-                TaskQueueEntry::new(action, package.id(), package.name.clone(), package.source);
+                TaskQueueEntry::new(action, package_id, package.name.clone(), package.source);
             self.enqueue_task_entry(entry).await;
             queued += 1;
         }
         if queued > 0 {
             self.queue_completed_at = None;
+            self.queue_completion_digest_emitted = false;
+            self.ensure_queue_cursor_matches_filter();
             self.spawn_task_executor();
         }
         queued
@@ -2992,11 +4622,39 @@ impl App {
         let sender = self.task_events_tx.clone();
 
         tokio::spawn(async move {
-            let executor = TaskQueueExecutor::new(pm, history_tracker);
-            if let Err(error) = executor.run(sender).await {
-                error!(error = %error, "Task queue executor stopped");
+            loop {
+                let executor = TaskQueueExecutor::new(pm.clone(), history_tracker.clone());
+                if let Err(error) = executor.run(sender.clone()).await {
+                    error!(error = %error, "Task queue executor stopped");
+                }
+
+                // Release the running flag before checking again so a newly queued batch can
+                // either restart us externally or be picked up by this worker.
+                running.store(false, Ordering::SeqCst);
+
+                let has_pending = {
+                    let guard = history_tracker.lock().await;
+                    guard.as_ref().is_some_and(|tracker| {
+                        tracker
+                            .history()
+                            .task_queue
+                            .entries
+                            .iter()
+                            .any(|entry| entry.status == TaskQueueStatus::Queued)
+                    })
+                };
+
+                if !has_pending {
+                    break;
+                }
+
+                if running
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    break;
+                }
             }
-            running.store(false, Ordering::SeqCst);
         });
     }
 
@@ -3038,6 +4696,28 @@ impl App {
             TaskQueueStatus::Running => self.set_status("Cannot cancel running task", true),
             _ => self.set_status("Only queued tasks can be cancelled", true),
         }
+
+        self.maybe_emit_queue_completion_digest();
+    }
+
+    async fn queue_retry_for_parent_task(&mut self, task: &TaskQueueEntry) {
+        let retry = TaskQueueEntry::new(
+            task.action,
+            task.package_id.clone(),
+            task.package_name.clone(),
+            task.package_source,
+        );
+
+        let state = self
+            .task_recovery_states
+            .entry(task.id.clone())
+            .or_default();
+        state.attempts += 1;
+        let attempt = state.attempts;
+        self.retry_parent.insert(retry.id.clone(), task.id.clone());
+        self.retry_attempt.insert(retry.id.clone(), attempt);
+
+        self.enqueue_task_entry(retry).await;
     }
 
     async fn retry_selected_task(&mut self) {
@@ -3054,22 +4734,9 @@ impl App {
             return;
         }
 
-        let retry = TaskQueueEntry::new(
-            task.action,
-            task.package_id.clone(),
-            task.package_name.clone(),
-            task.package_source,
-        );
-
-        let state = self
-            .task_recovery_states
-            .entry(task.id.clone())
-            .or_default();
-        state.attempts += 1;
-        self.retry_parent.insert(retry.id.clone(), task.id.clone());
-
-        self.enqueue_task_entry(retry).await;
+        self.queue_retry_for_parent_task(&task).await;
         self.queue_completed_at = None;
+        self.queue_completion_digest_emitted = false;
         self.spawn_task_executor();
         self.set_status(
             format!(
@@ -3081,57 +4748,223 @@ impl App {
         );
     }
 
+    fn clinic_failure_candidates(&self) -> Vec<TaskQueueEntry> {
+        self.queue_visible_task_indices()
+            .into_iter()
+            .filter_map(|index| self.tasks.get(index))
+            .filter(|task| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention)
+            .cloned()
+            .collect()
+    }
+
+    fn clinic_safe_retry_candidates(&self) -> Vec<TaskQueueEntry> {
+        let mut seen_packages = HashSet::new();
+        self.clinic_failure_candidates()
+            .into_iter()
+            .filter(|task| {
+                let category = self
+                    .failure_category_for_task(task)
+                    .unwrap_or(FailureCategory::Unknown);
+                Self::safe_retry_category(category)
+                    && !self.has_active_task_for_package(&task.package_id)
+                    && seen_packages.insert(task.package_id.clone())
+            })
+            .collect()
+    }
+
+    fn clinic_remediation_plan(&self) -> ClinicRemediationPlan {
+        let mut retries = Vec::new();
+        let mut guidance_only = 0usize;
+        let mut skipped = 0usize;
+        let mut seen_packages = HashSet::new();
+        let mut candidates = self.clinic_failure_candidates();
+        let preview_count = candidates.len();
+
+        for task in candidates.drain(..) {
+            if !seen_packages.insert(task.package_id.clone()) {
+                skipped += 1;
+                continue;
+            }
+            if self.has_active_task_for_package(&task.package_id) {
+                skipped += 1;
+                continue;
+            }
+
+            let category = self
+                .failure_category_for_task(&task)
+                .unwrap_or(FailureCategory::Unknown);
+            match category {
+                FailureCategory::NotFound => guidance_only += 1,
+                FailureCategory::Permissions
+                | FailureCategory::Network
+                | FailureCategory::Conflict
+                | FailureCategory::Unknown => retries.push(task),
+            }
+        }
+
+        ClinicRemediationPlan {
+            retries,
+            guidance_only,
+            skipped,
+            preview_count,
+        }
+    }
+
+    async fn retry_safe_failed_tasks(&mut self) {
+        if !self.queue_expanded {
+            self.set_status("Open queue first to run retry bundle", true);
+            return;
+        }
+
+        let scope = self.queue_failure_filter.label();
+        let retryable = self.clinic_safe_retry_candidates();
+
+        if retryable.is_empty() {
+            self.set_status(self.safe_retry_unavailable_reason(), true);
+            return;
+        }
+
+        let actionability = self.queue_clinic_actionability();
+        let total = actionability.safe_retry_count;
+        for task in &retryable {
+            self.queue_retry_for_parent_task(task).await;
+        }
+        self.queue_completed_at = None;
+        self.queue_completion_digest_emitted = false;
+        self.spawn_task_executor();
+        if self.queue_failure_filter == QueueFailureFilter::All {
+            self.set_status(
+                format!(
+                    "Queued safe retry bundle for {} failure{}",
+                    total,
+                    if total == 1 { "" } else { "s" }
+                ),
+                true,
+            );
+        } else {
+            self.set_status(
+                format!(
+                    "Queued safe retry bundle [{}] for {} failure{}",
+                    scope,
+                    total,
+                    if total == 1 { "" } else { "s" }
+                ),
+                true,
+            );
+        }
+    }
+
+    async fn run_recommended_action(&mut self) {
+        match self.recommended_action() {
+            RecommendedAction::RetrySafeFailures(_) => {
+                if !self.queue_expanded {
+                    self.toggle_queue_expanded();
+                }
+                self.focus = Focus::Queue;
+                if let Some(index) = self.tasks.iter().position(|task| {
+                    self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention
+                }) {
+                    self.set_task_cursor(index);
+                }
+                self.retry_safe_failed_tasks().await;
+            }
+            RecommendedAction::ReviewFailures(_) => {
+                if !self.queue_expanded {
+                    self.toggle_queue_expanded();
+                }
+                self.focus = Focus::Queue;
+                if let Some(index) = self.tasks.iter().position(|task| {
+                    self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention
+                }) {
+                    self.set_task_cursor(index);
+                }
+                self.set_status("Failures view ready. Use R/M or A for safe retries.", true);
+            }
+            RecommendedAction::QueueAllUpdates(_) => {
+                self.filter = Filter::Updates;
+                self.apply_filters();
+                self.clear_selection();
+                let targets: Vec<Package> = self
+                    .packages
+                    .iter()
+                    .filter(|package| package.status == PackageStatus::UpdateAvailable)
+                    .cloned()
+                    .collect();
+                self.prepare_action_for_targets(TaskQueueAction::Update, targets, false);
+            }
+            RecommendedAction::ReviewQueue => {
+                if !self.queue_expanded {
+                    self.toggle_queue_expanded();
+                }
+                self.focus = Focus::Queue;
+                self.set_status("Queue journey opened.", true);
+            }
+            RecommendedAction::RefreshPackages => {
+                if !self.start_loading() {
+                    self.set_status("Already refreshing", true);
+                } else {
+                    self.set_status("Refreshing package metadata...", true);
+                }
+            }
+        }
+    }
+
     async fn apply_selected_task_remediation(&mut self) {
         if !self.queue_expanded {
             return;
         }
 
-        let Some(task) = self.tasks.get(self.task_cursor).cloned() else {
-            self.set_status("No task selected", true);
+        self.apply_filtered_failure_remediation().await;
+    }
+
+    async fn apply_filtered_failure_remediation(&mut self) {
+        let scope = self.queue_failure_filter.label();
+        let plan = self.clinic_remediation_plan();
+        if plan.preview_count == 0 {
+            self.set_status(self.remediation_unavailable_reason(), true);
             return;
+        }
+
+        let mut retried = 0usize;
+        for task in &plan.retries {
+            let category = self
+                .failure_category_for_task(task)
+                .unwrap_or(FailureCategory::Unknown);
+            if category == FailureCategory::Network && !self.loading {
+                let _ = self.start_loading();
+            }
+            self.queue_retry_for_parent_task(task).await;
+            retried += 1;
+        }
+
+        if plan.guidance_only > 0 && !self.loading {
+            let _ = self.start_loading();
+        }
+
+        if retried > 0 {
+            self.queue_completed_at = None;
+            self.queue_completion_digest_emitted = false;
+            self.spawn_task_executor();
+        }
+
+        let guidance_note = if plan.guidance_only > 0 {
+            " · verify package/source before retry"
+        } else {
+            ""
         };
-        if task.status != TaskQueueStatus::Failed {
-            self.set_status("Select a failed task first", true);
-            return;
-        }
-
-        let category = self
-            .failure_category_for_task(&task)
-            .unwrap_or(FailureCategory::Unknown);
-
-        match category {
-            FailureCategory::Permissions => {
-                self.set_status("Remediation: retrying with fresh privilege prompt.", true);
-                self.retry_selected_task().await;
-            }
-            FailureCategory::Network => {
-                if !self.loading {
-                    let _ = self.start_loading();
-                }
-                self.set_status("Remediation: refreshed metadata and retrying.", true);
-                self.retry_selected_task().await;
-            }
-            FailureCategory::NotFound => {
-                if !self.loading {
-                    let _ = self.start_loading();
-                }
-                self.set_status(
-                    "Remediation: refreshed metadata; verify package/source, then retry.",
-                    true,
-                );
-            }
-            FailureCategory::Conflict => {
-                self.set_status(
-                    "Remediation: conflict detected. Ensure other package managers are idle, then retrying.",
-                    true,
-                );
-                self.retry_selected_task().await;
-            }
-            FailureCategory::Unknown => {
-                self.set_status("Remediation: retrying task.", true);
-                self.retry_selected_task().await;
-            }
-        }
+        self.set_status(
+            format!(
+                "Remediation bundle [{}] preview {} task{}: {} queued retry, {} guidance-only, {} skipped{}",
+                scope,
+                plan.preview_count,
+                if plan.preview_count == 1 { "" } else { "s" },
+                retried,
+                plan.guidance_only,
+                plan.skipped,
+                guidance_note
+            ),
+            true,
+        );
     }
 
     pub fn queue_counts(&self) -> (usize, usize, usize, usize, usize) {
@@ -3142,12 +4975,14 @@ impl App {
         let mut cancelled = 0usize;
 
         for task in &self.tasks {
-            match task.status {
-                TaskQueueStatus::Queued => queued += 1,
-                TaskQueueStatus::Running => running += 1,
-                TaskQueueStatus::Completed => completed += 1,
-                TaskQueueStatus::Failed => failed += 1,
-                TaskQueueStatus::Cancelled => cancelled += 1,
+            match self.queue_lane_for_task(task) {
+                QueueJourneyLane::Now => running += 1,
+                QueueJourneyLane::Next => queued += 1,
+                QueueJourneyLane::NeedsAttention => failed += 1,
+                QueueJourneyLane::Done => match task.status {
+                    TaskQueueStatus::Cancelled => cancelled += 1,
+                    _ => completed += 1,
+                },
             }
         }
         (queued, running, completed, failed, cancelled)
@@ -3231,6 +5066,10 @@ fn command_update_enabled(app: &App) -> bool {
     app.can_prepare_command(TaskQueueAction::Update)
 }
 
+fn command_view_changelog_enabled(app: &App) -> bool {
+    app.can_view_changelog_command()
+}
+
 fn command_refresh_enabled(app: &App) -> bool {
     app.can_refresh_command()
 }
@@ -3245,6 +5084,10 @@ fn command_queue_cancel_enabled(app: &App) -> bool {
 
 fn command_queue_retry_enabled(app: &App) -> bool {
     app.can_retry_selected_task_command()
+}
+
+fn command_queue_retry_safe_enabled(app: &App) -> bool {
+    app.can_retry_safe_failed_tasks_command()
 }
 
 fn command_queue_remediate_enabled(app: &App) -> bool {
@@ -3273,6 +5116,8 @@ fn command_group(command: CommandId) -> &'static str {
         | CommandId::FilterInstalled
         | CommandId::FilterUpdates
         | CommandId::FilterFavorites
+        | CommandId::RunRecommended
+        | CommandId::ViewChangelog
         | CommandId::Search
         | CommandId::Refresh => "Views",
         CommandId::ToggleFavorite
@@ -3284,6 +5129,7 @@ fn command_group(command: CommandId) -> &'static str {
         CommandId::ToggleQueue
         | CommandId::QueueCancel
         | CommandId::QueueRetry
+        | CommandId::QueueRetrySafe
         | CommandId::QueueRemediate
         | CommandId::QueueLogOlder
         | CommandId::QueueLogNewer => "Queue",
@@ -3392,6 +5238,8 @@ async fn run_app(
         app.compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
 
         app.poll_loading();
+        app.poll_changelog();
+        app.poll_preflight_verification();
         app.poll_task_events();
         app.maybe_autohide_queue();
 
@@ -3507,6 +5355,15 @@ mod tests {
         assert!(registry
             .iter()
             .any(|command| command.id == CommandId::BulkToggleFavorite));
+        assert!(registry
+            .iter()
+            .any(|command| command.id == CommandId::RunRecommended));
+        assert!(registry
+            .iter()
+            .any(|command| command.id == CommandId::QueueRetrySafe));
+        assert!(registry
+            .iter()
+            .any(|command| command.id == CommandId::ViewChangelog));
     }
 
     #[test]
@@ -3529,6 +5386,7 @@ mod tests {
         assert!(app.command_enabled(CommandId::ToggleSelection));
         assert!(app.command_enabled(CommandId::ToggleFavorite));
         assert!(app.command_enabled(CommandId::BulkToggleFavorite));
+        assert!(app.command_enabled(CommandId::ViewChangelog));
         assert!(!app.command_enabled(CommandId::ToggleFavoritesUpdatesOnly));
         assert!(app.command_enabled(CommandId::Install));
         assert!(!app.command_enabled(CommandId::Remove));
@@ -3540,9 +5398,213 @@ mod tests {
         assert!(app.command_enabled(CommandId::Remove));
         assert!(app.command_enabled(CommandId::Update));
 
+        app.packages[0].source = PackageSource::Snap;
+        app.apply_filters();
+        assert!(!app.command_enabled(CommandId::ViewChangelog));
+
         app.filter = Filter::Favorites;
         app.apply_filters();
         assert!(app.command_enabled(CommandId::ToggleFavoritesUpdatesOnly));
+    }
+
+    #[test]
+    fn changelog_support_matrix_is_explicit() {
+        assert!(App::changelog_supported_for_source(PackageSource::Apt));
+        assert!(App::changelog_supported_for_source(PackageSource::Dnf));
+        assert!(App::changelog_supported_for_source(PackageSource::Pip));
+        assert!(App::changelog_supported_for_source(PackageSource::Npm));
+        assert!(App::changelog_supported_for_source(PackageSource::Cargo));
+        assert!(App::changelog_supported_for_source(PackageSource::Conda));
+        assert!(App::changelog_supported_for_source(PackageSource::Mamba));
+
+        assert!(!App::changelog_supported_for_source(PackageSource::Snap));
+        assert!(!App::changelog_supported_for_source(PackageSource::Flatpak));
+    }
+
+    #[test]
+    fn changelog_disabled_reason_is_contextual() {
+        let mut app = test_app();
+        assert_eq!(
+            app.command_disabled_reason(CommandId::ViewChangelog),
+            Some("Select a package to view changelog".to_string())
+        );
+
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Snap,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+
+        assert_eq!(
+            app.command_disabled_reason(CommandId::ViewChangelog),
+            Some("Changelog is not supported for this source yet".to_string())
+        );
+    }
+
+    #[test]
+    fn preflight_summary_flags_privilege_and_dependency_uncertainty() {
+        let pkg = make_pkg("pkg", PackageSource::Apt, PackageStatus::Installed);
+        let targets = vec![pkg.clone()];
+        let valid = vec![pkg];
+        let summary =
+            App::build_preflight_summary(TaskQueueAction::Remove, &targets, &valid, false);
+
+        assert_eq!(summary.certainty, PreflightCertainty::Estimated);
+        assert!(summary.elevated_privileges_likely);
+        assert!(!summary.dependency_impact_known);
+        assert!(summary.verification_in_progress);
+        assert!(summary
+            .risk_reasons
+            .iter()
+            .any(|reason| reason.contains("elevated privileges")));
+        assert!(summary
+            .risk_reasons
+            .iter()
+            .any(|reason| reason.contains("verification is in progress")));
+    }
+
+    #[test]
+    fn preflight_summary_keeps_low_risk_user_scoped_installs() {
+        let pkg = make_pkg("pkg", PackageSource::Pip, PackageStatus::NotInstalled);
+        let targets = vec![pkg.clone()];
+        let valid = vec![pkg];
+        let summary =
+            App::build_preflight_summary(TaskQueueAction::Install, &targets, &valid, false);
+
+        assert_eq!(summary.risk_level, PreflightRiskLevel::Safe);
+        assert_eq!(summary.certainty, PreflightCertainty::Estimated);
+        assert!(!summary.elevated_privileges_likely);
+        assert!(!summary.dependency_impact_known);
+        assert!(!summary.verification_in_progress);
+    }
+
+    #[test]
+    fn preflight_dependency_verification_support_is_source_aware() {
+        let apt_remove = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        let apt_update = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::UpdateAvailable,
+        )];
+        let mixed_remove = vec![
+            make_pkg("pkg", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("tool", PackageSource::Pip, PackageStatus::Installed),
+        ];
+
+        assert!(App::preflight_dependency_verification_supported(
+            TaskQueueAction::Remove,
+            &apt_remove
+        ));
+        assert!(App::preflight_dependency_verification_supported(
+            TaskQueueAction::Update,
+            &apt_update
+        ));
+        assert!(App::preflight_dependency_verification_supported(
+            TaskQueueAction::Install,
+            &apt_update
+        ));
+        assert!(!App::preflight_dependency_verification_supported(
+            TaskQueueAction::Remove,
+            &mixed_remove
+        ));
+    }
+
+    #[test]
+    fn poll_preflight_verification_promotes_matching_confirmation_to_verified() {
+        let mut app = test_app();
+        let pkg = make_pkg("pkg", PackageSource::Apt, PackageStatus::Installed);
+        let targets = vec![pkg.clone()];
+        let valid = vec![pkg];
+        let preflight =
+            App::build_preflight_summary(TaskQueueAction::Remove, &targets, &valid, false);
+
+        app.confirming = Some(PendingAction {
+            label: "Remove pkg?".into(),
+            packages: valid.clone(),
+            action: TaskQueueAction::Remove,
+            preflight,
+            risk_acknowledged: false,
+        });
+        app.active_preflight_verification_id = Some(42);
+
+        if let Some(tx) = app.preflight_verification_tx.clone() {
+            tx.try_send(PreflightVerificationResult {
+                request_id: 42,
+                action: TaskQueueAction::Remove,
+                package_ids: App::preflight_target_ids(&valid),
+                dependency_impact_known: true,
+                dependency_impact: Some(PreflightDependencyImpact {
+                    install_count: 0,
+                    upgrade_count: 0,
+                    remove_count: 1,
+                    held_back_count: 0,
+                }),
+                note: Some("Probe finished successfully.".to_string()),
+            })
+            .expect("send verification update");
+        }
+
+        app.poll_preflight_verification();
+
+        let confirming = app.confirming.as_ref().expect("confirming state");
+        assert_eq!(confirming.preflight.certainty, PreflightCertainty::Verified);
+        assert!(confirming.preflight.dependency_impact_known);
+        assert_eq!(
+            confirming.preflight.dependency_impact,
+            Some(PreflightDependencyImpact {
+                install_count: 0,
+                upgrade_count: 0,
+                remove_count: 1,
+                held_back_count: 0,
+            })
+        );
+        assert!(!confirming.preflight.verification_in_progress);
+        assert!(confirming
+            .preflight
+            .risk_reasons
+            .iter()
+            .any(|reason| reason.contains("Probe finished successfully")));
+        assert!(app.active_preflight_verification_id.is_none());
+    }
+
+    #[test]
+    fn parse_apt_dry_run_impact_extracts_counts() {
+        let output = "0 upgraded, 2 newly installed, 1 to remove and 3 not upgraded.";
+        let impact = App::parse_apt_dry_run_impact(output).expect("apt parse should succeed");
+        assert_eq!(
+            impact,
+            PreflightDependencyImpact {
+                install_count: 2,
+                upgrade_count: 0,
+                remove_count: 1,
+                held_back_count: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_dnf_dry_run_impact_extracts_transaction_summary() {
+        let output = r#"
+Transaction Summary
+Install  4 Packages
+Upgrade  2 Packages
+Remove   1 Package
+"#;
+        let impact = App::parse_dnf_dry_run_impact(output).expect("dnf parse should succeed");
+        assert_eq!(
+            impact,
+            PreflightDependencyImpact {
+                install_count: 4,
+                upgrade_count: 2,
+                remove_count: 1,
+                held_back_count: 0,
+            }
+        );
     }
 
     #[test]
@@ -3749,6 +5811,11 @@ mod tests {
                 source_breakdown: Vec::new(),
                 risk_level: PreflightRiskLevel::Safe,
                 risk_reasons: vec!["No additional guardrails triggered.".to_string()],
+                certainty: PreflightCertainty::Estimated,
+                elevated_privileges_likely: false,
+                dependency_impact_known: false,
+                dependency_impact: None,
+                verification_in_progress: false,
                 selection_mode: false,
             },
             risk_acknowledged: true,
@@ -3966,6 +6033,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enter_on_packages_triggers_default_action() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "vim",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Enter)).await;
+
+        let confirming = app.confirming.as_ref().expect("confirm expected");
+        assert_eq!(confirming.action, TaskQueueAction::Remove);
+        assert_eq!(confirming.packages.len(), 1);
+        assert_eq!(confirming.packages[0].name, "vim");
+    }
+
+    #[tokio::test]
     async fn confirm_y_queues_tasks_and_n_clears() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
@@ -3985,6 +6071,11 @@ mod tests {
                 source_breakdown: vec![(PackageSource::Deb, 1)],
                 risk_level: PreflightRiskLevel::Safe,
                 risk_reasons: vec!["No additional guardrails triggered.".to_string()],
+                certainty: PreflightCertainty::Estimated,
+                elevated_privileges_likely: false,
+                dependency_impact_known: false,
+                dependency_impact: None,
+                verification_in_progress: false,
                 selection_mode: false,
             },
             risk_acknowledged: true,
@@ -4009,6 +6100,11 @@ mod tests {
                 source_breakdown: vec![(PackageSource::Deb, 1)],
                 risk_level: PreflightRiskLevel::Safe,
                 risk_reasons: vec!["No additional guardrails triggered.".to_string()],
+                certainty: PreflightCertainty::Estimated,
+                elevated_privileges_likely: false,
+                dependency_impact_known: false,
+                dependency_impact: None,
+                verification_in_progress: false,
                 selection_mode: false,
             },
             risk_acknowledged: true,
@@ -4052,6 +6148,453 @@ mod tests {
         assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
     }
 
+    #[tokio::test]
+    async fn run_recommended_action_prefers_safe_retry_bundle() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:broken".into(),
+            "broken".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("temporary failure resolving mirror".into());
+        app.tasks = vec![failed];
+
+        app.execute_command(CommandId::RunRecommended).await;
+
+        assert!(app.queue_expanded);
+        assert_eq!(app.focus, Focus::Queue);
+        assert_eq!(app.tasks.len(), 2);
+        assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
+        assert!(app.status.contains("Queued safe retry bundle"));
+    }
+
+    #[tokio::test]
+    async fn retry_safe_failed_tasks_skips_non_safe_categories() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let mut unknown = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:unknown".into(),
+            "unknown".into(),
+            PackageSource::Apt,
+        );
+        unknown.mark_failed("unexpected parse issue".into());
+        let mut network = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:net".into(),
+            "net".into(),
+            PackageSource::Apt,
+        );
+        network.mark_failed("temporary failure resolving mirror".into());
+        app.tasks = vec![unknown, network];
+
+        let before = app.tasks.len();
+        app.retry_safe_failed_tasks().await;
+
+        assert_eq!(app.tasks.len(), before + 1);
+        assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
+        assert_eq!(app.tasks.last().unwrap().package_name, "net");
+        assert!(app.status.contains("Queued safe retry bundle"));
+    }
+
+    #[tokio::test]
+    async fn retry_safe_failed_tasks_respect_active_clinic_filter() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let mut network_a = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:net-a".into(),
+            "net-a".into(),
+            PackageSource::Apt,
+        );
+        network_a.mark_failed("temporary failure resolving mirror".into());
+
+        let mut network_b = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:net-b".into(),
+            "net-b".into(),
+            PackageSource::Apt,
+        );
+        network_b.mark_failed("temporary failure resolving mirror".into());
+
+        let mut permissions = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:perm".into(),
+            "perm".into(),
+            PackageSource::Apt,
+        );
+        permissions.mark_failed("permission denied".into());
+
+        app.tasks = vec![permissions, network_a, network_b];
+        app.rebuild_failure_categories();
+        app.handle_key(key(KeyCode::Char('2'))).await;
+        let preview = app.queue_clinic_actionability();
+        assert_eq!(preview.safe_retry_count, 2);
+        app.handle_key(key(KeyCode::Char('A'))).await;
+
+        let queued_count = app
+            .tasks
+            .iter()
+            .filter(|task| task.status == TaskQueueStatus::Queued)
+            .count();
+        assert_eq!(queued_count, 2);
+        assert!(app.status.contains("for 2 failures"));
+        assert!(app.status.contains("Queued safe retry bundle [network]"));
+    }
+
+    #[tokio::test]
+    async fn remediation_bundle_uses_active_clinic_filter_scope() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let mut network_a = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:net-a".into(),
+            "net-a".into(),
+            PackageSource::Apt,
+        );
+        network_a.mark_failed("temporary failure resolving mirror".into());
+
+        let mut network_b = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:net-b".into(),
+            "net-b".into(),
+            PackageSource::Apt,
+        );
+        network_b.mark_failed("temporary failure resolving mirror".into());
+
+        let mut conflict = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:conflict".into(),
+            "conflict".into(),
+            PackageSource::Apt,
+        );
+        conflict.mark_failed("dpkg was interrupted, lock is held".into());
+
+        app.tasks = vec![network_a, conflict, network_b];
+        app.rebuild_failure_categories();
+
+        app.handle_key(key(KeyCode::Char('2'))).await;
+        app.handle_key(key(KeyCode::Char('M'))).await;
+
+        let queued_count = app
+            .tasks
+            .iter()
+            .filter(|task| task.status == TaskQueueStatus::Queued)
+            .count();
+        assert_eq!(queued_count, 2);
+        assert!(app
+            .status
+            .contains("Remediation bundle [network] preview 2 tasks"));
+        assert!(app.loading);
+    }
+
+    #[tokio::test]
+    async fn queue_actionability_reports_filter_reasons_when_empty() {
+        let mut app = test_app();
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let mut missing = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:missing".into(),
+            "missing".into(),
+            PackageSource::Apt,
+        );
+        missing.mark_failed("unable to locate package missing".into());
+        app.tasks = vec![missing];
+        app.rebuild_failure_categories();
+
+        app.handle_key(key(KeyCode::Char('2'))).await;
+
+        let preview = app.queue_clinic_actionability();
+        assert_eq!(preview.failed_in_scope, 0);
+        assert_eq!(preview.safe_retry_count, 0);
+        assert_eq!(preview.remediation_actionable_count(), 0);
+
+        assert_eq!(
+            app.command_disabled_reason(CommandId::QueueRetrySafe),
+            Some("No safe retries for network failures (press 0 for all)".to_string())
+        );
+        assert_eq!(
+            app.command_disabled_reason(CommandId::QueueRemediate),
+            Some("No remediation needed for network failures (press 0 for all)".to_string())
+        );
+
+        app.handle_key(key(KeyCode::Char('A'))).await;
+        assert!(app.status.contains("No safe retries for network failures"));
+    }
+
+    #[tokio::test]
+    async fn remediation_status_matches_actionability_counts() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let mut network = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:net".into(),
+            "net".into(),
+            PackageSource::Apt,
+        );
+        network.mark_failed("temporary failure resolving mirror".into());
+
+        let active_same_pkg = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:net".into(),
+            "net".into(),
+            PackageSource::Apt,
+        );
+
+        let mut missing = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:missing".into(),
+            "missing".into(),
+            PackageSource::Apt,
+        );
+        missing.mark_failed("unable to locate package missing".into());
+
+        app.tasks = vec![network, active_same_pkg, missing];
+        app.rebuild_failure_categories();
+        let preview = app.queue_clinic_actionability();
+        assert_eq!(preview.failed_in_scope, 2);
+        assert_eq!(preview.remediation_retry_count, 0);
+        assert_eq!(preview.remediation_guidance_count, 1);
+        assert_eq!(preview.remediation_skipped_count, 1);
+
+        app.handle_key(key(KeyCode::Char('M'))).await;
+
+        assert_eq!(app.tasks.len(), 3);
+        assert!(app.status.contains("preview 2 tasks"));
+        assert!(app.status.contains("0 queued retry"));
+        assert!(app.status.contains("1 guidance-only"));
+        assert!(app.status.contains("1 skipped"));
+        assert!(app.status.contains("verify package/source"));
+    }
+
+    #[test]
+    fn queue_completion_digest_emits_when_queue_finishes() {
+        let mut app = test_app();
+        let mut running = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:pkg".into(),
+            "pkg".into(),
+            PackageSource::Apt,
+        );
+        running.mark_running();
+        app.tasks = vec![running.clone()];
+
+        let mut completed = running;
+        completed.mark_completed();
+        app.apply_task_event(TaskQueueEvent::Completed(completed));
+
+        assert!(app.queue_completion_digest_emitted);
+        assert!(app.status.starts_with("Queue finished: 1 done"));
+    }
+
+    #[tokio::test]
+    async fn queue_tasks_prunes_terminal_entries_before_new_batch() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+
+        let mut completed = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:old".into(),
+            "old".into(),
+            PackageSource::Apt,
+        );
+        completed.mark_completed();
+        app.tasks = vec![completed];
+
+        let queued = app
+            .queue_tasks(
+                vec![make_pkg(
+                    "new",
+                    PackageSource::Apt,
+                    PackageStatus::NotInstalled,
+                )],
+                TaskQueueAction::Install,
+            )
+            .await;
+
+        assert_eq!(queued, 1);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].package_name, "new");
+        assert_eq!(app.tasks[0].status, TaskQueueStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn queue_tasks_skips_duplicate_active_tasks() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+
+        let queued_task = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:dup".into(),
+            "dup".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![queued_task.clone()];
+
+        let queued = app
+            .queue_tasks(
+                vec![make_pkg(
+                    "dup",
+                    PackageSource::Apt,
+                    PackageStatus::NotInstalled,
+                )],
+                TaskQueueAction::Install,
+            )
+            .await;
+
+        assert_eq!(queued, 0);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].id, queued_task.id);
+    }
+
+    #[tokio::test]
+    async fn queue_tasks_skips_conflicting_action_for_same_package() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+
+        let queued_task = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:dup".into(),
+            "dup".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![queued_task.clone()];
+
+        let queued = app
+            .queue_tasks(
+                vec![make_pkg(
+                    "dup",
+                    PackageSource::Apt,
+                    PackageStatus::UpdateAvailable,
+                )],
+                TaskQueueAction::Remove,
+            )
+            .await;
+
+        assert_eq!(queued, 0);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].id, queued_task.id);
+    }
+
+    #[tokio::test]
+    async fn queue_tasks_prune_terminal_entries_removes_failed_tasks_too() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:old-fail".into(),
+            "old-fail".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("err".into());
+        app.tasks = vec![failed];
+
+        let queued = app
+            .queue_tasks(
+                vec![make_pkg(
+                    "new",
+                    PackageSource::Apt,
+                    PackageStatus::NotInstalled,
+                )],
+                TaskQueueAction::Install,
+            )
+            .await;
+
+        assert_eq!(queued, 1);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].package_name, "new");
+        assert_eq!(app.tasks[0].status, TaskQueueStatus::Queued);
+    }
+
+    #[test]
+    fn queue_counts_treat_recovered_failures_as_completed() {
+        let mut app = test_app();
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:pkg".into(),
+            "pkg".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("err".into());
+        let failed_id = failed.id.clone();
+        app.tasks = vec![failed];
+
+        app.task_recovery_states.insert(
+            failed_id,
+            RecoveryState {
+                attempts: 1,
+                last_outcome: Some(TaskQueueStatus::Completed),
+            },
+        );
+
+        let (queued, running, completed, failed, cancelled) = app.queue_counts();
+        assert_eq!(
+            (queued, running, completed, failed, cancelled),
+            (0, 0, 1, 0, 0)
+        );
+    }
+
+    #[test]
+    fn session_queue_entries_keep_terminal_history_when_retained() {
+        let mut completed = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:done".into(),
+            "done".into(),
+            PackageSource::Apt,
+        );
+        completed.mark_completed();
+
+        let entries = App::session_queue_entries(vec![completed], true);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, TaskQueueStatus::Completed);
+    }
+
+    #[test]
+    fn session_queue_entries_drop_terminal_history_when_not_retained() {
+        let queued = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:queued".into(),
+            "queued".into(),
+            PackageSource::Apt,
+        );
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Remove,
+            "APT:failed".into(),
+            "failed".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("nope".into());
+        let mut cancelled = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:cancel".into(),
+            "cancel".into(),
+            PackageSource::Apt,
+        );
+        cancelled.mark_cancelled();
+
+        let entries = App::session_queue_entries(vec![queued, failed, cancelled], false);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, TaskQueueStatus::Queued);
+    }
+
     #[test]
     fn failure_classifier_maps_common_errors() {
         assert_eq!(
@@ -4076,6 +6619,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn failure_category_codes_and_playbooks_are_stable() {
+        assert_eq!(FailureCategory::Permissions.code(), "E_PERMISSION");
+        assert_eq!(FailureCategory::Network.code(), "E_NETWORK");
+        assert_eq!(FailureCategory::NotFound.code(), "E_NOT_FOUND");
+        assert_eq!(FailureCategory::Conflict.code(), "E_CONFLICT");
+        assert_eq!(FailureCategory::Unknown.code(), "E_UNKNOWN");
+
+        assert!(FailureCategory::Permissions
+            .action_hint()
+            .contains("re-authenticate"));
+        assert!(FailureCategory::Network
+            .action_hint()
+            .contains("refresh metadata"));
+    }
+
+    #[test]
+    fn failed_task_event_sets_status_with_code_and_playbook() {
+        let mut app = test_app();
+        app.queue_completion_digest_emitted = true;
+
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:pkg".into(),
+            "pkg".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("temporary failure resolving mirror".into());
+
+        app.apply_task_event(TaskQueueEvent::Failed(failed));
+
+        assert!(app.status.contains("[E_NETWORK]"));
+        assert!(app.status.contains("[M] refresh metadata"));
+    }
+
     #[tokio::test]
     async fn high_risk_confirm_requires_explicit_ack_before_queue() {
         let mut app = test_app();
@@ -4098,6 +6676,11 @@ mod tests {
                 risk_reasons: vec![
                     "Includes system-level package sources (APT/DNF/Pacman/etc).".to_string(),
                 ],
+                certainty: PreflightCertainty::Estimated,
+                elevated_privileges_likely: true,
+                dependency_impact_known: false,
+                dependency_impact: None,
+                verification_in_progress: false,
                 selection_mode: false,
             },
             risk_acknowledged: false,
@@ -4117,7 +6700,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_remediate_command_enablement_follows_failed_selection() {
+    fn queue_remediate_command_enablement_follows_scope_actionability() {
         let mut app = test_app();
         app.queue_expanded = true;
         app.focus = Focus::Queue;
@@ -4129,13 +6712,20 @@ mod tests {
             PackageSource::Apt,
         );
         failed.mark_failed("network timeout".into());
-        app.tasks = vec![failed];
-        app.task_cursor = 0;
+        let queued_same_pkg = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![failed, queued_same_pkg];
+        app.task_cursor = 1;
 
-        assert!(app.command_enabled(CommandId::QueueRemediate));
-
-        app.tasks[0].status = TaskQueueStatus::Completed;
         assert!(!app.command_enabled(CommandId::QueueRemediate));
+
+        app.tasks.truncate(1);
+        app.task_cursor = 0;
+        assert!(app.command_enabled(CommandId::QueueRemediate));
     }
 
     #[tokio::test]
@@ -4197,6 +6787,103 @@ mod tests {
         app.handle_key(key(KeyCode::Char('j'))).await;
         assert_eq!(app.task_cursor, 1);
         assert_eq!(app.task_log_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn queue_failure_filter_shortcuts_limit_visible_tasks() {
+        let mut app = test_app();
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let queued = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:queued".into(),
+            "queued".into(),
+            PackageSource::Apt,
+        );
+
+        let mut permissions = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:perm".into(),
+            "perm".into(),
+            PackageSource::Apt,
+        );
+        permissions.mark_failed("permission denied".into());
+
+        let mut network = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:net".into(),
+            "net".into(),
+            PackageSource::Apt,
+        );
+        network.mark_failed("temporary failure resolving mirror".into());
+
+        app.tasks = vec![queued, permissions, network.clone()];
+        app.rebuild_failure_categories();
+        app.task_cursor = 1;
+
+        app.handle_key(key(KeyCode::Char('2'))).await;
+        assert_eq!(app.queue_failure_filter, QueueFailureFilter::Network);
+        assert_eq!(app.queue_visible_task_indices(), vec![2]);
+        assert_eq!(app.task_cursor, 2);
+
+        app.handle_key(key(KeyCode::Char('0'))).await;
+        assert_eq!(app.queue_failure_filter, QueueFailureFilter::All);
+        assert_eq!(app.queue_visible_task_indices().len(), 3);
+    }
+
+    #[test]
+    fn append_task_log_preserves_manual_scroll_position() {
+        let mut app = test_app();
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let first = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        let second = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:b".into(),
+            "b".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![first.clone(), second];
+        app.task_cursor = 0;
+        app.task_logs.insert(
+            first.id.clone(),
+            VecDeque::from(vec![
+                "one".to_string(),
+                "two".to_string(),
+                "three".to_string(),
+                "four".to_string(),
+            ]),
+        );
+
+        app.task_log_scroll = 2;
+        app.append_task_log(&first.id, "five".to_string());
+        assert_eq!(app.task_log_scroll, 3);
+
+        app.task_log_scroll = 0;
+        app.append_task_log(&first.id, "six".to_string());
+        assert_eq!(app.task_log_scroll, 0);
+
+        app.task_cursor = 1;
+        app.task_log_scroll = 2;
+        app.append_task_log(&first.id, "seven".to_string());
+        assert_eq!(app.task_log_scroll, 2);
+
+        let mut many_logs = VecDeque::new();
+        for idx in 0..MAX_TASK_LOG_LINES {
+            many_logs.push_back(format!("line-{idx}"));
+        }
+        app.task_cursor = 0;
+        app.task_log_scroll = 2;
+        app.task_logs.insert(first.id.clone(), many_logs);
+        app.append_task_log(&first.id, "trim-trigger".to_string());
+        assert_eq!(app.task_log_scroll, 3);
     }
 
     #[tokio::test]
@@ -4378,6 +7065,11 @@ mod tests {
                 source_breakdown: vec![(PackageSource::Deb, 1)],
                 risk_level: PreflightRiskLevel::Safe,
                 risk_reasons: vec!["No additional guardrails triggered.".to_string()],
+                certainty: PreflightCertainty::Estimated,
+                elevated_privileges_likely: false,
+                dependency_impact_known: false,
+                dependency_impact: None,
+                verification_in_progress: false,
                 selection_mode: false,
             },
             risk_acknowledged: true,
@@ -4471,18 +7163,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mouse_queue_hint_clicks_cancel_and_retry() {
+    async fn mouse_queue_hint_clicks_retry() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
         app.queue_expanded = true;
         app.focus = Focus::Queue;
 
-        let queued = TaskQueueEntry::new(
-            TaskQueueAction::Install,
-            "APT:a".into(),
-            "a".into(),
-            PackageSource::Apt,
-        );
         let mut failed = TaskQueueEntry::new(
             TaskQueueAction::Update,
             "APT:b".into(),
@@ -4490,26 +7176,22 @@ mod tests {
             PackageSource::Apt,
         );
         failed.mark_failed("err".into());
-        app.tasks = vec![queued, failed];
+        app.tasks = vec![failed];
 
         let regions = layout_regions(&app);
         let hint_row = regions.expanded_queue_hints.y;
-
-        app.task_cursor = 0;
-        app.handle_mouse(
-            mouse(
-                MouseEventKind::Down(MouseButton::Left),
-                regions.expanded_queue_hints.x,
-                hint_row,
-            ),
-            &regions,
-        )
-        .await;
-        assert_eq!(app.tasks[0].status, TaskQueueStatus::Cancelled);
-
-        app.task_cursor = 1;
         let before = app.tasks.len();
-        let retry_col = regions.expanded_queue_hints.x + 10;
+        let retry_col = (regions.expanded_queue_hints.x
+            ..regions.expanded_queue_hints.x + regions.expanded_queue_hints.width)
+            .find(|col| {
+                ui::queue_hint_hit_test(
+                    regions.expanded_queue_hints,
+                    regions.expanded_queue_logs.width > 0,
+                    *col,
+                    hint_row,
+                ) == Some(ui::QueueHintAction::Retry)
+            })
+            .expect("retry area");
         app.handle_mouse(
             mouse(MouseEventKind::Down(MouseButton::Left), retry_col, hint_row),
             &regions,
@@ -4517,6 +7199,50 @@ mod tests {
         .await;
         assert_eq!(app.tasks.len(), before + 1);
         assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn retry_lineage_persists_after_retry_completes() {
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:pkg".into(),
+            "pkg".into(),
+            PackageSource::Apt,
+        );
+        failed.mark_failed("err".into());
+        let parent_id = failed.id.clone();
+        app.tasks = vec![failed];
+        app.task_cursor = 0;
+
+        app.retry_selected_task().await;
+
+        let retry = app.tasks.last().cloned().expect("retry task");
+        assert_eq!(
+            app.retry_attempt_for_task(&retry.id),
+            Some(1),
+            "retry attempt metadata should be set"
+        );
+        assert!(
+            app.retry_parent_for_task(&retry.id).is_some(),
+            "retry parent mapping should exist"
+        );
+
+        let mut completed_retry = retry.clone();
+        completed_retry.mark_completed();
+        app.apply_task_event(TaskQueueEvent::Completed(completed_retry));
+
+        assert_eq!(app.retry_attempt_for_task(&retry.id), Some(1));
+        assert!(app.retry_parent_for_task(&retry.id).is_some());
+        assert_eq!(
+            app.recovery_state_for_task(&parent_id)
+                .and_then(|state| state.last_outcome),
+            Some(TaskQueueStatus::Completed)
+        );
     }
 
     #[test]
@@ -4661,5 +7387,136 @@ mod tests {
         app.handle_key(key(KeyCode::Enter)).await;
         assert!(!app.showing_palette);
         assert_eq!(app.filter, Filter::Favorites);
+    }
+
+    #[tokio::test]
+    async fn changelog_overlay_open_close_and_scroll_keys() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('c'))).await;
+        assert!(app.showing_changelog);
+        assert!(!app.changelog_diff_only);
+        assert_eq!(
+            app.changelog_target_package().map(|p| p.name.as_str()),
+            Some("pkg")
+        );
+        assert!(matches!(
+            app.changelog_state_for_target(),
+            Some(ChangelogState::Loading)
+        ));
+
+        app.handle_key(key(KeyCode::Char('j'))).await;
+        assert_eq!(app.changelog_scroll, 3);
+        app.handle_key(key(KeyCode::Char('k'))).await;
+        assert_eq!(app.changelog_scroll, 0);
+        app.handle_key(key(KeyCode::Char('v'))).await;
+        assert!(app.changelog_diff_only);
+
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(!app.showing_changelog);
+        assert!(!app.changelog_diff_only);
+        assert!(app.changelog_target_package_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn changelog_overlay_defaults_to_delta_for_updates() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::UpdateAvailable,
+        )];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('c'))).await;
+        assert!(app.showing_changelog);
+        assert!(app.changelog_diff_only);
+    }
+
+    #[tokio::test]
+    async fn changelog_overlay_action_keys_open_preflight_when_valid() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::UpdateAvailable,
+        )];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('c'))).await;
+        assert!(app.showing_changelog);
+
+        app.handle_key(key(KeyCode::Char('u'))).await;
+        assert!(!app.showing_changelog);
+        let confirming = app.confirming.as_ref().expect("preflight expected");
+        assert_eq!(confirming.action, TaskQueueAction::Update);
+        assert_eq!(confirming.packages.len(), 1);
+        assert_eq!(confirming.packages[0].name, "pkg");
+    }
+
+    #[tokio::test]
+    async fn changelog_overlay_action_keys_keep_overlay_open_when_invalid() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('c'))).await;
+        assert!(app.showing_changelog);
+
+        app.handle_key(key(KeyCode::Char('i'))).await;
+        assert!(app.showing_changelog);
+        assert!(app.confirming.is_none());
+        assert!(
+            app.status.contains("already installed"),
+            "expected invalid install feedback, got: {}",
+            app.status
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_changelog_caches_ready_state() {
+        let mut app = test_app();
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+        app.showing_changelog = true;
+        let pkg_id = app.packages[0].id();
+        app.changelog_target_package_id = Some(pkg_id.clone());
+
+        if let Some(tx) = app.changelog_tx.clone() {
+            tx.send(ChangelogResult {
+                package_id: pkg_id.clone(),
+                package_name: "pkg".to_string(),
+                result: Ok(Some(
+                    "# pkg\n\n## release\n\n- fixed crash\n- security hardening".to_string(),
+                )),
+            })
+            .await
+            .expect("send changelog event");
+        }
+
+        app.poll_changelog();
+
+        let Some(ChangelogState::Ready { summary, .. }) = app.changelog_cache.get(&pkg_id) else {
+            panic!("expected ready changelog state");
+        };
+        assert!(summary.total_changes() >= 1);
     }
 }

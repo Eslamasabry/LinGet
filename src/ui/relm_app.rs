@@ -3755,11 +3755,14 @@ impl SimpleComponent for AppModel {
                 if let Err(e) = config.save() {
                     tracing::error!("Failed to save scheduled task: {}", e);
                 }
+                self.tasks_data.scheduler = config.scheduler.clone();
+                *self.pending_tasks_rebuild.borrow_mut() = true;
                 drop(config);
 
                 if show_notif {
                     notifications::send_task_scheduled_notification(&package_name, &scheduled_time);
                 }
+                sender.input(AppMsg::CheckScheduledTasks);
             }
 
             AppMsg::ScheduleBulkTasks(tasks) => {
@@ -3773,6 +3776,8 @@ impl SimpleComponent for AppModel {
                     if let Err(e) = config.save() {
                         tracing::error!("Failed to save bulk scheduled tasks: {}", e);
                     }
+                    self.tasks_data.scheduler = config.scheduler.clone();
+                    *self.pending_tasks_rebuild.borrow_mut() = true;
                 }
 
                 if show_notif {
@@ -3793,24 +3798,31 @@ impl SimpleComponent for AppModel {
                     ToastType::Success,
                 ));
                 sender.input(AppMsg::DeselectAll);
+                sender.input(AppMsg::CheckScheduledTasks);
             }
 
             AppMsg::CheckScheduledTasks => {
-                let config = self.config.borrow();
-                let due_tasks: Vec<_> = config
-                    .scheduler
-                    .due_tasks()
-                    .iter()
-                    .map(|t| t.id.clone())
-                    .collect();
-                drop(config);
+                if self.tasks_data.running_task_id.is_some() {
+                    return;
+                }
 
-                for task_id in due_tasks {
+                let next_due = {
+                    let config = self.config.borrow();
+                    let mut due_tasks: Vec<_> = config.scheduler.due_tasks();
+                    due_tasks.sort_by_key(|task| task.scheduled_at);
+                    due_tasks.first().map(|task| task.id.clone())
+                };
+
+                if let Some(task_id) = next_due {
                     sender.input(AppMsg::ExecuteScheduledTask(task_id));
                 }
             }
 
             AppMsg::ExecuteScheduledTask(task_id) => {
+                if self.tasks_data.running_task_id.is_some() {
+                    return;
+                }
+
                 let task_opt = {
                     let config = self.config.borrow();
                     config
@@ -3904,9 +3916,14 @@ impl SimpleComponent for AppModel {
                 }
             }
 
-            AppMsg::ScheduledTaskCompleted { package_name, .. } => {
+            AppMsg::ScheduledTaskCompleted {
+                task_id,
+                package_name,
+            } => {
                 self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
-                self.tasks_data.running_task_id = None;
+                if self.tasks_data.running_task_id.as_deref() == Some(task_id.as_str()) {
+                    self.tasks_data.running_task_id = None;
+                }
                 *self.pending_tasks_rebuild.borrow_mut() = true;
 
                 if self.config.borrow().show_notifications {
@@ -3918,15 +3935,19 @@ impl SimpleComponent for AppModel {
                     ToastType::Success,
                 ));
                 sender.input(AppMsg::LoadPackages);
+                sender.input(AppMsg::CheckScheduledTasks);
             }
 
             AppMsg::ScheduledTaskFailed {
+                task_id,
                 package_name,
                 error,
                 ..
             } => {
                 self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
-                self.tasks_data.running_task_id = None;
+                if self.tasks_data.running_task_id.as_deref() == Some(task_id.as_str()) {
+                    self.tasks_data.running_task_id = None;
+                }
                 *self.pending_tasks_rebuild.borrow_mut() = true;
 
                 if self.config.borrow().show_notifications {
@@ -3937,6 +3958,7 @@ impl SimpleComponent for AppModel {
                     format!("Scheduled update for {} failed: {}", package_name, error),
                     ToastType::Error,
                 ));
+                sender.input(AppMsg::CheckScheduledTasks);
             }
 
             AppMsg::CancelScheduledTask(task_id) => {
@@ -3946,7 +3968,11 @@ impl SimpleComponent for AppModel {
                     tracing::error!("Failed to save after canceling task: {}", e);
                 }
                 self.tasks_data.scheduler = config.scheduler.clone();
+                if self.tasks_data.running_task_id.as_deref() == Some(task_id.as_str()) {
+                    self.tasks_data.running_task_id = None;
+                }
                 *self.pending_tasks_rebuild.borrow_mut() = true;
+                sender.input(AppMsg::CheckScheduledTasks);
             }
 
             AppMsg::TaskQueueAction(action) => match action {
@@ -3956,9 +3982,33 @@ impl SimpleComponent for AppModel {
                 TaskQueueAction::Refresh => {
                     self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
                     *self.pending_tasks_rebuild.borrow_mut() = true;
+                    sender.input(AppMsg::CheckScheduledTasks);
                 }
                 TaskQueueAction::RunNow(task_id) => {
-                    sender.input(AppMsg::ExecuteScheduledTask(task_id));
+                    {
+                        let mut config = self.config.borrow_mut();
+                        if let Some(task) =
+                            config.scheduler.tasks.iter_mut().find(|t| t.id == task_id)
+                        {
+                            task.scheduled_at = chrono::Utc::now();
+                            task.completed = false;
+                            task.error = None;
+                            if let Err(error) = config.save() {
+                                tracing::error!("Failed to save run-now task: {}", error);
+                            }
+                        }
+                        self.tasks_data.scheduler = config.scheduler.clone();
+                    }
+                    *self.pending_tasks_rebuild.borrow_mut() = true;
+
+                    if self.tasks_data.running_task_id.is_none() {
+                        sender.input(AppMsg::ExecuteScheduledTask(task_id));
+                    } else {
+                        sender.input(AppMsg::ShowToast(
+                            "Task marked due; it will run after the current task".to_string(),
+                            ToastType::Info,
+                        ));
+                    }
                 }
                 TaskQueueAction::ClearCompleted => {
                     sender.input(AppMsg::ClearCompletedTasks);
@@ -3990,7 +4040,14 @@ impl SimpleComponent for AppModel {
                         self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
                         *self.pending_tasks_rebuild.borrow_mut() = true;
 
-                        sender.input(AppMsg::ExecuteScheduledTask(task.id));
+                        if self.tasks_data.running_task_id.is_none() {
+                            sender.input(AppMsg::ExecuteScheduledTask(task.id));
+                        } else {
+                            sender.input(AppMsg::ShowToast(
+                                "Retry queued; it will run after the current task".to_string(),
+                                ToastType::Info,
+                            ));
+                        }
                     }
                 }
             },

@@ -133,6 +133,8 @@ pub struct ScheduledTask {
     pub scheduled_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub completed: bool,
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
     pub error: Option<String>,
 }
 
@@ -154,6 +156,7 @@ impl ScheduledTask {
             scheduled_at,
             created_at: Utc::now(),
             completed: false,
+            completed_at: None,
             error: None,
         }
     }
@@ -164,6 +167,10 @@ impl ScheduledTask {
 
     pub fn is_pending(&self) -> bool {
         !self.completed && Utc::now() < self.scheduled_at
+    }
+
+    pub fn is_active(&self) -> bool {
+        !self.completed
     }
 
     pub fn time_until(&self) -> String {
@@ -211,12 +218,21 @@ impl ScheduledTask {
         local.format("%b %d, %I:%M %p").to_string()
     }
 
+    pub fn completed_time_display(&self) -> String {
+        let at = self.completed_at.unwrap_or(self.scheduled_at);
+        at.with_timezone(&Local)
+            .format("%b %d, %I:%M %p")
+            .to_string()
+    }
+
     pub fn mark_completed(&mut self) {
         self.completed = true;
+        self.completed_at = Some(Utc::now());
     }
 
     pub fn mark_failed(&mut self, error: String) {
         self.completed = true;
+        self.completed_at = Some(Utc::now());
         self.error = Some(error);
     }
 }
@@ -230,9 +246,9 @@ pub struct SchedulerState {
 #[allow(dead_code)]
 impl SchedulerState {
     pub fn add_task(&mut self, task: ScheduledTask) {
-        self.tasks.retain(|t| {
-            !(t.package_id == task.package_id && t.operation == task.operation && t.is_pending())
-        });
+        // Keep at most one active scheduled task per package to avoid conflicting operations.
+        self.tasks
+            .retain(|t| !(t.package_id == task.package_id && t.is_active()));
         self.tasks.push(task);
     }
 
@@ -245,7 +261,7 @@ impl SchedulerState {
     }
 
     pub fn pending_tasks(&self) -> Vec<&ScheduledTask> {
-        self.tasks.iter().filter(|t| t.is_pending()).collect()
+        self.tasks.iter().filter(|t| t.is_active()).collect()
     }
 
     pub fn due_tasks(&self) -> Vec<&ScheduledTask> {
@@ -255,13 +271,13 @@ impl SchedulerState {
     pub fn get_pending_for_package(&self, package_id: &str) -> Option<&ScheduledTask> {
         self.tasks
             .iter()
-            .find(|t| t.package_id == package_id && t.is_pending())
+            .find(|t| t.package_id == package_id && t.is_active())
     }
 
     pub fn has_pending_schedule(&self, package_id: &str) -> bool {
         self.tasks
             .iter()
-            .any(|t| t.package_id == package_id && t.is_pending())
+            .any(|t| t.package_id == package_id && t.is_active())
     }
 
     pub fn cleanup_old_tasks(&mut self) {
@@ -279,7 +295,7 @@ impl SchedulerState {
     }
 
     pub fn pending_count(&self) -> usize {
-        self.tasks.iter().filter(|t| t.is_pending()).count()
+        self.tasks.iter().filter(|t| t.is_active()).count()
     }
 }
 
@@ -326,5 +342,40 @@ mod tests {
         );
         assert!(!future_task.is_due());
         assert!(future_task.is_pending());
+    }
+
+    #[test]
+    fn scheduler_pending_tasks_include_due_work() {
+        let mut scheduler = SchedulerState::default();
+        scheduler.add_task(ScheduledTask::new(
+            "test:due".to_string(),
+            "due".to_string(),
+            PackageSource::Apt,
+            ScheduledOperation::Update,
+            Utc::now() - Duration::minutes(1),
+        ));
+        assert_eq!(scheduler.pending_tasks().len(), 1);
+    }
+
+    #[test]
+    fn scheduler_add_task_replaces_existing_active_task_for_package() {
+        let mut scheduler = SchedulerState::default();
+        scheduler.add_task(ScheduledTask::new(
+            "test:pkg".to_string(),
+            "pkg".to_string(),
+            PackageSource::Apt,
+            ScheduledOperation::Update,
+            Utc::now() + Duration::hours(1),
+        ));
+        scheduler.add_task(ScheduledTask::new(
+            "test:pkg".to_string(),
+            "pkg".to_string(),
+            PackageSource::Apt,
+            ScheduledOperation::Remove,
+            Utc::now() + Duration::hours(2),
+        ));
+
+        assert_eq!(scheduler.tasks.len(), 1);
+        assert_eq!(scheduler.tasks[0].operation, ScheduledOperation::Remove);
     }
 }

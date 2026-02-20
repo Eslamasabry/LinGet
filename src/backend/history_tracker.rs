@@ -218,6 +218,14 @@ impl HistoryTracker {
         Ok(Some(entry_clone))
     }
 
+    pub async fn replace_task_queue(&mut self, entries: Vec<TaskQueueEntry>) -> Result<()> {
+        self.history.task_queue.entries = entries;
+        self.history.task_queue.prune();
+        self.save()
+            .await
+            .context("Failed to save history after replacing task queue")
+    }
+
     pub fn detect_external_changes(&self, current_packages: &[Package]) -> Vec<HistoryEntry> {
         let Some(old_snapshot) = &self.snapshot else {
             debug!("No previous snapshot, skipping external change detection");

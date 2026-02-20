@@ -55,6 +55,9 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, instrument, warn};
 
+#[cfg(test)]
+pub(crate) static TEST_PATH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Clone)]
 pub enum TaskQueueEvent {
     Started(TaskQueueEntry),
@@ -705,6 +708,16 @@ impl PackageManager {
             backend.get_changelog(&package.name).await
         } else {
             Ok(None)
+        }
+    }
+
+    pub async fn get_reverse_dependencies(&self, package: &Package) -> Result<Vec<String>> {
+        Self::validate_package_name(&package.name)?;
+
+        if let Some(backend) = self.backends.get(&package.source) {
+            backend.get_reverse_dependencies(&package.name).await
+        } else {
+            anyhow::bail!("No backend available for {:?}", package.source)
         }
     }
 
