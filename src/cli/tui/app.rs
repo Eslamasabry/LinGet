@@ -3,6 +3,11 @@ use super::update_center;
 use crate::backend::{HistoryTracker, PackageManager, TaskQueueEvent, TaskQueueExecutor};
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
 use crate::models::{ChangelogSummary, Config, Package, PackageSource, PackageStatus};
+use crate::cli::tui::state::filters::{Filter, Focus};
+use crate::cli::tui::state::queue::{
+    ClinicRemediationPlan, FailureCategory, QueueClinicActionability, QueueFailureFilter,
+    QueueJourneyLane, RecoveryState,
+};
 use anyhow::{Context, Result};
 use crossterm::{
     event::{
@@ -12,6 +17,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use crate::cli::tui::components::layout::{LayoutRegions, compute_layout};
 use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -41,59 +47,6 @@ fn rect_contains(rect: Rect, pos: (u16, u16)) -> bool {
         && pos.0 < rect.x + rect.width
         && pos.1 >= rect.y
         && pos.1 < rect.y + rect.height
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Filter {
-    All,
-    Installed,
-    Updates,
-    Favorites,
-}
-
-impl Filter {
-    fn from_config_value(value: Option<&str>) -> Self {
-        match value.unwrap_or_default().to_lowercase().as_str() {
-            "installed" => Self::Installed,
-            "updates" => Self::Updates,
-            "favorites" => Self::Favorites,
-            _ => Self::All,
-        }
-    }
-
-    fn as_config_value(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Installed => "installed",
-            Self::Updates => "updates",
-            Self::Favorites => "favorites",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Focus {
-    Sources,
-    Packages,
-    Queue,
-}
-
-impl Focus {
-    fn from_config_value(value: Option<&str>) -> Self {
-        match value.unwrap_or_default().to_lowercase().as_str() {
-            "packages" => Self::Packages,
-            "queue" => Self::Queue,
-            _ => Self::Sources,
-        }
-    }
-
-    fn as_config_value(self) -> &'static str {
-        match self {
-            Self::Sources => "sources",
-            Self::Packages => "packages",
-            Self::Queue => "queue",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,138 +184,6 @@ pub struct PendingAction {
     pub risk_acknowledged: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FailureCategory {
-    Permissions,
-    Network,
-    NotFound,
-    Conflict,
-    Unknown,
-}
-
-impl FailureCategory {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Permissions => "Permissions",
-            Self::Network => "Network",
-            Self::NotFound => "Not Found",
-            Self::Conflict => "Conflict",
-            Self::Unknown => "Unknown",
-        }
-    }
-
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::Permissions => "E_PERMISSION",
-            Self::Network => "E_NETWORK",
-            Self::NotFound => "E_NOT_FOUND",
-            Self::Conflict => "E_CONFLICT",
-            Self::Unknown => "E_UNKNOWN",
-        }
-    }
-
-    pub fn remediation_copy(self) -> &'static str {
-        match self {
-            Self::Permissions => "Authentication or privilege escalation was rejected.",
-            Self::Network => "Network issue detected while contacting package source.",
-            Self::NotFound => "Package or version was not found in enabled repositories.",
-            Self::Conflict => "Package manager reported lock/dependency conflicts.",
-            Self::Unknown => "No specific category matched this failure.",
-        }
-    }
-
-    pub fn action_hint(self) -> &'static str {
-        match self {
-            Self::Permissions => "[M] re-authenticate, then [R] retry",
-            Self::Network => "[M] refresh metadata, then [R] retry",
-            Self::NotFound => "[M] refresh and verify package/source before retry",
-            Self::Conflict => "[M] resolve lock/conflict, then [R] retry",
-            Self::Unknown => "[R] retry, then [M] inspect remediation guidance",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct RecoveryState {
-    pub attempts: usize,
-    pub last_outcome: Option<TaskQueueStatus>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueueJourneyLane {
-    Now,
-    Next,
-    NeedsAttention,
-    Done,
-}
-
-impl QueueJourneyLane {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Now => "now",
-            Self::Next => "next",
-            Self::NeedsAttention => "needs attention",
-            Self::Done => "done",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueueFailureFilter {
-    All,
-    Permissions,
-    Network,
-    Conflict,
-    Other,
-}
-
-impl QueueFailureFilter {
-    fn label(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Permissions => "permissions",
-            Self::Network => "network",
-            Self::Conflict => "conflict",
-            Self::Other => "other",
-        }
-    }
-
-    fn matches(self, category: FailureCategory) -> bool {
-        match self {
-            Self::All => true,
-            Self::Permissions => category == FailureCategory::Permissions,
-            Self::Network => category == FailureCategory::Network,
-            Self::Conflict => category == FailureCategory::Conflict,
-            Self::Other => matches!(
-                category,
-                FailureCategory::NotFound | FailureCategory::Unknown
-            ),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueueClinicActionability {
-    pub failed_in_scope: usize,
-    pub safe_retry_count: usize,
-    pub remediation_retry_count: usize,
-    pub remediation_guidance_count: usize,
-    pub remediation_skipped_count: usize,
-}
-
-impl QueueClinicActionability {
-    pub fn remediation_actionable_count(self) -> usize {
-        self.remediation_retry_count + self.remediation_guidance_count
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ClinicRemediationPlan {
-    retries: Vec<TaskQueueEntry>,
-    guidance_only: usize,
-    skipped: usize,
-    preview_count: usize,
-}
 
 type LoadResult = Result<Vec<Package>, String>;
 
@@ -2902,9 +2723,9 @@ impl App {
         self.task_last_log_at
             .retain(|task_id, _| valid.contains(task_id.as_str()));
         self.task_failure_categories
-            .retain(|task_id, _| valid.contains(task_id.as_str()));
+            .retain(|task_id: &String, _| valid.contains(task_id.as_str()));
         self.task_recovery_states
-            .retain(|task_id, _| valid.contains(task_id.as_str()));
+            .retain(|task_id: &String, _| valid.contains(task_id.as_str()));
         self.retry_parent.retain(|task_id, parent| {
             valid.contains(task_id.as_str()) && valid.contains(parent.as_str())
         });
@@ -4110,7 +3931,7 @@ impl App {
         self.handle_normal_key(key).await;
     }
 
-    pub async fn handle_mouse(&mut self, event: MouseEvent, regions: &ui::LayoutRegions) {
+    pub async fn handle_mouse(&mut self, event: MouseEvent, regions: &LayoutRegions) {
         const SCROLL_STEP: usize = 3;
         const DOUBLE_CLICK_MS: u128 = 400;
 
@@ -4319,7 +4140,7 @@ impl App {
         self.execute_command(entry.id).await;
     }
 
-    fn handle_mouse_header(&mut self, col: u16, row: u16, regions: &ui::LayoutRegions) {
+    fn handle_mouse_header(&mut self, col: u16, row: u16, regions: &LayoutRegions) {
         if let Some(filter) = ui::header_filter_hit_test(self, regions.header_filter_row, col, row)
         {
             self.filter = filter;
@@ -4491,7 +4312,7 @@ impl App {
         &mut self,
         col: u16,
         row: u16,
-        regions: &ui::LayoutRegions,
+        regions: &LayoutRegions,
     ) {
         if let Some(action) = ui::queue_hint_hit_test(
             regions.expanded_queue_hints,
@@ -5251,7 +5072,7 @@ async fn run_app(
                     app.handle_key(key).await;
                 }
                 Event::Mouse(mouse) => {
-                    let regions = ui::compute_layout(app, Rect::new(0, 0, size.width, size.height));
+                    let regions = compute_layout(app, Rect::new(0, 0, size.width, size.height));
                     app.handle_mouse(mouse, &regions).await;
                 }
                 _ => {}
