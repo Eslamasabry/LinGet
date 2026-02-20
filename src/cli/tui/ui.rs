@@ -4,7 +4,7 @@ use super::app::{
 };
 use super::theme::*;
 use super::update_center;
-use crate::cli::tui::components::layout::{sources_panel_width, *};
+use crate::cli::tui::components::layout::sources_panel_width;
 use crate::cli::tui::components::packages::draw_packages_panel;
 use crate::cli::tui::components::sources::draw_sources_panel;
 use crate::cli::tui::state::filters::{Filter, Focus};
@@ -21,8 +21,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Table, Wrap,
+        Block, Borders, Clear, Gauge, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
     Frame,
 };
