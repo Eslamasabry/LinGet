@@ -1,9 +1,14 @@
+mod accessors;
+mod consistency;
 mod input;
 use super::ui;
 use super::update_center;
-use crate::backend::{HistoryTracker, PackageManager, TaskQueueEvent, TaskQueueExecutor};
+use crate::backend::{
+    BackendCapability, HistoryTracker, PackageManager, SearchCatalog, SearchProviderSummary,
+    SourceCapabilityContext, TaskQueueEvent, TaskQueueExecutor,
+};
 use crate::cli::tui::components::layout::{compute_layout, LayoutRegions};
-use crate::cli::tui::state::filters::{Filter, Focus};
+use crate::cli::tui::state::filters::{DetailsTab, Filter, Focus, ViewMode};
 use crate::cli::tui::state::queue::{
     ClinicRemediationPlan, FailureCategory, QueueClinicActionability, QueueFailureFilter,
     QueueJourneyLane, RecoveryState,
@@ -23,6 +28,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,7 +49,9 @@ const FILTER_INSTALLED_INDEX: usize = 1;
 const FILTER_UPDATES_INDEX: usize = 2;
 const FILTER_FAVORITES_INDEX: usize = 3;
 const FILTER_SECURITY_INDEX: usize = 4;
+const FILTER_DUPLICATES_INDEX: usize = 5;
 const QUEUE_AUTO_HIDE_AFTER: Duration = Duration::from_secs(10);
+const SEARCH_CACHE_LIMIT: usize = 5;
 
 fn rect_contains(rect: Rect, pos: (u16, u16)) -> bool {
     rect.width > 0
@@ -190,7 +198,7 @@ pub struct PendingAction {
 }
 
 type LoadResult = Result<Vec<Package>, String>;
-type SearchResult = Result<Vec<Package>, String>;
+type SearchResult = Result<SearchCatalog, String>;
 type RepositoriesResult = Result<Vec<crate::models::Repository>, String>;
 
 #[derive(Debug, Clone)]
@@ -221,6 +229,24 @@ struct PreflightVerificationResult {
     note: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CatalogActivity {
+    RefreshingPackages,
+    SearchingProviders { query: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SearchRank {
+    tier: u8,
+    offset: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CachedSearchCatalog {
+    query: String,
+    catalog: SearchCatalog,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommandId {
     Quit,
@@ -238,6 +264,7 @@ pub enum CommandId {
     FilterUpdates,
     FilterFavorites,
     FilterSecurityUpdates,
+    FilterDuplicates,
     ToggleFavorite,
     BulkToggleFavorite,
     ToggleFavoritesUpdatesOnly,
@@ -257,6 +284,8 @@ pub enum CommandId {
     QueueRemediate,
     QueueLogOlder,
     QueueLogNewer,
+    ExportPackages,
+    ImportPackages,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,6 +413,12 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         enabled: command_always_enabled,
     },
     CommandDefinition {
+        id: CommandId::FilterDuplicates,
+        label: "Filter duplicates",
+        shortcut: "6",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
         id: CommandId::ToggleFavorite,
         label: "Toggle favorite",
         shortcut: "f",
@@ -422,7 +457,7 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
     CommandDefinition {
         id: CommandId::Remove,
         label: "Queue remove",
-        shortcut: "x",
+        shortcut: "d/x",
         enabled: command_remove_enabled,
     },
     CommandDefinition {
@@ -497,14 +532,28 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         shortcut: "]",
         enabled: command_queue_log_newer_enabled,
     },
+    CommandDefinition {
+        id: CommandId::ExportPackages,
+        label: "Export package list",
+        shortcut: "E",
+        enabled: |_| true,
+    },
+    CommandDefinition {
+        id: CommandId::ImportPackages,
+        label: "Import package list",
+        shortcut: "I",
+        enabled: |_| true,
+    },
 ];
 
 pub struct App {
     pub local_packages: Vec<Package>,
     pub search_results: Option<Vec<Package>>,
+    pub search_provider_summaries: Vec<SearchProviderSummary>,
+    pub search_source_alternatives: HashMap<String, Vec<PackageSource>>,
     pub packages: Vec<Package>,
     pub filtered: Vec<usize>,
-    pub filter_counts: [usize; 5],
+    pub filter_counts: [usize; 6],
     pub cursor: usize,
     pub selected: HashSet<String>,
     pub favorite_packages: HashSet<String>,
@@ -533,7 +582,10 @@ pub struct App {
     pub queue_failures_acknowledged: bool,
     pub queue_completion_digest_emitted: bool,
 
+    pub view_mode: ViewMode,
+    pub show_sidebar: bool,
     pub focus: Focus,
+    pub active_details_tab: DetailsTab,
     pub compact: bool,
     pub confirming: Option<PendingAction>,
     pub showing_help: bool,
@@ -547,12 +599,13 @@ pub struct App {
 
     pub status: String,
     pub clear_status_on_key: bool,
-    pub loading: bool,
+    catalog_activity: Option<CatalogActivity>,
     pub should_quit: bool,
     pub tick: u64,
 
     pub available_sources: Vec<PackageSource>,
-    pub source_counts: HashMap<PackageSource, [usize; 5]>,
+    pub source_counts: HashMap<PackageSource, [usize; 6]>,
+    pub duplicate_peer_sources: HashMap<String, Vec<PackageSource>>,
 
     pub pm: Arc<Mutex<PackageManager>>,
     pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
@@ -561,6 +614,7 @@ pub struct App {
     pub repositories_rx: Option<mpsc::Receiver<RepositoriesResult>>,
     pub task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
     pub task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
+    search_cache: VecDeque<CachedSearchCatalog>,
     changelog_rx: Option<mpsc::Receiver<ChangelogResult>>,
     changelog_tx: Option<mpsc::Sender<ChangelogResult>>,
     preflight_verification_rx: Option<mpsc::Receiver<PreflightVerificationResult>>,
@@ -575,6 +629,8 @@ pub struct App {
     pub favorites_persistence_enabled: bool,
     pub session_persistence_enabled: bool,
     pub favorites_dirty: bool,
+    pub import_preview: Vec<crate::models::package_list::ExportedPackage>,
+    pub showing_import_preview: bool,
 }
 
 impl App {
@@ -589,9 +645,11 @@ impl App {
         Self {
             local_packages: Vec::new(),
             search_results: None,
+            search_provider_summaries: Vec::new(),
+            search_source_alternatives: HashMap::new(),
             packages: Vec::new(),
             filtered: Vec::new(),
-            filter_counts: [0, 0, 0, 0, 0],
+            filter_counts: [0, 0, 0, 0, 0, 0],
             cursor: 0,
             selected: HashSet::new(),
             favorite_packages: HashSet::new(),
@@ -617,7 +675,10 @@ impl App {
             executor_running: Arc::new(AtomicBool::new(false)),
             queue_failures_acknowledged: false,
             queue_completion_digest_emitted: false,
+            view_mode: ViewMode::Browse,
+            show_sidebar: true,
             focus: Focus::Sources,
+            active_details_tab: DetailsTab::Info,
             compact: false,
             confirming: None,
             showing_help: false,
@@ -630,11 +691,12 @@ impl App {
             palette_cursor: 0,
             status: String::new(),
             clear_status_on_key: false,
-            loading: false,
+            catalog_activity: None,
             should_quit: false,
             tick: 0,
             available_sources: Vec::new(),
             source_counts: HashMap::new(),
+            duplicate_peer_sources: HashMap::new(),
             pm,
             history_tracker,
             load_rx: None,
@@ -642,6 +704,7 @@ impl App {
             repositories_rx: None,
             task_events_rx,
             task_events_tx,
+            search_cache: VecDeque::new(),
             changelog_rx: Some(changelog_rx),
             changelog_tx: Some(changelog_tx),
             preflight_verification_rx: Some(preflight_verification_rx),
@@ -656,6 +719,8 @@ impl App {
             favorites_persistence_enabled: true,
             session_persistence_enabled: true,
             favorites_dirty: false,
+            import_preview: Vec::new(),
+            showing_import_preview: false,
         }
     }
 
@@ -668,6 +733,167 @@ impl App {
         if self.clear_status_on_key {
             self.status.clear();
             self.clear_status_on_key = false;
+        }
+    }
+
+    fn search_cache_key(query: &str) -> String {
+        query.trim().to_lowercase()
+    }
+
+    fn cached_search_catalog(&self, query: &str) -> Option<SearchCatalog> {
+        let key = Self::search_cache_key(query);
+        self.search_cache
+            .iter()
+            .find(|entry| entry.query == key)
+            .map(|entry| entry.catalog.clone())
+    }
+
+    fn store_search_catalog(&mut self, query: &str, catalog: &SearchCatalog) {
+        let key = Self::search_cache_key(query);
+        self.search_cache.retain(|entry| entry.query != key);
+        self.search_cache.push_front(CachedSearchCatalog {
+            query: key,
+            catalog: catalog.clone(),
+        });
+        while self.search_cache.len() > SEARCH_CACHE_LIMIT {
+            self.search_cache.pop_back();
+        }
+    }
+
+    fn clear_provider_search_state(&mut self) {
+        self.search_results = None;
+        self.search_provider_summaries.clear();
+        self.search_source_alternatives.clear();
+    }
+
+    fn apply_provider_search_catalog(&mut self, catalog: SearchCatalog, from_cache: bool) {
+        let packages = catalog.packages();
+        self.search_results = Some(packages.clone());
+        self.search_provider_summaries = catalog.providers.clone();
+        self.search_source_alternatives = catalog
+            .matches
+            .iter()
+            .map(|entry| (entry.package.id(), entry.alternative_sources.clone()))
+            .collect();
+        self.packages = packages;
+        self.cleanup_stale_selections();
+        self.apply_filters();
+        self.restore_cursor_anchor();
+        self.catalog_activity = None;
+        self.store_search_catalog(&catalog.query, &catalog);
+
+        let source_count = catalog.represented_provider_count();
+        let result_count = self.filter_counts[FILTER_ALL_INDEX];
+        let source_summary = if source_count > 0 {
+            format!(
+                " from {} source{}",
+                source_count,
+                if source_count == 1 { "" } else { "s" }
+            )
+        } else {
+            String::new()
+        };
+        let cache_prefix = if from_cache { "Cached " } else { "" };
+        self.set_status(
+            format!(
+                "{}found {} package match{}{}",
+                cache_prefix,
+                result_count,
+                if result_count == 1 { "" } else { "es" },
+                source_summary
+            ),
+            true,
+        );
+    }
+
+    pub async fn export_packages(&mut self) {
+        use crate::models::package_list::PackageListExport;
+        use std::fs;
+
+        let export = PackageListExport::from_installed(&self.packages);
+        let count = export.packages.len();
+
+        let path = match dirs::config_dir() {
+            Some(config) => config.join("linget").join("packages.json"),
+            None => {
+                self.set_status("Export failed: could not determine config directory", true);
+                return;
+            }
+        };
+
+        let result: anyhow::Result<()> = (|| {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("create dir {}", parent.display()))?;
+            }
+            let json = serde_json::to_string_pretty(&export).context("serialize package list")?;
+            fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => self.set_status(
+                format!(
+                    "Exported {} packages to ~/.config/linget/packages.json",
+                    count
+                ),
+                true,
+            ),
+            Err(e) => self.set_status(format!("Export failed: {}", e), true),
+        }
+    }
+
+    pub async fn import_packages(&mut self) {
+        use crate::models::package_list::PackageListExport;
+        use std::fs;
+
+        let path = match dirs::config_dir() {
+            Some(config) => config.join("linget").join("packages.json"),
+            None => {
+                self.set_status("Import failed: could not determine config directory", true);
+                return;
+            }
+        };
+
+        let result: anyhow::Result<(
+            Vec<crate::models::package_list::ExportedPackage>,
+            Vec<String>,
+        )> = (|| {
+            let data =
+                fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+            let parsed = PackageListExport::from_json_str(&data).context("parse package list")?;
+            let missing: Vec<crate::models::package_list::ExportedPackage> = parsed
+                .export
+                .diff_against_installed(&self.packages)
+                .into_iter()
+                .cloned()
+                .collect();
+            Ok((missing, parsed.warnings))
+        })();
+
+        match result {
+            Ok((missing, warnings)) if missing.is_empty() => {
+                let status = if warnings.is_empty() {
+                    "All packages already installed".to_string()
+                } else {
+                    format!(
+                        "All supported packages already installed; {}",
+                        warnings.join("; ")
+                    )
+                };
+                self.set_status(status, true);
+            }
+            Ok((missing, warnings)) => {
+                self.import_preview = missing;
+                self.showing_import_preview = true;
+                if !warnings.is_empty() {
+                    self.set_status(
+                        format!("Import preview ready; {}", warnings.join("; ")),
+                        true,
+                    );
+                }
+            }
+            Err(e) => self.set_status(format!("Import failed: {}", e), true),
         }
     }
 
@@ -743,9 +969,7 @@ impl App {
             .and_then(PackageSource::from_str);
         self.favorites_updates_only = config.tui_favorites_updates_only;
         self.apply_filters();
-        self.cursor = config
-            .tui_last_cursor
-            .min(self.filtered.len().saturating_sub(1));
+        self.set_package_cursor(config.tui_last_cursor);
 
         if self.focus == Focus::Queue && !self.queue_expanded {
             self.focus = Focus::Packages;
@@ -790,33 +1014,6 @@ impl App {
         Ok(())
     }
 
-    pub fn source_count(&self) -> usize {
-        self.visible_sources().len() + 1
-    }
-
-    pub fn visible_sources(&self) -> Vec<PackageSource> {
-        match self.filter {
-            Filter::Updates | Filter::Favorites | Filter::SecurityUpdates => {
-                let count_index = match self.filter {
-                    Filter::Updates => FILTER_UPDATES_INDEX,
-                    Filter::Favorites => FILTER_FAVORITES_INDEX,
-                    Filter::SecurityUpdates => FILTER_SECURITY_INDEX,
-                    _ => unreachable!(),
-                };
-                self.available_sources
-                    .iter()
-                    .filter(|source| {
-                        self.source_counts
-                            .get(source)
-                            .is_some_and(|counts| counts[count_index] > 0)
-                    })
-                    .copied()
-                    .collect()
-            }
-            Filter::All | Filter::Installed => self.available_sources.clone(),
-        }
-    }
-
     pub fn command_registry() -> &'static [CommandDefinition] {
         COMMAND_REGISTRY
     }
@@ -859,7 +1056,18 @@ impl App {
                 CommandId::RunRecommended => "No recommendation available",
                 CommandId::ViewChangelog => {
                     if self.current_package().is_some() {
-                        "Changelog is not supported for this source yet"
+                        let reason = self
+                            .current_package()
+                            .and_then(|package| {
+                                SourceCapabilityContext::available(package.source)
+                                    .package_status(package, BackendCapability::Changelog)
+                                    .reason()
+                                    .map(str::to_string)
+                            })
+                            .unwrap_or_else(|| {
+                                "Changelog is not supported for this source yet".to_string()
+                            });
+                        return Some(reason);
                     } else {
                         "Select a package to view changelog"
                     }
@@ -882,6 +1090,8 @@ impl App {
                 }
                 CommandId::QueueLogOlder => "No older queue logs available",
                 CommandId::QueueLogNewer => "No newer queue logs available",
+                CommandId::ExportPackages => "No packages to export",
+                CommandId::ImportPackages => "Import file not found",
                 _ => "Command unavailable in current context",
             }
             .to_string(),
@@ -1058,12 +1268,15 @@ impl App {
     }
 
     fn can_view_changelog_command(&self) -> bool {
-        self.current_package()
-            .is_some_and(|package| Self::changelog_supported_for_source(package.source))
+        self.current_package().is_some_and(|package| {
+            SourceCapabilityContext::available(package.source)
+                .package_status(package, BackendCapability::Changelog)
+                .is_supported()
+        })
     }
 
     fn can_refresh_command(&self) -> bool {
-        !self.loading
+        !self.is_catalog_busy()
     }
 
     fn can_toggle_queue_command(&self) -> bool {
@@ -1119,58 +1332,7 @@ impl App {
     }
 
     fn classify_failure(error_text: &str) -> FailureCategory {
-        let lowered = error_text.to_lowercase();
-
-        if lowered.contains("lock")
-            || lowered.contains("conflict")
-            || lowered.contains("held broken")
-            || lowered.contains("another process")
-            || lowered.contains("already running")
-            || lowered.contains("dependency problem")
-            || lowered.contains("dpkg was interrupted")
-        {
-            return FailureCategory::Conflict;
-        }
-
-        if lowered.contains("permission denied")
-            || lowered.contains("not permitted")
-            || lowered.contains("operation not permitted")
-            || lowered.contains("must be root")
-            || lowered.contains("authentication")
-            || lowered.contains("authorization")
-            || lowered.contains("pkexec")
-            || lowered.contains("access denied")
-            || lowered.contains("eacces")
-            || lowered.contains("sudo")
-        {
-            return FailureCategory::Permissions;
-        }
-
-        if lowered.contains("timed out")
-            || lowered.contains("timeout")
-            || lowered.contains("temporary failure")
-            || lowered.contains("could not resolve")
-            || lowered.contains("name resolution")
-            || lowered.contains("network")
-            || lowered.contains("connection refused")
-            || lowered.contains("connection reset")
-            || lowered.contains("unreachable")
-            || lowered.contains("failed to fetch")
-        {
-            return FailureCategory::Network;
-        }
-
-        if lowered.contains("not found")
-            || lowered.contains("unable to locate")
-            || lowered.contains("no package")
-            || lowered.contains("could not find")
-            || lowered.contains("no matching")
-            || lowered.contains("404")
-        {
-            return FailureCategory::NotFound;
-        }
-
-        FailureCategory::Unknown
+        FailureCategory::classify(error_text)
     }
 
     pub fn failure_category_for_task(&self, task: &TaskQueueEntry) -> Option<FailureCategory> {
@@ -1192,78 +1354,6 @@ impl App {
     pub fn retry_parent_for_task(&self, task_id: &str) -> Option<&TaskQueueEntry> {
         let parent_id = self.retry_parent.get(task_id)?;
         self.tasks.iter().find(|task| task.id == *parent_id)
-    }
-
-    pub fn retry_attempt_for_task(&self, task_id: &str) -> Option<usize> {
-        self.retry_attempt.get(task_id).copied()
-    }
-
-    pub fn task_last_log_age_secs(&self, task_id: &str) -> Option<u64> {
-        self.task_last_log_at
-            .get(task_id)
-            .map(|instant| instant.elapsed().as_secs())
-    }
-
-    pub fn queue_lane_for_task(&self, task: &TaskQueueEntry) -> QueueJourneyLane {
-        match task.status {
-            TaskQueueStatus::Running => QueueJourneyLane::Now,
-            TaskQueueStatus::Queued => QueueJourneyLane::Next,
-            TaskQueueStatus::Completed | TaskQueueStatus::Cancelled => QueueJourneyLane::Done,
-            TaskQueueStatus::Failed => {
-                let recovered = self
-                    .recovery_state_for_task(&task.id)
-                    .is_some_and(|state| state.last_outcome == Some(TaskQueueStatus::Completed));
-                if recovered {
-                    QueueJourneyLane::Done
-                } else {
-                    QueueJourneyLane::NeedsAttention
-                }
-            }
-        }
-    }
-
-    pub fn queue_lane_counts(&self) -> (usize, usize, usize, usize) {
-        let mut now = 0usize;
-        let mut next = 0usize;
-        let mut attention = 0usize;
-        let mut done = 0usize;
-        for task in &self.tasks {
-            match self.queue_lane_for_task(task) {
-                QueueJourneyLane::Now => now += 1,
-                QueueJourneyLane::Next => next += 1,
-                QueueJourneyLane::NeedsAttention => attention += 1,
-                QueueJourneyLane::Done => done += 1,
-            }
-        }
-        (now, next, attention, done)
-    }
-
-    pub fn queue_failure_filter_label(&self) -> &'static str {
-        self.queue_failure_filter.label()
-    }
-
-    pub fn queue_visible_task_indices(&self) -> Vec<usize> {
-        if self.queue_failure_filter == QueueFailureFilter::All {
-            return (0..self.tasks.len()).collect();
-        }
-
-        self.tasks
-            .iter()
-            .enumerate()
-            .filter(|(_, task)| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention)
-            .filter(|(_, task)| {
-                self.failure_category_for_task(task)
-                    .is_some_and(|category| self.queue_failure_filter.matches(category))
-            })
-            .map(|(index, _)| index)
-            .collect()
-    }
-
-    pub fn queue_visible_cursor_position(&self, visible_indices: &[usize]) -> usize {
-        visible_indices
-            .iter()
-            .position(|index| *index == self.task_cursor)
-            .unwrap_or(0)
     }
 
     fn ensure_queue_cursor_matches_filter(&mut self) {
@@ -1315,28 +1405,6 @@ impl App {
             ),
             true,
         );
-    }
-
-    pub fn unresolved_failure_count(&self) -> usize {
-        self.tasks
-            .iter()
-            .filter(|task| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention)
-            .count()
-    }
-
-    pub fn retryable_failed_task_count(&self) -> usize {
-        let mut seen = HashSet::new();
-        self.tasks
-            .iter()
-            .filter(|task| {
-                self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention
-                    && self
-                        .failure_category_for_task(task)
-                        .is_some_and(Self::safe_retry_category)
-                    && !self.has_active_task_for_package(&task.package_id)
-                    && seen.insert(task.package_id.clone())
-            })
-            .count()
     }
 
     pub fn queue_clinic_actionability(&self) -> QueueClinicActionability {
@@ -1737,71 +1805,10 @@ impl App {
         self.set_source_by_index(idx);
     }
 
-    pub fn current_package(&self) -> Option<&Package> {
-        self.filtered
-            .get(self.cursor)
-            .and_then(|idx| self.packages.get(*idx))
-    }
-
-    fn current_package_id(&self) -> Option<String> {
-        self.current_package().map(Package::id)
-    }
-
-    fn package_by_id(&self, package_id: &str) -> Option<&Package> {
-        self.packages
-            .iter()
-            .find(|package| package.id() == package_id)
-    }
-
-    pub fn changelog_target_package(&self) -> Option<&Package> {
-        self.changelog_target_package_id
-            .as_deref()
-            .and_then(|package_id| self.package_by_id(package_id))
-    }
-
-    pub fn changelog_state_for_target(&self) -> Option<&ChangelogState> {
-        self.changelog_target_package_id
-            .as_ref()
-            .and_then(|package_id| self.changelog_cache.get(package_id))
-    }
-
     pub fn changelog_supported_for_source(source: PackageSource) -> bool {
-        matches!(
-            source,
-            PackageSource::Apt
-                | PackageSource::Dnf
-                | PackageSource::Pip
-                | PackageSource::Npm
-                | PackageSource::Cargo
-                | PackageSource::Conda
-                | PackageSource::Mamba
-        )
-    }
-
-    pub fn changelog_supported_for_target(&self) -> bool {
-        self.changelog_target_package()
-            .is_some_and(|package| Self::changelog_supported_for_source(package.source))
-    }
-
-    pub fn visible_selected_count(&self) -> usize {
-        self.filtered
-            .iter()
-            .filter(|idx| {
-                self.packages
-                    .get(**idx)
-                    .is_some_and(|p| self.selected.contains(&p.id()))
-            })
-            .count()
-    }
-
-    pub fn hidden_selected_count(&self) -> usize {
-        self.selected
-            .len()
-            .saturating_sub(self.visible_selected_count())
-    }
-
-    pub fn is_favorite_id(&self, package_id: &str) -> bool {
-        self.favorite_packages.contains(package_id)
+        SourceCapabilityContext::available(source)
+            .status(BackendCapability::Changelog)
+            .is_supported()
     }
 
     pub fn apply_filters(&mut self) {
@@ -1811,11 +1818,13 @@ impl App {
         let mut n_favorites = 0usize;
         let mut n_security = 0usize;
 
-        let mut per_source: HashMap<PackageSource, [usize; 5]> = HashMap::new();
+        let mut per_source: HashMap<PackageSource, [usize; 6]> = HashMap::new();
 
         for package in &self.packages {
             n_all += 1;
-            let entry = per_source.entry(package.source).or_insert([0, 0, 0, 0, 0]);
+            let entry = per_source
+                .entry(package.source)
+                .or_insert([0, 0, 0, 0, 0, 0]);
             entry[FILTER_ALL_INDEX] += 1;
 
             let is_installed = matches!(
@@ -1852,8 +1861,41 @@ impl App {
                 entry[FILTER_SECURITY_INDEX] += 1;
             }
         }
-        self.filter_counts = [n_all, n_installed, n_updates, n_favorites, n_security];
+
+        // Detect cross-source duplicates and compute per-source counts
+        let dup_groups = crate::models::detect_duplicates(&self.packages);
+        let mut dup_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut peer_sources: HashMap<String, Vec<PackageSource>> = HashMap::new();
+        for group in &dup_groups {
+            for pkg in &group.packages {
+                let id = pkg.id();
+                dup_ids.insert(id.clone());
+                let others: Vec<PackageSource> = group
+                    .packages
+                    .iter()
+                    .filter(|p| p.source != pkg.source)
+                    .map(|p| p.source)
+                    .collect();
+                peer_sources.insert(id, others);
+            }
+        }
+        let n_duplicates = dup_ids.len();
+        for pkg in &self.packages {
+            if dup_ids.contains(&pkg.id()) {
+                let entry = per_source.entry(pkg.source).or_insert([0, 0, 0, 0, 0, 0]);
+                entry[FILTER_DUPLICATES_INDEX] += 1;
+            }
+        }
+        self.filter_counts = [
+            n_all,
+            n_installed,
+            n_updates,
+            n_favorites,
+            n_security,
+            n_duplicates,
+        ];
         self.source_counts = per_source;
+        self.duplicate_peer_sources = peer_sources;
 
         // Reset source if it's not visible under the current filter
         if let Some(source) = self.source {
@@ -1863,34 +1905,134 @@ impl App {
         }
 
         let query = self.search.to_lowercase();
+        let mut search_ranks = HashMap::new();
+
         self.filtered = self
             .packages
             .iter()
             .enumerate()
-            .filter(|(_, package)| {
-                self.matches_filter(package, self.filter)
-                    && self.source.is_none_or(|source| package.source == source)
-                    && (query.is_empty()
-                        || package.name.to_lowercase().contains(&query)
-                        || package.description.to_lowercase().contains(&query))
+            .filter_map(|(idx, package)| {
+                let matches_filter = if self.filter == Filter::Duplicates {
+                    dup_ids.contains(&package.id())
+                } else {
+                    self.matches_filter(package, self.filter)
+                };
+
+                if !matches_filter || self.source.is_some_and(|source| package.source != source) {
+                    return None;
+                }
+
+                let rank = self.search_rank_for_package(package, &query)?;
+                search_ranks.insert(idx, rank);
+                Some(idx)
             })
-            .map(|(idx, _)| idx)
             .collect();
 
-        if self.filter == Filter::Updates || self.filter == Filter::SecurityUpdates {
-            self.sort_updates_by_priority();
+        if query.is_empty() {
+            if self.filter == Filter::Updates || self.filter == Filter::SecurityUpdates {
+                self.sort_updates_by_priority();
+            } else {
+                self.sort_favorites_then_name();
+            }
         } else {
-            self.sort_favorites_then_name();
+            self.sort_filtered_by_search_relevance(&search_ranks);
         }
 
-        self.cursor = self.cursor.min(self.filtered.len().saturating_sub(1));
+        self.clamp_package_cursor();
         self.clamp_task_cursor();
+        self.debug_assert_catalog_state();
     }
 
-    fn sort_updates_by_priority(&mut self) {
-        if self.filtered.len() < 2 {
-            return;
+    fn search_rank_for_package(&self, package: &Package, query: &str) -> Option<SearchRank> {
+        if query.is_empty() {
+            return Some(SearchRank { tier: 0, offset: 0 });
         }
+
+        let name = package.name.to_lowercase();
+        if let Some(offset) = name.find(query) {
+            return Some(SearchRank {
+                tier: if offset == 0 { 0 } else { 1 },
+                offset,
+            });
+        }
+
+        let description = package.description.to_lowercase();
+        if let Some(offset) = description.find(query) {
+            return Some(SearchRank { tier: 2, offset });
+        }
+
+        if let Some(offset) = fuzzy_subsequence_score(&name, query) {
+            return Some(SearchRank { tier: 3, offset });
+        }
+
+        fuzzy_subsequence_score(&description, query).map(|offset| SearchRank { tier: 4, offset })
+    }
+
+    fn compare_name_source(packages: &[Package], left_idx: usize, right_idx: usize) -> CmpOrdering {
+        let left = &packages[left_idx];
+        let right = &packages[right_idx];
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.source.cmp(&right.source))
+    }
+
+    fn compare_favorites_then_name(
+        packages: &[Package],
+        favorite_packages: &HashSet<String>,
+        left_idx: usize,
+        right_idx: usize,
+    ) -> CmpOrdering {
+        let left = &packages[left_idx];
+        let right = &packages[right_idx];
+        let left_favorite = favorite_packages.contains(&left.id());
+        let right_favorite = favorite_packages.contains(&right.id());
+
+        right_favorite
+            .cmp(&left_favorite)
+            .then_with(|| Self::compare_name_source(packages, left_idx, right_idx))
+    }
+
+    fn sort_filtered_by_search_relevance(&mut self, search_ranks: &HashMap<usize, SearchRank>) {
+        let update_rank =
+            if self.filter == Filter::Updates || self.filter == Filter::SecurityUpdates {
+                Some(self.update_priority_rank_map())
+            } else {
+                None
+            };
+        let packages = &self.packages;
+        let favorite_packages = &self.favorite_packages;
+
+        self.filtered.sort_by(|left_idx, right_idx| {
+            search_ranks
+                .get(left_idx)
+                .cmp(&search_ranks.get(right_idx))
+                .then_with(|| {
+                    if let Some(update_rank) = update_rank.as_ref() {
+                        update_rank
+                            .get(&packages[*left_idx].id())
+                            .copied()
+                            .unwrap_or(usize::MAX)
+                            .cmp(
+                                &update_rank
+                                    .get(&packages[*right_idx].id())
+                                    .copied()
+                                    .unwrap_or(usize::MAX),
+                            )
+                    } else {
+                        Self::compare_favorites_then_name(
+                            packages,
+                            favorite_packages,
+                            *left_idx,
+                            *right_idx,
+                        )
+                    }
+                })
+                .then_with(|| Self::compare_name_source(packages, *left_idx, *right_idx))
+        });
+    }
+
+    fn update_priority_rank_map(&self) -> HashMap<String, usize> {
         let packages: Vec<Package> = self
             .filtered
             .iter()
@@ -1904,11 +2046,18 @@ impl App {
         if let Some(source) = self.source {
             let _source_updates = update_center::by_source_packages(&ranked, source);
         }
-        let rank: HashMap<String, usize> = ranked
+        ranked
             .iter()
             .enumerate()
             .map(|(idx, candidate)| (candidate.package.id(), idx))
-            .collect();
+            .collect()
+    }
+
+    fn sort_updates_by_priority(&mut self) {
+        if self.filtered.len() < 2 {
+            return;
+        }
+        let rank = self.update_priority_rank_map();
         self.filtered.sort_by_key(|idx| {
             rank.get(&self.packages[*idx].id())
                 .copied()
@@ -1917,16 +2066,10 @@ impl App {
     }
 
     fn sort_favorites_then_name(&mut self) {
+        let packages = &self.packages;
+        let favorite_packages = &self.favorite_packages;
         self.filtered.sort_by(|left_idx, right_idx| {
-            let left = &self.packages[*left_idx];
-            let right = &self.packages[*right_idx];
-            let left_favorite = self.favorite_packages.contains(&left.id());
-            let right_favorite = self.favorite_packages.contains(&right.id());
-
-            right_favorite
-                .cmp(&left_favorite)
-                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-                .then_with(|| left.source.cmp(&right.source))
+            Self::compare_favorites_then_name(packages, favorite_packages, *left_idx, *right_idx)
         });
     }
 
@@ -1959,15 +2102,17 @@ impl App {
                     PackageStatus::UpdateAvailable | PackageStatus::Updating
                 ) && package.detect_update_category() == UpdateCategory::Security
             }
+            // Duplicates filtering is handled separately in apply_filters
+            Filter::Duplicates => false,
         }
     }
 
     pub fn start_loading(&mut self) -> bool {
-        if self.loading {
+        if self.is_catalog_busy() {
             return false;
         }
 
-        self.loading = true;
+        self.catalog_activity = Some(CatalogActivity::RefreshingPackages);
         self.cursor_anchor_id = self.current_package_id();
         self.set_status("Refreshing packages...", false);
 
@@ -1993,8 +2138,8 @@ impl App {
     }
 
     pub fn start_search(&mut self) -> bool {
-        if self.loading {
-            self.set_status("Please wait for current operation to finish", true);
+        if self.is_catalog_busy() {
+            self.set_status(self.catalog_busy_reason(), true);
             return false;
         }
 
@@ -2003,19 +2148,27 @@ impl App {
             return false;
         }
 
-        self.loading = true;
+        let query = self.search.clone();
+        if let Some(catalog) = self.cached_search_catalog(&query) {
+            self.cursor_anchor_id = self.current_package_id();
+            self.apply_provider_search_catalog(catalog, true);
+            return true;
+        }
+
+        self.catalog_activity = Some(CatalogActivity::SearchingProviders {
+            query: query.clone(),
+        });
         self.cursor_anchor_id = self.current_package_id();
         self.set_status(format!("Searching for '{}'...", self.search), false);
 
         let (tx, rx) = mpsc::channel(1);
         self.search_rx = Some(rx);
         let pm = self.pm.clone();
-        let query = self.search.clone();
 
         tokio::spawn(async move {
             let result: SearchResult = {
                 let manager = pm.lock().await;
-                match manager.search(&query).await {
+                match manager.search_catalog(&query).await {
                     Ok(results) => Ok(results),
                     Err(error) => Err(error.to_string()),
                 }
@@ -2035,7 +2188,9 @@ impl App {
                 .get(**idx)
                 .is_some_and(|pkg| pkg.id() == anchor_id)
         }) {
-            self.cursor = pos;
+            self.set_package_cursor(pos);
+        } else {
+            self.debug_assert_catalog_state();
         }
     }
 
@@ -2047,6 +2202,7 @@ impl App {
         match rx.try_recv() {
             Ok(Ok(packages)) => {
                 self.local_packages = packages;
+                self.search_cache.clear();
                 if self.search_results.is_none() {
                     self.packages = self.local_packages.clone();
                 }
@@ -2054,7 +2210,7 @@ impl App {
                 self.previous_statuses.clear();
                 self.apply_filters();
                 self.restore_cursor_anchor();
-                self.loading = false;
+                self.catalog_activity = None;
                 self.set_status(
                     format!(
                         "Loaded {} packages ({} updates)",
@@ -2064,14 +2220,14 @@ impl App {
                 );
             }
             Ok(Err(error)) => {
-                self.loading = false;
+                self.catalog_activity = None;
                 self.set_status(format!("Load error: {}", error), true);
             }
             Err(mpsc::error::TryRecvError::Empty) => {
                 self.load_rx = Some(rx);
             }
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.loading = false;
+                self.catalog_activity = None;
                 self.set_status("Load failed: channel disconnected", true);
             }
         }
@@ -2083,24 +2239,18 @@ impl App {
         };
 
         match rx.try_recv() {
-            Ok(Ok(packages)) => {
-                self.search_results = Some(packages.clone());
-                self.packages = packages;
-                self.cleanup_stale_selections();
-                self.apply_filters();
-                self.restore_cursor_anchor();
-                self.loading = false;
-                self.set_status(format!("Found {} packages", self.filter_counts[0]), true);
+            Ok(Ok(catalog)) => {
+                self.apply_provider_search_catalog(catalog, false);
             }
             Ok(Err(error)) => {
-                self.loading = false;
+                self.catalog_activity = None;
                 self.set_status(format!("Search error: {}", error), true);
             }
             Err(mpsc::error::TryRecvError::Empty) => {
                 self.search_rx = Some(rx);
             }
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.loading = false;
+                self.catalog_activity = None;
                 self.set_status("Search failed: channel disconnected", true);
             }
         }
@@ -2776,7 +2926,7 @@ impl App {
             self.queue_completed_at = Some(Instant::now());
         }
 
-        if changed && self.refresh_after_idle && !self.loading && !running_after {
+        if changed && self.refresh_after_idle && !self.is_catalog_busy() && !running_after {
             self.refresh_after_idle = false;
             let _ = self.start_loading();
         }
@@ -3130,34 +3280,34 @@ impl App {
 
     fn next_package(&mut self) {
         if self.filtered.is_empty() {
-            self.cursor = 0;
+            self.set_package_cursor(0);
             return;
         }
-        self.cursor = (self.cursor + 1).min(self.filtered.len() - 1);
+        self.set_package_cursor(self.cursor.saturating_add(1));
     }
 
     fn prev_package(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
+        self.set_package_cursor(self.cursor.saturating_sub(1));
     }
 
     fn page_down(&mut self) {
         if self.filtered.is_empty() {
             return;
         }
-        self.cursor = (self.cursor + HALF_PAGE).min(self.filtered.len() - 1);
+        self.set_package_cursor(self.cursor.saturating_add(HALF_PAGE));
     }
 
     fn page_up(&mut self) {
-        self.cursor = self.cursor.saturating_sub(HALF_PAGE);
+        self.set_package_cursor(self.cursor.saturating_sub(HALF_PAGE));
     }
 
     fn top(&mut self) {
-        self.cursor = 0;
+        self.set_package_cursor(0);
     }
 
     fn bottom(&mut self) {
         if !self.filtered.is_empty() {
-            self.cursor = self.filtered.len() - 1;
+            self.set_package_cursor(self.filtered.len() - 1);
         }
     }
 
@@ -3284,25 +3434,35 @@ impl App {
             .collect()
     }
 
-    fn is_valid_target(action: TaskQueueAction, package: &Package) -> bool {
+    fn task_action_capability(action: TaskQueueAction) -> BackendCapability {
         match action {
-            TaskQueueAction::Install => package.status == PackageStatus::NotInstalled,
-            TaskQueueAction::Remove => {
-                matches!(
-                    package.status,
-                    PackageStatus::Installed | PackageStatus::UpdateAvailable
-                )
-            }
-            TaskQueueAction::Update => package.status == PackageStatus::UpdateAvailable,
+            TaskQueueAction::Install => BackendCapability::Install,
+            TaskQueueAction::Remove => BackendCapability::Remove,
+            TaskQueueAction::Update => BackendCapability::Update,
         }
     }
 
+    fn action_capability_status(
+        action: TaskQueueAction,
+        package: &Package,
+    ) -> crate::backend::CapabilityStatus {
+        SourceCapabilityContext::available(package.source)
+            .package_status(package, Self::task_action_capability(action))
+    }
+
+    fn is_valid_target(action: TaskQueueAction, package: &Package) -> bool {
+        Self::action_capability_status(action, package).is_supported()
+    }
+
     fn invalid_single_target_message(action: TaskQueueAction, package: &Package) -> String {
-        match action {
-            TaskQueueAction::Install => format!("{} is already installed", package.name),
-            TaskQueueAction::Remove => format!("{} is not installed", package.name),
-            TaskQueueAction::Update => format!("{} has no update available", package.name),
-        }
+        Self::action_capability_status(action, package)
+            .reason()
+            .map(str::to_string)
+            .unwrap_or_else(|| match action {
+                TaskQueueAction::Install => format!("{} is already installed", package.name),
+                TaskQueueAction::Remove => format!("{} is not installed", package.name),
+                TaskQueueAction::Update => format!("{} has no update available", package.name),
+            })
     }
 
     fn invalid_batch_message(action: TaskQueueAction) -> &'static str {
@@ -3430,6 +3590,49 @@ impl App {
         let selection_mode = !self.selected.is_empty();
         let targets = self.collect_action_targets();
         self.prepare_action_for_targets(action, targets, selection_mode);
+    }
+
+    pub fn dismiss_duplicate_keep_cursor(&mut self) {
+        let Some(keep_pkg) = self.current_package().cloned() else {
+            return;
+        };
+        let groups = crate::models::detect_duplicates(&self.packages);
+        let keep_id = keep_pkg.id();
+        let group = groups
+            .iter()
+            .find(|g| g.packages.iter().any(|p| p.id() == keep_id));
+        let Some(group) = group else {
+            self.set_status("No duplicate found for this package", true);
+            return;
+        };
+        let to_remove: Vec<Package> = group
+            .packages
+            .iter()
+            .filter(|p| p.id() != keep_id)
+            .cloned()
+            .collect();
+        if to_remove.is_empty() {
+            self.set_status("No duplicate found for this package", true);
+            return;
+        }
+        let remove_desc: Vec<String> = to_remove
+            .iter()
+            .map(|p| format!("{} ({})", p.name, p.source))
+            .collect();
+        let suggested = group
+            .suggested_keep
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| keep_pkg.source.to_string());
+        self.set_status(
+            format!(
+                "Will remove {} — keeping {} ({}) version",
+                remove_desc.join(", "),
+                group.normalized_name,
+                suggested,
+            ),
+            true,
+        );
+        self.prepare_action_for_targets(TaskQueueAction::Remove, to_remove, false);
     }
 
     fn toggle_selection_on_cursor(&mut self) {
@@ -3620,7 +3823,7 @@ impl App {
             KeyCode::Esc => {
                 self.searching = false;
                 self.search.clear();
-                self.search_results = None;
+                self.clear_provider_search_state();
                 self.packages = self.local_packages.clone();
                 self.apply_filters();
                 self.set_status("Search cleared", true);
@@ -3628,7 +3831,7 @@ impl App {
             KeyCode::Enter => {
                 self.searching = false;
                 if self.search.trim().is_empty() {
-                    self.search_results = None;
+                    self.clear_provider_search_state();
                     self.packages = self.local_packages.clone();
                     self.apply_filters();
                     self.set_status("Search cleared", true);
@@ -4040,7 +4243,7 @@ impl App {
             }
             RecommendedAction::RefreshPackages => {
                 if !self.start_loading() {
-                    self.set_status("Already refreshing", true);
+                    self.set_status(self.catalog_busy_reason(), true);
                 } else {
                     self.set_status("Refreshing package metadata...", true);
                 }
@@ -4069,14 +4272,14 @@ impl App {
             let category = self
                 .failure_category_for_task(task)
                 .unwrap_or(FailureCategory::Unknown);
-            if category == FailureCategory::Network && !self.loading {
+            if category == FailureCategory::Network && !self.is_catalog_busy() {
                 let _ = self.start_loading();
             }
             self.queue_retry_for_parent_task(task).await;
             retried += 1;
         }
 
-        if plan.guidance_only > 0 && !self.loading {
+        if plan.guidance_only > 0 && !self.is_catalog_busy() {
             let _ = self.start_loading();
         }
 
@@ -4135,12 +4338,7 @@ impl App {
         if !self.should_show_queue_bar() {
             return 0;
         }
-        let (_, running, _, _, _) = self.queue_counts();
-        if running > 0 {
-            2
-        } else {
-            1
-        }
+        1
     }
 
     pub fn spinner_frame(&self) -> char {
@@ -4268,6 +4466,7 @@ fn command_group(command: CommandId) -> &'static str {
         | CommandId::FilterUpdates
         | CommandId::FilterFavorites
         | CommandId::FilterSecurityUpdates
+        | CommandId::FilterDuplicates
         | CommandId::RunRecommended
         | CommandId::ViewChangelog
         | CommandId::Search
@@ -4278,6 +4477,7 @@ fn command_group(command: CommandId) -> &'static str {
         | CommandId::ToggleSelection
         | CommandId::SelectAll => "Selection",
         CommandId::Install | CommandId::Remove | CommandId::Update => "Actions",
+        CommandId::ExportPackages | CommandId::ImportPackages => "Packages",
         CommandId::ToggleQueue
         | CommandId::QueueCancel
         | CommandId::QueueRetry
@@ -4473,8 +4673,8 @@ mod tests {
         }
     }
 
-    fn layout_regions(app: &App) -> ui::LayoutRegions {
-        ui::compute_layout(app, Rect::new(0, 0, 120, 40))
+    fn layout_regions(app: &App) -> LayoutRegions {
+        compute_layout(app, Rect::new(0, 0, 120, 40))
     }
 
     #[test]
@@ -4570,9 +4770,10 @@ mod tests {
         assert!(App::changelog_supported_for_source(PackageSource::Cargo));
         assert!(App::changelog_supported_for_source(PackageSource::Conda));
         assert!(App::changelog_supported_for_source(PackageSource::Mamba));
+        assert!(App::changelog_supported_for_source(PackageSource::Flatpak));
+        assert!(App::changelog_supported_for_source(PackageSource::Brew));
 
         assert!(!App::changelog_supported_for_source(PackageSource::Snap));
-        assert!(!App::changelog_supported_for_source(PackageSource::Flatpak));
     }
 
     #[test]
@@ -4791,7 +4992,7 @@ Remove   1 Package
         assert!(!app.command_enabled(CommandId::QueueRetry));
 
         app.task_cursor = 1;
-        assert!(!app.command_enabled(CommandId::QueueCancel));
+        assert!(app.command_enabled(CommandId::QueueCancel));
         assert!(app.command_enabled(CommandId::QueueRetry));
 
         app.task_logs.insert(
@@ -4818,7 +5019,7 @@ Remove   1 Package
         app.apply_filters();
 
         assert_eq!(app.filtered.len(), 3);
-        assert_eq!(app.filter_counts, [3, 2, 1, 0, 0]);
+        assert_eq!(app.filter_counts, [3, 2, 1, 0, 0, 0]);
     }
 
     #[test]
@@ -4864,7 +5065,7 @@ Remove   1 Package
         app.filter = Filter::Favorites;
         app.apply_filters();
 
-        assert_eq!(app.filter_counts, [2, 2, 0, 1, 0]);
+        assert_eq!(app.filter_counts, [2, 2, 0, 1, 0, 0]);
         assert_eq!(app.filtered.len(), 1);
         assert_eq!(app.current_package().map(|p| p.name.as_str()), Some("apt"));
         assert_eq!(app.visible_sources(), vec![PackageSource::Apt]);
@@ -4896,11 +5097,11 @@ Remove   1 Package
 
         assert_eq!(
             app.source_counts.get(&PackageSource::Apt),
-            Some(&[2, 1, 0, 0, 0])
+            Some(&[2, 1, 0, 0, 0, 0])
         );
         assert_eq!(
             app.source_counts.get(&PackageSource::Snap),
-            Some(&[1, 1, 1, 0, 0])
+            Some(&[1, 1, 1, 0, 0, 0])
         );
 
         app.source = Some(PackageSource::Apt);
@@ -4927,6 +5128,127 @@ Remove   1 Package
         assert_eq!(app.filtered.len(), 1);
         assert_eq!(app.cursor, 0);
         assert_eq!(app.current_package().map(|p| p.name.as_str()), Some("vim"));
+    }
+
+    #[test]
+    fn apply_session_state_keeps_catalog_consistent() {
+        let mut app = test_app();
+        app.available_sources = vec![PackageSource::Apt, PackageSource::Snap];
+        app.packages = vec![
+            make_pkg(
+                "apt-installed",
+                PackageSource::Apt,
+                PackageStatus::Installed,
+            ),
+            make_pkg(
+                "snap-update",
+                PackageSource::Snap,
+                PackageStatus::UpdateAvailable,
+            ),
+        ];
+
+        let config = Config {
+            tui_last_filter: Some(Filter::Updates.as_config_value().to_string()),
+            last_source_filter: Some(PackageSource::Apt.to_string()),
+            tui_last_cursor: 42,
+            ..Config::default()
+        };
+
+        app.apply_session_from_config(&config);
+
+        assert_eq!(app.source, None);
+        assert_eq!(app.cursor, 0);
+        assert!(app.catalog_state_consistent());
+        assert_eq!(
+            app.current_package().map(|package| package.name.as_str()),
+            Some("snap-update")
+        );
+    }
+
+    #[test]
+    fn package_navigation_helpers_recover_from_stale_cursor_state() {
+        let mut app = test_app();
+        app.packages = vec![
+            make_pkg("alpha", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("beta", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.apply_filters();
+
+        app.cursor = 99;
+        app.next_package();
+        assert_eq!(app.cursor, 1);
+        assert!(app.catalog_state_consistent());
+
+        app.top();
+        assert_eq!(app.cursor, 0);
+        app.prev_package();
+        assert_eq!(app.cursor, 0);
+        app.page_down();
+        assert_eq!(app.cursor, 1);
+        app.bottom();
+        assert_eq!(app.cursor, 1);
+        assert!(app.catalog_state_consistent());
+    }
+
+    #[test]
+    fn restore_cursor_anchor_keeps_catalog_consistent_when_anchor_is_missing() {
+        let mut app = test_app();
+        app.packages = vec![make_pkg(
+            "alpha",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+        app.cursor_anchor_id = Some("APT:missing".to_string());
+
+        app.restore_cursor_anchor();
+
+        assert_eq!(app.cursor, 0);
+        assert!(app.catalog_state_consistent());
+    }
+
+    #[test]
+    fn apply_filters_search_prefers_prefix_then_description_then_fuzzy() {
+        let mut app = test_app();
+        let mut exact = make_pkg("vim", PackageSource::Apt, PackageStatus::Installed);
+        exact.description = "text editor".to_string();
+        let mut description = make_pkg("editor", PackageSource::Apt, PackageStatus::Installed);
+        description.description = "great vim workflow".to_string();
+        let mut fuzzy = make_pkg(
+            "virtual-machine",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        );
+        fuzzy.description = "terminal helper".to_string();
+        app.packages = vec![description, fuzzy, exact];
+        app.search = "vim".to_string();
+        app.apply_filters();
+
+        let ordered_names: Vec<&str> = app
+            .filtered
+            .iter()
+            .filter_map(|idx| app.packages.get(*idx))
+            .map(|package| package.name.as_str())
+            .collect();
+        assert_eq!(ordered_names, vec!["vim", "editor", "virtual-machine"]);
+    }
+
+    #[test]
+    fn catalog_busy_reason_describes_active_operation() {
+        let mut app = test_app();
+        app.catalog_activity = Some(CatalogActivity::RefreshingPackages);
+        assert_eq!(
+            app.catalog_busy_reason(),
+            "Please wait for the package refresh to finish"
+        );
+
+        app.catalog_activity = Some(CatalogActivity::SearchingProviders {
+            query: "vim".to_string(),
+        });
+        assert_eq!(
+            app.catalog_busy_reason(),
+            "Please wait for the current provider search for 'vim' to finish"
+        );
     }
 
     #[test]
@@ -5146,6 +5468,25 @@ Remove   1 Package
     }
 
     #[tokio::test]
+    async fn remove_alias_d_queues_remove_preflight() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Deb,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('d'))).await;
+
+        let confirming = app.confirming.as_ref().expect("confirm expected");
+        assert_eq!(confirming.action, TaskQueueAction::Remove);
+        assert_eq!(confirming.packages.len(), 1);
+        assert_eq!(confirming.packages[0].name, "pkg");
+    }
+
+    #[tokio::test]
     async fn batch_update_filters_valid_targets_and_reports_skip() {
         let mut app = test_app();
         app.focus = Focus::Packages;
@@ -5184,6 +5525,79 @@ Remove   1 Package
 
         app.handle_key(key(KeyCode::Esc)).await;
         assert!(app.search.is_empty());
+    }
+
+    #[test]
+    fn provider_search_catalog_populates_scope_and_source_badges() {
+        let mut app = test_app();
+        let catalog = SearchCatalog {
+            query: "firefox".to_string(),
+            matches: vec![crate::backend::SearchMatch {
+                package: make_pkg("firefox", PackageSource::Apt, PackageStatus::NotInstalled),
+                alternative_sources: vec![PackageSource::Flatpak, PackageSource::Snap],
+            }],
+            providers: vec![
+                SearchProviderSummary {
+                    source: PackageSource::Apt,
+                    result_count: 1,
+                    surfaced_count: 1,
+                    error: None,
+                },
+                SearchProviderSummary {
+                    source: PackageSource::Flatpak,
+                    result_count: 1,
+                    surfaced_count: 1,
+                    error: None,
+                },
+                SearchProviderSummary {
+                    source: PackageSource::Snap,
+                    result_count: 1,
+                    surfaced_count: 1,
+                    error: None,
+                },
+            ],
+        };
+
+        app.apply_provider_search_catalog(catalog, false);
+
+        let package = app.packages.first().expect("provider search package");
+        assert_eq!(app.package_source_badge(package), "APT+2");
+        assert_eq!(
+            app.provider_search_scope_label().as_deref(),
+            Some("provider results · 3 sources")
+        );
+        assert_eq!(
+            app.package_source_note(package).as_deref(),
+            Some("Also available from Flatpak, Snap")
+        );
+    }
+
+    #[test]
+    fn provider_search_cache_keeps_recent_queries() {
+        let mut app = test_app();
+
+        for idx in 0..6 {
+            let query = format!("pkg-{idx}");
+            let catalog = SearchCatalog {
+                query: query.clone(),
+                matches: vec![crate::backend::SearchMatch {
+                    package: make_pkg(&query, PackageSource::Apt, PackageStatus::NotInstalled),
+                    alternative_sources: Vec::new(),
+                }],
+                providers: vec![SearchProviderSummary {
+                    source: PackageSource::Apt,
+                    result_count: 1,
+                    surfaced_count: 1,
+                    error: None,
+                }],
+            };
+            app.store_search_catalog(&query, &catalog);
+        }
+
+        assert!(app.cached_search_catalog("pkg-5").is_some());
+        assert!(app.cached_search_catalog("pkg-1").is_some());
+        assert!(app.cached_search_catalog("pkg-0").is_none());
+        assert_eq!(app.search_cache.len(), SEARCH_CACHE_LIMIT);
     }
 
     #[tokio::test]
@@ -5451,7 +5865,7 @@ Remove   1 Package
         assert!(app
             .status
             .contains("Remediation bundle [network] preview 2 tasks"));
-        assert!(app.loading);
+        assert!(app.is_catalog_busy());
     }
 
     #[tokio::test]
@@ -6491,13 +6905,15 @@ Remove   1 Package
         app.favorite_packages.insert(favorite.id());
         app.packages = vec![favorite.clone()];
 
-        let mut config = Config::default();
-        config.tui_last_filter = Some("favorites".to_string());
-        config.tui_last_focus = Some("queue".to_string());
-        config.tui_last_search = "vim".to_string();
-        config.tui_last_cursor = 9;
-        config.tui_favorites_updates_only = true;
-        config.last_source_filter = Some("apt".to_string());
+        let config = Config {
+            tui_last_filter: Some("favorites".to_string()),
+            tui_last_focus: Some("queue".to_string()),
+            tui_last_search: "vim".to_string(),
+            tui_last_cursor: 9,
+            tui_favorites_updates_only: true,
+            last_source_filter: Some("apt".to_string()),
+            ..Config::default()
+        };
 
         app.apply_session_from_config(&config);
         assert_eq!(app.filter, Filter::Favorites);
@@ -6613,6 +7029,28 @@ Remove   1 Package
         assert!(!app.showing_changelog);
         let confirming = app.confirming.as_ref().expect("preflight expected");
         assert_eq!(confirming.action, TaskQueueAction::Update);
+        assert_eq!(confirming.packages.len(), 1);
+        assert_eq!(confirming.packages[0].name, "pkg");
+    }
+
+    #[tokio::test]
+    async fn changelog_overlay_remove_alias_d_opens_preflight() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::Installed,
+        )];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('c'))).await;
+        assert!(app.showing_changelog);
+
+        app.handle_key(key(KeyCode::Char('d'))).await;
+        assert!(!app.showing_changelog);
+        let confirming = app.confirming.as_ref().expect("preflight expected");
+        assert_eq!(confirming.action, TaskQueueAction::Remove);
         assert_eq!(confirming.packages.len(), 1);
         assert_eq!(confirming.packages[0].name, "pkg");
     }

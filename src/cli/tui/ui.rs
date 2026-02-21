@@ -1,14 +1,19 @@
 use super::app::{
-    action_label, App, ChangelogState, CommandId, PendingAction, PreflightCertainty,
-    PreflightRiskLevel, PreflightSummary, MIN_HEIGHT, MIN_WIDTH,
+    action_label, App, ChangelogState, PendingAction, PreflightCertainty, PreflightRiskLevel,
+    PreflightSummary, MIN_HEIGHT, MIN_WIDTH,
 };
+use super::format::{truncate_middle_to_width, truncate_to_width};
 use super::theme::*;
 use super::update_center;
+use crate::cli::tui::components::dashboard::draw_dashboard;
+use crate::cli::tui::components::details::{draw_compact_details_summary, draw_details_panel};
+use crate::cli::tui::components::header::draw_filter_bar;
+pub use crate::cli::tui::components::header::QueueHintAction;
 use crate::cli::tui::components::layout::sources_panel_width;
 pub use crate::cli::tui::components::layout::LayoutRegions;
 use crate::cli::tui::components::packages::draw_packages_panel;
 use crate::cli::tui::components::sources::draw_sources_panel;
-use crate::cli::tui::state::filters::{Filter, Focus};
+use crate::cli::tui::state::filters::{Filter, Focus, ViewMode};
 use crate::cli::tui::state::queue::{
     FailureCategory, QueueClinicActionability, QueueFailureFilter, QueueJourneyLane,
 };
@@ -19,11 +24,10 @@ use crate::models::{Package, PackageSource, PackageStatus};
 use chrono::Local;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, Gauge, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-        Wrap,
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
     },
     Frame,
 };
@@ -36,11 +40,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let show_legend = app.focus == Focus::Packages && area.height > 24;
-    let header_height = if show_legend { 2 } else { 1 };
     let queue_height = app.queue_bar_height();
     let constraints = vec![
-        Constraint::Length(header_height),
+        Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(queue_height),
         Constraint::Length(1),
@@ -50,16 +52,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints(constraints)
         .split(area);
 
-    if show_legend {
-        let header_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1)])
-            .split(chunks[0]);
-        draw_filter_bar(frame, app, header_chunks[0]);
-        draw_status_legend(frame, header_chunks[1]);
-    } else {
-        draw_filter_bar(frame, app, chunks[0]);
-    }
+    draw_filter_bar(frame, app, chunks[0]);
 
     draw_main_content(frame, app, chunks[1]);
 
@@ -76,9 +69,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.showing_changelog {
         draw_changelog_overlay(frame, app);
     } else if app.showing_help {
-        draw_help_overlay(frame);
+        draw_help_overlay(frame, app);
     } else if let Some(confirming) = &app.confirming {
         draw_preflight_overlay(frame, app, confirming);
+    } else if app.showing_import_preview {
+        draw_import_preview_overlay(frame, app, frame.area());
     }
 }
 
@@ -101,252 +96,6 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
         .alignment(ratatui::layout::Alignment::Center)
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, inner);
-}
-
-fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let mut left: Vec<Span> = vec![
-        Span::styled(
-            " ◆ ",
-            Style::default()
-                .fg(palette::CYAN)
-                .bg(palette::HEADER_BG)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "LinGet ",
-            Style::default()
-                .fg(palette::WHITE)
-                .bg(palette::HEADER_BG)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" ", header_bar()),
-    ];
-    let installed_label = if app.compact { "Inst" } else { "Installed" };
-    let updates_label = if app.compact { "Upd" } else { "Updates" };
-    let favorites_label = if app.compact { "Fav" } else { "Favorites" };
-
-    left.extend(render_filter_tab(
-        "1",
-        "All",
-        app.filter_counts[0],
-        app.filter == Filter::All,
-        app.searching,
-    ));
-    left.push(Span::raw(" "));
-    left.extend(render_filter_tab(
-        "2",
-        installed_label,
-        app.filter_counts[1],
-        app.filter == Filter::Installed,
-        app.searching,
-    ));
-    left.push(Span::raw(" "));
-    left.extend(render_filter_tab(
-        "3",
-        updates_label,
-        app.filter_counts[2],
-        app.filter == Filter::Updates,
-        app.searching,
-    ));
-    left.push(Span::raw(" "));
-    left.extend(render_filter_tab(
-        "4",
-        favorites_label,
-        app.filter_counts[3],
-        app.filter == Filter::Favorites,
-        app.searching,
-    ));
-    if !app.compact {
-        left.push(Span::raw(" "));
-        left.extend(render_filter_tab(
-            "5",
-            "Security",
-            app.filter_counts[4],
-            app.filter == Filter::SecurityUpdates,
-            app.searching,
-        ));
-    }
-
-    let mut right = Vec::new();
-
-    if app.loading {
-        right.push(Span::styled(format!("{} ", app.spinner_frame()), loading()));
-    }
-
-    if app.searching {
-        right.push(Span::styled(
-            format!(
-                "/ {}█ ",
-                render_search_input(&app.search, area.width as usize / 3)
-            ),
-            accent(),
-        ));
-    } else if !app.search.is_empty() {
-        right.push(Span::styled(format!("/ \"{}\" ", app.search), muted()));
-    } else if app.filter == Filter::Favorites && app.favorites_updates_only {
-        right.push(Span::styled("Favorites: updates only [v] ", muted()));
-    }
-
-    if !app.status.is_empty() && (!app.searching || area.width > 80) {
-        right.push(Span::styled(app.status.clone(), italic_status()));
-    }
-
-    let line = compose_left_right(left, right, area.width as usize);
-    let paragraph = Paragraph::new(line).style(header_bar());
-    frame.render_widget(paragraph, area);
-}
-
-fn draw_status_legend(frame: &mut Frame, area: Rect) {
-    let legend = Line::from(vec![
-        Span::styled("Status ", footer_label()),
-        Span::styled(" ✓ ", badge_installed()),
-        Span::styled("installed  ", muted()),
-        Span::styled(" ↑ ", badge_update()),
-        Span::styled("updates  ", muted()),
-        Span::styled(" ⟳ ", badge_progress()),
-        Span::styled("in-progress  ", muted()),
-        Span::styled(" ○ ", badge_not_installed()),
-        Span::styled("available", muted()),
-    ]);
-    frame.render_widget(Paragraph::new(legend).style(header_bar()), area);
-}
-
-fn render_filter_tab(
-    key: &str,
-    label: &str,
-    count: usize,
-    active: bool,
-    searching: bool,
-) -> Vec<Span<'static>> {
-    if active && !searching {
-        vec![
-            Span::styled(" ", tab_active()),
-            Span::styled(
-                key.to_string(),
-                Style::default()
-                    .fg(palette::YELLOW)
-                    .bg(palette::TAB_ACTIVE_BG)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" ", tab_active()),
-            Span::styled(label.to_string(), tab_active()),
-            Span::styled(" ", tab_active()),
-            Span::styled(count.to_string(), tab_active()),
-            Span::styled(" ", tab_active()),
-        ]
-    } else {
-        vec![
-            Span::styled(" ", header_bar()),
-            Span::styled(
-                key.to_string(),
-                Style::default()
-                    .fg(palette::DARK_GRAY)
-                    .bg(palette::HEADER_BG),
-            ),
-            Span::styled(" ", header_bar()),
-            Span::styled(
-                label.to_string(),
-                Style::default()
-                    .fg(palette::DARK_GRAY)
-                    .bg(palette::HEADER_BG),
-            ),
-            Span::styled(" ", header_bar()),
-            Span::styled(
-                count.to_string(),
-                Style::default()
-                    .fg(palette::DARK_GRAY)
-                    .bg(palette::HEADER_BG),
-            ),
-            Span::styled(" ", header_bar()),
-        ]
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueueHintAction {
-    Retry,
-    RetrySafe,
-    Remediate,
-}
-
-pub fn header_filter_hit_test(
-    app: &App,
-    header_filter_row: Rect,
-    col: u16,
-    row: u16,
-) -> Option<Filter> {
-    if header_filter_row.width == 0 || header_filter_row.height == 0 || row != header_filter_row.y {
-        return None;
-    }
-    if col < header_filter_row.x || col >= header_filter_row.x + header_filter_row.width {
-        return None;
-    }
-
-    let installed_label = if app.compact { "Inst" } else { "Installed" };
-    let updates_label = if app.compact { "Upd" } else { "Updates" };
-    let favorites_label = if app.compact { "Fav" } else { "Favorites" };
-
-    let tabs = [
-        (
-            "1",
-            "All",
-            app.filter_counts[0],
-            app.filter == Filter::All,
-            Filter::All,
-        ),
-        (
-            "2",
-            installed_label,
-            app.filter_counts[1],
-            app.filter == Filter::Installed,
-            Filter::Installed,
-        ),
-        (
-            "3",
-            updates_label,
-            app.filter_counts[2],
-            app.filter == Filter::Updates,
-            Filter::Updates,
-        ),
-        (
-            "4",
-            favorites_label,
-            app.filter_counts[3],
-            app.filter == Filter::Favorites,
-            Filter::Favorites,
-        ),
-        (
-            "5",
-            "Security",
-            app.filter_counts[4],
-            app.filter == Filter::SecurityUpdates,
-            Filter::SecurityUpdates,
-        ),
-    ];
-
-    let mut cursor = header_filter_row.x
-        + UnicodeWidthStr::width(" ◆ ") as u16
-        + UnicodeWidthStr::width("LinGet ") as u16
-        + 1;
-
-    for (index, (key, label, count, active, filter)) in tabs.iter().enumerate() {
-        let width = spans_width(&render_filter_tab(
-            key,
-            label,
-            *count,
-            *active,
-            app.searching,
-        )) as u16;
-        if col >= cursor && col < cursor.saturating_add(width) {
-            return Some(*filter);
-        }
-        cursor = cursor.saturating_add(width);
-        if index < tabs.len() - 1 {
-            cursor = cursor.saturating_add(1);
-        }
-    }
-
-    None
 }
 
 pub fn preflight_modal_hit_test(modal_rect: Rect, col: u16, row: u16) -> Option<bool> {
@@ -392,13 +141,22 @@ pub fn preflight_modal_hit_test(modal_rect: Rect, col: u16, row: u16) -> Option<
     None
 }
 
+pub fn header_filter_hit_test(
+    app: &App,
+    header_filter_row: Rect,
+    col: u16,
+    row: u16,
+) -> Option<Filter> {
+    crate::cli::tui::components::header::header_filter_hit_test(app, header_filter_row, col, row)
+}
+
 pub fn queue_hint_hit_test(
     hint_rect: Rect,
     _has_log_actions: bool,
     col: u16,
     row: u16,
 ) -> Option<QueueHintAction> {
-    const REMEDIATE_HINT: &str = "M fix filtered";
+    const REMEDIATE_HINT: &str = "M apply filtered fixes";
     const RETRY_SAFE_HINT: &str = "A retry safe";
 
     if hint_rect.width == 0 || hint_rect.height == 0 || row != hint_rect.y {
@@ -410,18 +168,18 @@ pub fn queue_hint_hit_test(
 
     let rel_col = (col - hint_rect.x) as usize;
     let retry_start = 0usize;
-    let retry_width = UnicodeWidthStr::width("R retry");
+    let retry_width = UnicodeWidthStr::width("R retry selected");
     if rel_col >= retry_start && rel_col < retry_start + retry_width {
         return Some(QueueHintAction::Retry);
     }
 
-    let remediate_start = UnicodeWidthStr::width("R retry  ");
+    let remediate_start = UnicodeWidthStr::width("R retry selected  ");
     let remediate_width = UnicodeWidthStr::width(REMEDIATE_HINT);
     if rel_col >= remediate_start && rel_col < remediate_start + remediate_width {
         return Some(QueueHintAction::Remediate);
     }
 
-    let retry_safe_start = UnicodeWidthStr::width("R retry  M fix filtered  ");
+    let retry_safe_start = UnicodeWidthStr::width("R retry selected  M apply filtered fixes  ");
     let retry_safe_width = UnicodeWidthStr::width(RETRY_SAFE_HINT);
     if rel_col >= retry_safe_start && rel_col < retry_safe_start + retry_safe_width {
         return Some(QueueHintAction::RetrySafe);
@@ -429,7 +187,11 @@ pub fn queue_hint_hit_test(
 
     None
 }
-fn compose_left_right<'a>(mut left: Vec<Span<'a>>, right: Vec<Span<'a>>, width: usize) -> Line<'a> {
+pub fn compose_left_right<'a>(
+    mut left: Vec<Span<'a>>,
+    right: Vec<Span<'a>>,
+    width: usize,
+) -> Line<'a> {
     let left_width = spans_width(&left);
     let right_width = spans_width(&right);
 
@@ -521,47 +283,37 @@ fn push_decision_field(
     }
 }
 
-fn spans_width(spans: &[Span<'_>]) -> usize {
+pub fn spans_width(spans: &[Span<'_>]) -> usize {
     spans
         .iter()
         .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
         .sum()
 }
 
-fn render_search_input(query: &str, max_width: usize) -> String {
-    if UnicodeWidthStr::width(query) <= max_width {
-        return query.to_string();
-    }
-    if max_width <= 3 {
-        return "...".to_string();
-    }
-
-    let mut out = String::new();
-    let mut width = 0usize;
-    let target = max_width - 3;
-
-    for ch in query.chars().rev() {
-        let char_width = UnicodeWidthStr::width(ch.to_string().as_str());
-        if width + char_width > target {
-            break;
-        }
-        out.insert(0, ch);
-        width += char_width;
-    }
-
-    format!("...{}", out)
-}
-
 fn draw_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
-    if app.compact {
-        draw_compact_content(frame, app, area);
-    } else {
-        draw_full_content(frame, app, area);
+    match app.view_mode {
+        ViewMode::Dashboard => {
+            draw_dashboard(frame, app, area);
+        }
+        ViewMode::Queue => {
+            draw_expanded_queue(frame, app, area);
+        }
+        ViewMode::Browse => {
+            if app.compact {
+                draw_compact_content(frame, app, area);
+            } else {
+                draw_full_content(frame, app, area);
+            }
+        }
     }
 }
 
 fn draw_full_content(frame: &mut Frame, app: &mut App, area: Rect) {
-    let source_width = sources_panel_width(app, area.width);
+    let source_width = if app.show_sidebar {
+        sources_panel_width(app, area.width)
+    } else {
+        0
+    };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(source_width), Constraint::Min(1)])
@@ -628,7 +380,7 @@ pub fn panel_block(title: String, focused: bool, _compact: bool) -> Block<'stati
         .title_style(if focused { accent() } else { text() })
 }
 
-pub fn source_count_label(filter: Filter, counts: [usize; 5]) -> String {
+pub fn source_count_label(filter: Filter, counts: [usize; 6]) -> String {
     match filter {
         Filter::All => {
             if counts[2] > 0 {
@@ -641,182 +393,8 @@ pub fn source_count_label(filter: Filter, counts: [usize; 5]) -> String {
         Filter::Updates => format!(" {}", counts[2]),
         Filter::Favorites => format!(" {}", counts[3]),
         Filter::SecurityUpdates => format!(" {}", counts[4]),
+        Filter::Duplicates => format!(" {}", counts[5]),
     }
-}
-
-fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let block = panel_block(" Details ".to_string(), false, app.compact);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if app.loading && app.current_package().is_none() {
-        let paragraph = Paragraph::new("Loading details...")
-            .style(loading())
-            .alignment(ratatui::layout::Alignment::Center);
-
-        let vertical_padding = inner.height.saturating_sub(1) / 2;
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(vertical_padding), Constraint::Min(1)])
-            .split(inner);
-
-        frame.render_widget(paragraph, chunks[1]);
-        return;
-    }
-
-    let (now, next, attention, done) = app.queue_lane_counts();
-    let retryable = app.retryable_failed_task_count();
-    let detail_width = inner.width as usize;
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(6), // Metadata
-            Constraint::Min(1),    // Description
-            Constraint::Length(5), // NBA / Queue
-        ])
-        .split(inner);
-
-    // 1. Metadata Section
-    if let Some(package) = app.current_package() {
-        let mut meta_lines = vec![
-            Line::from(vec![
-                Span::styled("Name: ", dim()),
-                Span::styled(package.name.clone(), accent()),
-            ]),
-            Line::from(vec![
-                Span::styled("Version: ", dim()),
-                Span::styled(format_package_version(package), text()),
-            ]),
-            Line::from(vec![
-                Span::styled("Source: ", dim()),
-                Span::styled(package.source.to_string(), source_color(package.source)),
-            ]),
-            Line::from(vec![
-                Span::styled("Changelog: ", dim()),
-                if App::changelog_supported_for_source(package.source) {
-                    Span::styled("[c] view release notes", key_hint())
-                } else {
-                    Span::styled("not available for this source yet", dim())
-                },
-            ]),
-        ];
-
-        if package.status == PackageStatus::UpdateAvailable
-            || package.status == PackageStatus::Updating
-        {
-            if let Some(priority) = update_priority_label(package) {
-                meta_lines.push(Line::from(vec![
-                    Span::styled("Priority: ", dim()),
-                    Span::styled(priority, warning()),
-                ]));
-            }
-        }
-
-        if matches!(
-            package.status,
-            PackageStatus::Installing | PackageStatus::Removing | PackageStatus::Updating
-        ) {
-            meta_lines.push(Line::from(vec![
-                Span::styled("Status: ", dim()),
-                Span::styled("Operation in progress...", loading()),
-            ]));
-        }
-        frame.render_widget(Paragraph::new(meta_lines), chunks[0]);
-
-        // 2. Description Section
-        let mut desc_lines = vec![Line::from(Span::styled("Description:", dim()))];
-        for line in wrap_text(&package.description, detail_width) {
-            desc_lines.push(Line::from(Span::styled(line, muted())));
-        }
-        frame.render_widget(
-            Paragraph::new(desc_lines).wrap(Wrap { trim: true }),
-            chunks[1],
-        );
-    } else {
-        let paragraph = Paragraph::new("Select a package for details")
-            .style(dim())
-            .alignment(ratatui::layout::Alignment::Center);
-
-        let vertical_padding = chunks[0]
-            .height
-            .saturating_add(chunks[1].height)
-            .saturating_sub(1)
-            / 2;
-        let empty_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(vertical_padding), Constraint::Min(1)])
-            .split(inner.union(chunks[1])); // Use the upper area for centering
-
-        frame.render_widget(paragraph, empty_chunks[1]);
-    }
-
-    // 3. NBA / Queue Section
-    let nba_text = format!(" {} ", app.recommended_action_label());
-    let mut nba_lines = vec![
-        Line::from(vec![
-            Span::styled("Next Best Action: ", dim()),
-            Span::styled(nba_text, primary_action_button()),
-            Span::styled("  [w] to execute", key_hint()),
-        ]),
-        Line::from(Span::styled(
-            truncate_to_width(&app.recommended_action_detail(), detail_width),
-            muted(),
-        )),
-        Line::from(vec![
-            Span::styled("Queue: ", dim()),
-            Span::styled(
-                format!(
-                    "{} {} · {} {} · {} {} · {} {}",
-                    QueueJourneyLane::Now.label(),
-                    now,
-                    QueueJourneyLane::Next.label(),
-                    next,
-                    QueueJourneyLane::NeedsAttention.label(),
-                    attention,
-                    QueueJourneyLane::Done.label(),
-                    done
-                ),
-                muted(),
-            ),
-        ]),
-    ];
-    if attention > 0 {
-        nba_lines.push(Line::from(vec![
-            Span::styled("Failed tasks: ", dim()),
-            Span::styled("R retry  M fix filtered", footer_label()),
-            if retryable > 0 {
-                Span::styled(format!("  A retry safe ({})", retryable), warning())
-            } else {
-                Span::styled("", footer_label())
-            },
-        ]));
-    }
-    frame.render_widget(Paragraph::new(nba_lines), chunks[2]);
-}
-
-fn draw_compact_details_summary(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(package) = app.current_package() else {
-        frame.render_widget(Paragraph::new("No package selected").style(dim()), area);
-        return;
-    };
-
-    let first = format!(
-        "{} {} ({})",
-        package.name,
-        format_package_version(package),
-        package.source
-    );
-    let second = truncate_to_width(
-        &format!("Next [w]: {}", app.recommended_action_label()),
-        area.width as usize,
-    );
-
-    let lines = vec![
-        Line::from(Span::styled(first, text())),
-        Line::from(Span::styled(second, muted())),
-    ];
-    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn draw_source_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -932,14 +510,7 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
             0.0
         };
 
-        // Split area into two rows: status text on top, gauge on bottom
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1)])
-            .split(area);
-
-        // Row 1: concise status text
-        let status_text = build_running_queue_label(RunningQueueLabelArgs {
+        let mut status_text = build_running_queue_label(RunningQueueLabelArgs {
             spinner: app.spinner_frame(),
             phase_label: phase.label(),
             active_label: &active_label,
@@ -949,26 +520,24 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
             queued,
             failed,
         });
-        frame.render_widget(
-            Paragraph::new(truncate_to_width(&status_text, rows[0].width as usize)).style(text()),
-            rows[0],
-        );
-
-        // Row 2: progress gauge with ETA/performance in the label
-        let gauge_label = performance_hint.or(task_eta_hint).unwrap_or_default();
-        let gauge_style = if failed > 0 {
-            gauge_failed()
-        } else {
-            gauge_bar()
-        };
-        let gauge = Gauge::default()
-            .gauge_style(gauge_style)
-            .label(Span::styled(
-                truncate_to_width(&gauge_label, rows[1].width.saturating_sub(1) as usize),
-                text(),
-            ))
-            .ratio(ratio);
-        frame.render_widget(gauge, rows[1]);
+        if let Some(gauge_hint) = performance_hint.or(task_eta_hint) {
+            if !gauge_hint.is_empty() {
+                status_text.push_str(" · ");
+                status_text.push_str(&gauge_hint);
+            }
+        }
+        let progress_bar = inline_progress_bar(ratio, queue_progress_bar_width(area.width));
+        let percent = format!("{:>3}%", (ratio * 100.0).round() as usize);
+        let reserved_width = progress_bar.len() + percent.len() + 2;
+        let summary_width = area.width.saturating_sub(reserved_width as u16) as usize;
+        let line = Line::from(vec![
+            Span::styled(progress_bar, if failed > 0 { warning() } else { accent() }),
+            Span::raw(" "),
+            Span::styled(percent, dim()),
+            Span::raw(" "),
+            Span::styled(truncate_to_width(&status_text, summary_width), muted()),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
     } else {
         let performance_hint = queue_performance_hint(
             &app.tasks,
@@ -986,12 +555,34 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
         );
         let style = match state {
             QueueBarState::Queued => muted(),
-            QueueBarState::Failed => error(),
+            QueueBarState::Failed => warning(),
             QueueBarState::Complete => success(),
         };
         let line = truncate_to_width(&message, area.width as usize);
         frame.render_widget(Paragraph::new(line).style(style), area);
     }
+}
+
+fn queue_progress_bar_width(area_width: u16) -> usize {
+    if area_width > 140 {
+        12
+    } else if area_width > 100 {
+        10
+    } else if area_width > 70 {
+        8
+    } else {
+        6
+    }
+}
+
+fn inline_progress_bar(ratio: f64, width: usize) -> String {
+    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    format!(
+        "[{}{}]",
+        "#".repeat(filled),
+        "-".repeat(width.saturating_sub(filled))
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1510,30 +1101,32 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     // Contextual footer hints based on focus
     match app.focus {
         Focus::Sources => {
-            push_hint(&mut spans, "↑↓", "nav");
-            push_hint(&mut spans, "Tab", "focus");
+            push_hint(&mut spans, "↑↓", "move");
+            push_hint(&mut spans, "Tab", "switch panel");
             push_hint(&mut spans, "/", "search");
+            push_hint(&mut spans, "?", "help");
         }
         Focus::Packages => {
-            push_hint(&mut spans, "↑↓", "nav");
-            push_hint(&mut spans, "Space", "sel");
-            push_hint(&mut spans, "w", "next");
-            if app.command_enabled(CommandId::ViewChangelog) {
-                push_hint(&mut spans, "c", "changelog");
-            }
+            push_hint(&mut spans, "↑↓", "move");
+            push_hint(&mut spans, "Enter", "action");
+            push_hint(&mut spans, "Space", "select");
+            push_hint(&mut spans, "w", "recommended");
+            push_hint(&mut spans, "/", "search");
+            push_hint(&mut spans, "?", "help");
         }
         Focus::Queue => {
-            push_hint(&mut spans, "↑↓", "nav");
-            push_hint(&mut spans, "l", "close");
+            push_hint(&mut spans, "↑↓", "move");
+            push_hint(&mut spans, "l", "close queue");
             if app.queue_expanded {
-                push_hint(&mut spans, "m", "fix");
-                push_hint(&mut spans, "A", "retry-safe");
+                push_hint(&mut spans, "R", "retry selected");
+                push_hint(&mut spans, "M", "apply fixes");
             }
+            push_hint(&mut spans, "?", "help");
         }
     }
 
     // Always show palette and quit
-    push_hint(&mut spans, ":", "cmd");
+    push_hint(&mut spans, ":", "commands");
     push_hint(&mut spans, "q", "quit");
 
     let selection = if app.hidden_selected_count() > 0 {
@@ -1883,9 +1476,9 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("R", key_hint()),
-                Span::styled(" retry  ", footer_label()),
+                Span::styled(" retry selected  ", footer_label()),
                 Span::styled("M", remediate_key_style),
-                Span::styled(" fix filtered  ", remediate_label_style),
+                Span::styled(" apply filtered fixes  ", remediate_label_style),
                 Span::styled("A", safe_retry_key_style),
                 Span::styled(" retry safe  ", safe_retry_label_style),
                 Span::styled("1/2/3/4/0", key_hint()),
@@ -1897,9 +1490,9 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("R", key_hint()),
-                Span::styled(" retry  ", footer_label()),
+                Span::styled(" retry selected  ", footer_label()),
                 Span::styled("M", remediate_key_style),
-                Span::styled(" fix filtered  ", remediate_label_style),
+                Span::styled(" apply filtered fixes  ", remediate_label_style),
                 Span::styled("A", safe_retry_key_style),
                 Span::styled(" retry safe  ", safe_retry_label_style),
                 Span::styled("1/2/3/4/0", key_hint()),
@@ -2124,7 +1717,7 @@ fn queue_recommended_action_line(
     let (copy, style) = if actionability.safe_retry_count > 0 {
         (
             format!(
-                "Press A to retry {} safe failure{} now.",
+                "Press A to retry {} safe failure{} now — fastest path forward.",
                 actionability.safe_retry_count,
                 if actionability.safe_retry_count == 1 {
                     ""
@@ -2138,7 +1731,7 @@ fn queue_recommended_action_line(
         let total = actionability.remediation_actionable_count();
         (
             format!(
-                "Press M to fix {} filtered failure{} now.",
+                "Press M to apply fixes for {} filtered failure{} now.",
                 total,
                 if total == 1 { "" } else { "s" }
             ),
@@ -2924,8 +2517,8 @@ fn draw_changelog_overlay(frame: &mut Frame, app: &App) {
     );
 }
 
-fn draw_help_overlay(frame: &mut Frame) {
-    let area = centered_rect(frame.area(), 50, 80, 40, 18);
+fn draw_help_overlay(frame: &mut Frame, app: &App) {
+    let area = centered_rect(frame.area(), 60, 88, 64, 22);
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -2935,36 +2528,148 @@ fn draw_help_overlay(frame: &mut Frame) {
         .title(" Help ")
         .title_style(accent());
 
-    let lines = vec![
-        Line::from(Span::styled("Navigation", section_header())),
-        Line::from("  ↑↓/jk move   g/G top/bottom   ^d/^u half-page"),
-        Line::from("  Tab switch panel"),
-        Line::from(""),
-        Line::from(Span::styled("Filters", section_header())),
-        Line::from("  1 All   2 Installed   3 Updates   4 Favorites"),
-        Line::from("  v favorites updates-only"),
-        Line::from(""),
-        Line::from(Span::styled("Actions", section_header())),
-        Line::from("  Space select   f favorite   F bulk favorite"),
-        Line::from("  a select all   i install   x remove   u update   w next"),
-        Line::from("  c changelog (apt/dnf/pip/npm/cargo/conda/mamba)"),
-        Line::from("  Esc clear/back"),
-        Line::from(""),
-        Line::from(Span::styled("Global", section_header())),
-        Line::from("  : or Ctrl+P command palette"),
-        Line::from("  / search   r refresh   l queue log"),
-        Line::from("  ? help     q quit"),
-        Line::from("  Changelog: u update  i install  x remove  v mode"),
-        Line::from(""),
-        Line::from(Span::styled("Queue (expanded)", section_header())),
-        Line::from("  R retry selected failure   M fix filtered failures"),
-        Line::from("  A retry safe failures"),
-        Line::from("  1 permissions   2 network   3 conflict   4 other   0 all"),
-        Line::from(""),
-        Line::from("  ? or Esc to close"),
+    let focus_label = match app.focus {
+        Focus::Sources => "Sources",
+        Focus::Packages => "Packages",
+        Focus::Queue => "Queue",
+    };
+    let mut lines = vec![
+        Line::from(Span::styled("Context", section_header())),
+        Line::from(format!("  Focus: {}", focus_label)),
+        Line::from(format!("  Recommended: {}", app.recommended_action_label())),
+        Line::from(format!("  {}", app.recommended_action_detail())),
     ];
 
+    if app.queue_expanded {
+        lines.push(Line::from(format!(
+            "  Queue filter: {}",
+            app.queue_failure_filter_label()
+        )));
+    }
+
+    if app.searching || !app.search.is_empty() {
+        let scope = if app.search_results.is_some() {
+            app.provider_search_scope_label()
+                .unwrap_or_else(|| "provider results".to_string())
+        } else {
+            "local package list".to_string()
+        };
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Search", section_header())));
+        lines.push(Line::from(format!("  Current query: {}", app.search)));
+        lines.push(Line::from(format!("  Typing filters the {}", scope)));
+        if let Some(summary) = app.provider_search_summary() {
+            lines.push(Line::from(format!("  Provider mix: {}", summary)));
+        }
+        lines.push(Line::from(
+            "  Enter runs provider search   Esc clears search",
+        ));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Navigation", section_header())));
+    lines.push(Line::from(
+        "  ↑↓/jk move   g/G top/bottom   ^d/^u half-page",
+    ));
+    lines.push(Line::from("  Tab switch panel   Ctrl+b toggle sidebar"));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Filters", section_header())));
+    lines.push(Line::from(
+        "  1 All   2 Installed   3 Updates   4 Favorites",
+    ));
+    lines.push(Line::from(
+        "  5 Security   6 Duplicates   v favorites updates-only",
+    ));
+    lines.push(Line::from(""));
+
+    if app.queue_expanded {
+        lines.push(Line::from(Span::styled("Queue", section_header())));
+        lines.push(Line::from("  R retry selected failure"));
+        lines.push(Line::from(
+            "  M apply filtered fixes   A retry safe failures",
+        ));
+        lines.push(Line::from(
+            "  1 permissions   2 network   3 conflict   4 other   0 all",
+        ));
+        lines.push(Line::from("  l close queue"));
+    } else {
+        lines.push(Line::from(Span::styled("Packages", section_header())));
+        lines.push(Line::from("  Space select   f favorite   F bulk favorite"));
+        lines.push(Line::from(
+            "  a select all   Enter default action   w recommended action",
+        ));
+        lines.push(Line::from("  i install   d/x remove   u update"));
+        lines.push(Line::from(
+            "  c changelog (apt/dnf/pip/npm/cargo/conda/mamba sources)",
+        ));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Global", section_header())));
+    lines.push(Line::from(
+        "  : or Ctrl+P command palette   / search   r refresh",
+    ));
+    lines.push(Line::from("  ? help   q quit"));
+    lines.push(Line::from(
+        "  Changelog: u update   i install   d/x remove   v mode   c/Esc close",
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from("  ? or Esc to close"));
+
     frame.render_widget(Paragraph::new(lines).block(block).style(text()), area);
+}
+
+fn draw_import_preview_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let n = app.import_preview.len();
+    let height = (n as u16 + 4).min(20);
+    let popup_area = centered_rect(area, 80, 90, 60, height);
+    frame.render_widget(Clear, popup_area);
+
+    let title = format!(" Import Preview — {} packages to install ", n);
+    let block = panel_block(title, true, app.compact);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    if inner.height == 0 {
+        return;
+    }
+
+    let list_height = inner.height.saturating_sub(1) as usize;
+    let mut lines: Vec<Line> = app
+        .import_preview
+        .iter()
+        .take(list_height)
+        .map(|ep| {
+            Line::from(vec![
+                Span::raw("  📦 "),
+                Span::styled(ep.name.clone(), accent()),
+                Span::styled(format!("  ({})  ", ep.source), muted()),
+                Span::styled(ep.version.clone(), dim()),
+            ])
+        })
+        .collect();
+
+    while lines.len() < list_height {
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("  Enter", accent()),
+        Span::styled(" — install all    ", muted()),
+        Span::styled("Esc", accent()),
+        Span::styled(" — cancel ", muted()),
+    ]));
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let list_lines: Vec<Line> = lines[..lines.len().saturating_sub(1)].to_vec();
+    let footer_line = lines.last().cloned().unwrap_or_default();
+
+    frame.render_widget(Paragraph::new(list_lines).style(text()), sections[0]);
+    frame.render_widget(Paragraph::new(vec![footer_line]), sections[1]);
 }
 
 fn centered_rect(
@@ -2990,37 +2695,12 @@ fn centered_rect(
     }
 }
 
-fn update_priority_label(package: &Package) -> Option<&'static str> {
+pub fn update_priority_label(package: &Package) -> Option<&'static str> {
     let candidate = update_center::classify_updates(std::slice::from_ref(package))
         .into_iter()
         .next()?;
     let _category = candidate.category;
     Some(candidate.lane.label())
-}
-
-pub fn format_package_version(package: &Package) -> String {
-    match package.status {
-        PackageStatus::UpdateAvailable | PackageStatus::Updating => {
-            let available = package.available_version.as_deref().unwrap_or("?");
-            format!("{}→{}", package.version, available)
-        }
-        PackageStatus::NotInstalled => package
-            .available_version
-            .clone()
-            .unwrap_or_else(|| package.version.clone()),
-        _ => package.version.clone(),
-    }
-}
-
-pub fn package_status_short(status: PackageStatus) -> (&'static str, Style) {
-    match status {
-        PackageStatus::Installed => (" ✓ ", badge_installed()),
-        PackageStatus::UpdateAvailable => (" ↑ ", badge_update()),
-        PackageStatus::NotInstalled => (" ○ ", badge_not_installed()),
-        PackageStatus::Installing => (" ⟳ ", badge_progress()),
-        PackageStatus::Removing => (" ⟳ ", badge_progress()),
-        PackageStatus::Updating => (" ⟳ ", badge_progress()),
-    }
 }
 
 pub fn window_start(total: usize, visible: usize, selected: usize) -> usize {
@@ -3049,72 +2729,6 @@ fn task_log_window(
     let end = total_lines.saturating_sub(scroll);
     let start = end.saturating_sub(visible_lines);
     (start, end, scroll)
-}
-
-pub fn truncate_to_width(text_value: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    if UnicodeWidthStr::width(text_value) <= max_width {
-        return text_value.to_string();
-    }
-    if max_width == 1 {
-        return "…".to_string();
-    }
-
-    let mut out = String::new();
-    let mut width = 0usize;
-    let target = max_width.saturating_sub(1);
-    for ch in text_value.chars() {
-        let char_width = UnicodeWidthStr::width(ch.to_string().as_str());
-        if width + char_width > target {
-            break;
-        }
-        out.push(ch);
-        width += char_width;
-    }
-    out.push('…');
-    out
-}
-
-pub fn truncate_middle_to_width(text_value: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    if UnicodeWidthStr::width(text_value) <= max_width {
-        return text_value.to_string();
-    }
-    if max_width == 1 {
-        return "…".to_string();
-    }
-
-    let target = max_width.saturating_sub(1);
-    let left_target = target.div_ceil(2);
-    let right_target = target / 2;
-
-    let mut left = String::new();
-    let mut left_width = 0usize;
-    for ch in text_value.chars() {
-        let char_width = UnicodeWidthStr::width(ch.to_string().as_str());
-        if left_width + char_width > left_target {
-            break;
-        }
-        left.push(ch);
-        left_width += char_width;
-    }
-
-    let mut right = String::new();
-    let mut right_width = 0usize;
-    for ch in text_value.chars().rev() {
-        let char_width = UnicodeWidthStr::width(ch.to_string().as_str());
-        if right_width + char_width > right_target {
-            break;
-        }
-        right.insert(0, ch);
-        right_width += char_width;
-    }
-
-    format!("{}…{}", left, right)
 }
 
 fn push_wrapped_styled_line(
@@ -3632,7 +3246,7 @@ fn format_changelog_content(content: &str, max_width: usize) -> Vec<Line<'static
     lines
 }
 
-fn wrap_text(text_value: &str, max_width: usize) -> Vec<String> {
+pub fn wrap_text(text_value: &str, max_width: usize) -> Vec<String> {
     if text_value.trim().is_empty() {
         return vec!["No description available".to_string()];
     }
@@ -3791,22 +3405,29 @@ mod tests {
     #[test]
     fn source_count_label_snapshots() {
         assert_eq!(
-            source_count_label(Filter::All, [42, 31, 3, 9, 1]),
+            source_count_label(Filter::All, [42, 31, 3, 9, 1, 4]),
             " 42 (+3)"
         );
-        assert_eq!(source_count_label(Filter::All, [42, 31, 0, 9, 0]), " 42");
+        assert_eq!(source_count_label(Filter::All, [42, 31, 0, 9, 0, 0]), " 42");
         assert_eq!(
-            source_count_label(Filter::Installed, [42, 31, 3, 9, 1]),
+            source_count_label(Filter::Installed, [42, 31, 3, 9, 1, 4]),
             " 31"
         );
-        assert_eq!(source_count_label(Filter::Updates, [42, 31, 3, 9, 1]), " 3");
         assert_eq!(
-            source_count_label(Filter::Favorites, [42, 31, 3, 9, 1]),
+            source_count_label(Filter::Updates, [42, 31, 3, 9, 1, 4]),
+            " 3"
+        );
+        assert_eq!(
+            source_count_label(Filter::Favorites, [42, 31, 3, 9, 1, 4]),
             " 9"
         );
         assert_eq!(
-            source_count_label(Filter::SecurityUpdates, [42, 31, 3, 9, 1]),
+            source_count_label(Filter::SecurityUpdates, [42, 31, 3, 9, 1, 4]),
             " 1"
+        );
+        assert_eq!(
+            source_count_label(Filter::Duplicates, [42, 31, 3, 9, 1, 4]),
+            " 4"
         );
     }
 
@@ -3818,7 +3439,7 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(sources_panel_width(&app, 120), 18);
+        assert_eq!(sources_panel_width(&app, 120), 16);
     }
 
     #[test]
@@ -3832,10 +3453,10 @@ mod tests {
         app.filter = Filter::All;
         app.available_sources = vec![PackageSource::Flatpak];
         app.source_counts
-            .insert(PackageSource::Flatpak, [243, 231, 12, 0, 0]);
-        app.filter_counts = [243, 231, 12, 0, 0];
+            .insert(PackageSource::Flatpak, [243, 231, 12, 0, 0, 0]);
+        app.filter_counts = [243, 231, 12, 0, 0, 0];
 
-        assert!(sources_panel_width(&app, 120) > 18);
+        assert!(sources_panel_width(&app, 120) > 16);
     }
 
     #[test]
@@ -3849,8 +3470,8 @@ mod tests {
         app.filter = Filter::All;
         app.available_sources = vec![PackageSource::Flatpak];
         app.source_counts
-            .insert(PackageSource::Flatpak, [243, 231, 12, 0, 0]);
-        app.filter_counts = [243, 231, 12, 0, 0];
+            .insert(PackageSource::Flatpak, [243, 231, 12, 0, 0, 0]);
+        app.filter_counts = [243, 231, 12, 0, 0, 0];
 
         assert_eq!(sources_panel_width(&app, 20), 19);
     }
@@ -4188,7 +3809,7 @@ mod tests {
             .insert(recovered.id.clone(), FailureCategory::Network);
         app.task_recovery_states.insert(
             recovered.id.clone(),
-            super::super::app::RecoveryState {
+            crate::cli::tui::state::queue::RecoveryState {
                 attempts: 1,
                 last_outcome: Some(TaskQueueStatus::Completed),
             },
@@ -4252,8 +3873,8 @@ mod tests {
             .insert(failed.id.clone(), FailureCategory::Network);
 
         let line = render_task_line(&app, &failed, false, 160).to_string();
-        assert!(line.contains("[BLOCKED:NET]"));
-        assert!(line.contains("[E_NETWORK]"));
+        assert!(line.contains("[network]"));
+        assert!(line.contains("temporary failure resolving mirror"));
     }
 
     #[test]

@@ -411,3 +411,76 @@ impl std::hash::Hash for Package {
         self.source.hash(state);
     }
 }
+
+/// Normalize a package name for cross-source duplicate detection.
+pub fn normalize_name_for_dedup(name: &str, source: PackageSource) -> String {
+    let name_lower = name.to_lowercase();
+    match source {
+        PackageSource::Flatpak => {
+            let parts: Vec<&str> = name_lower.split('.').collect();
+            if parts.len() >= 3 {
+                parts.last().copied().unwrap_or(&name_lower).to_string()
+            } else {
+                name_lower
+            }
+        }
+        PackageSource::Snap => name_lower
+            .trim_end_matches("-snap")
+            .trim_end_matches("snap")
+            .to_string(),
+        _ => name_lower
+            .replace("-bin", "")
+            .replace("-git", "")
+            .replace("-nightly", ""),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DuplicateGroup {
+    pub normalized_name: String,
+    /// All copies sorted: preferred source first.
+    pub packages: Vec<Package>,
+    pub suggested_keep: Option<PackageSource>,
+}
+
+/// Detect packages that exist under more than one source with the same normalized name.
+pub fn detect_duplicates(packages: &[Package]) -> Vec<DuplicateGroup> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut groups: HashMap<String, Vec<Package>> = HashMap::new();
+    for pkg in packages {
+        let normalized = normalize_name_for_dedup(&pkg.name, pkg.source);
+        groups.entry(normalized).or_default().push(pkg.clone());
+    }
+
+    let priority = [
+        PackageSource::Apt,
+        PackageSource::Dnf,
+        PackageSource::Pacman,
+        PackageSource::Zypper,
+        PackageSource::Flatpak,
+        PackageSource::Snap,
+    ];
+
+    groups
+        .into_iter()
+        .filter(|(_, pkgs)| {
+            pkgs.len() > 1 && pkgs.iter().map(|p| p.source).collect::<HashSet<_>>().len() > 1
+        })
+        .map(|(name, mut pkgs)| {
+            let suggested_keep = priority
+                .iter()
+                .copied()
+                .find(|&src| pkgs.iter().any(|p| p.source == src))
+                .or_else(|| pkgs.first().map(|p| p.source));
+            if let Some(keep) = suggested_keep {
+                pkgs.sort_by_key(|p| if p.source == keep { 0usize } else { 1 });
+            }
+            DuplicateGroup {
+                normalized_name: name,
+                packages: pkgs,
+                suggested_keep,
+            }
+        })
+        .collect()
+}

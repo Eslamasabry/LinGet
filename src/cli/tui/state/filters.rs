@@ -5,6 +5,7 @@ pub enum Filter {
     Updates,
     Favorites,
     SecurityUpdates,
+    Duplicates,
 }
 
 impl Filter {
@@ -14,6 +15,7 @@ impl Filter {
             "updates" => Self::Updates,
             "favorites" => Self::Favorites,
             "security" => Self::SecurityUpdates,
+            "duplicates" => Self::Duplicates,
             _ => Self::All,
         }
     }
@@ -25,6 +27,7 @@ impl Filter {
             Self::Updates => "updates",
             Self::Favorites => "favorites",
             Self::SecurityUpdates => "security",
+            Self::Duplicates => "duplicates",
         }
     }
 }
@@ -52,4 +55,20 @@ impl Focus {
             Self::Queue => "queue",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailsTab {
+    #[default]
+    Info,
+    Dependencies,
+    Changelog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Browse,
+    Dashboard,
+    Queue,
 }

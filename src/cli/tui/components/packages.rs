@@ -151,6 +151,26 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
             Cell::from(Span::styled(status.0, status.1))
         };
 
+        // In Duplicates filter, append "also: X" hint to the name
+        let display_name = if app.filter == Filter::Duplicates {
+            if let Some(peers) = app.duplicate_peer_sources.get(&package_id) {
+                if !peers.is_empty() {
+                    let also: Vec<String> = peers.iter().map(|s| s.to_string()).collect();
+                    format!(
+                        "{} · also: {}",
+                        truncate_middle_to_width(&package.name, if compact { 12 } else { 16 }),
+                        also.join(", ")
+                    )
+                } else {
+                    truncate_middle_to_width(&package.name, if compact { 18 } else { 24 })
+                }
+            } else {
+                truncate_middle_to_width(&package.name, if compact { 18 } else { 24 })
+            }
+        } else {
+            truncate_middle_to_width(&package.name, if compact { 18 } else { 24 })
+        };
+
         rows.push(
             Row::new(vec![
                 Cell::from(Span::styled(
@@ -169,10 +189,14 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
                         row_style
                     },
                 )),
-                Cell::from(Span::styled(
-                    truncate_middle_to_width(&package.name, if compact { 18 } else { 24 }),
-                    row_style,
-                )),
+                Cell::from(if app.filter == Filter::Duplicates {
+                    Line::from(vec![Span::styled(
+                        display_name,
+                        if is_cursor { row_cursor() } else { text() },
+                    )])
+                } else {
+                    Line::from(Span::styled(display_name, row_style))
+                }),
                 Cell::from(Span::styled(
                     truncate_to_width(&version, if compact { 15 } else { 22 }),
                     row_style,

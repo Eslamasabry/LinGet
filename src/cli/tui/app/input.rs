@@ -13,7 +13,7 @@ impl App {
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 self.queue_changelog_action(TaskQueueAction::Install);
             }
-            KeyCode::Char('x') | KeyCode::Char('X') => {
+            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Char('x') | KeyCode::Char('X') => {
                 self.queue_changelog_action(TaskQueueAction::Remove);
             }
             KeyCode::Char('v') => {
@@ -169,6 +169,10 @@ impl App {
                 self.filter = Filter::SecurityUpdates;
                 self.apply_filters();
             }
+            CommandId::FilterDuplicates => {
+                self.filter = Filter::Duplicates;
+                self.apply_filters();
+            }
             CommandId::ToggleFavorite => self.toggle_favorite_on_cursor(),
             CommandId::BulkToggleFavorite => self.bulk_toggle_favorites(),
             CommandId::ToggleFavoritesUpdatesOnly => self.toggle_favorites_updates_only(),
@@ -182,7 +186,7 @@ impl App {
             CommandId::Search => self.searching = true,
             CommandId::Refresh => {
                 if !self.start_loading() {
-                    self.set_status("Already refreshing", true);
+                    self.set_status(self.catalog_busy_reason(), true);
                 }
             }
             CommandId::ToggleQueue => self.toggle_queue_expanded(),
@@ -192,6 +196,8 @@ impl App {
             CommandId::QueueRemediate => self.apply_selected_task_remediation().await,
             CommandId::QueueLogOlder => self.queue_log_scroll_up(),
             CommandId::QueueLogNewer => self.queue_log_scroll_down(),
+            CommandId::ExportPackages => self.export_packages().await,
+            CommandId::ImportPackages => self.import_packages().await,
         }
     }
 
@@ -338,6 +344,9 @@ impl App {
 
         match key.code {
             KeyCode::Tab => self.execute_command(CommandId::CycleFocus).await,
+            KeyCode::F(1) => self.view_mode = crate::cli::tui::state::filters::ViewMode::Dashboard,
+            KeyCode::F(2) => self.view_mode = crate::cli::tui::state::filters::ViewMode::Browse,
+            KeyCode::F(3) => self.view_mode = crate::cli::tui::state::filters::ViewMode::Queue,
             KeyCode::Char('j') | KeyCode::Down => match self.focus {
                 Focus::Sources => self.next_source(),
                 Focus::Packages | Focus::Queue => self.next_package(),
@@ -366,16 +375,31 @@ impl App {
             {
                 self.page_up()
             }
+            _ if key.code == KeyCode::Char('b')
+                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.show_sidebar = !self.show_sidebar;
+            }
             KeyCode::Enter => {
                 if self.focus == Focus::Packages {
                     self.prepare_default_action_for_cursor();
                 }
+            }
+            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.active_details_tab = crate::cli::tui::state::filters::DetailsTab::Info;
+            }
+            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.active_details_tab = crate::cli::tui::state::filters::DetailsTab::Dependencies;
+            }
+            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.active_details_tab = crate::cli::tui::state::filters::DetailsTab::Changelog;
             }
             KeyCode::Char('1') => self.execute_command(CommandId::FilterAll).await,
             KeyCode::Char('2') => self.execute_command(CommandId::FilterInstalled).await,
             KeyCode::Char('3') => self.execute_command(CommandId::FilterUpdates).await,
             KeyCode::Char('4') => self.execute_command(CommandId::FilterFavorites).await,
             KeyCode::Char('5') => self.execute_command(CommandId::FilterSecurityUpdates).await,
+            KeyCode::Char('6') => self.execute_command(CommandId::FilterDuplicates).await,
             KeyCode::Char('f') => self.execute_command(CommandId::ToggleFavorite).await,
             KeyCode::Char('F') => self.execute_command(CommandId::BulkToggleFavorite).await,
             KeyCode::Char('v') => {
@@ -385,7 +409,14 @@ impl App {
             KeyCode::Char(' ') => self.execute_command(CommandId::ToggleSelection).await,
             KeyCode::Char('a') => self.execute_command(CommandId::SelectAll).await,
             KeyCode::Char('i') => self.execute_command(CommandId::Install).await,
-            KeyCode::Char('x') => self.execute_command(CommandId::Remove).await,
+            KeyCode::Char('d') | KeyCode::Char('x') => {
+                self.execute_command(CommandId::Remove).await
+            }
+            KeyCode::Char('D') => {
+                if self.filter == Filter::Duplicates {
+                    self.dismiss_duplicate_keep_cursor();
+                }
+            }
             KeyCode::Char('u') => self.execute_command(CommandId::Update).await,
             KeyCode::Char('w') => self.execute_command(CommandId::RunRecommended).await,
             KeyCode::Char('c') => self.execute_command(CommandId::ViewChangelog).await,
@@ -419,6 +450,8 @@ impl App {
             KeyCode::Char('R') => self.execute_command(CommandId::QueueRetry).await,
             KeyCode::Char('A') => self.execute_command(CommandId::QueueRetrySafe).await,
             KeyCode::Char('M') => self.execute_command(CommandId::QueueRemediate).await,
+            KeyCode::Char('E') => self.execute_command(CommandId::ExportPackages).await,
+            KeyCode::Char('I') => self.execute_command(CommandId::ImportPackages).await,
             _ => {}
         }
     }
@@ -426,6 +459,10 @@ impl App {
     pub async fn handle_key(&mut self, key: KeyEvent) {
         self.clear_status_if_needed();
 
+        if self.showing_import_preview {
+            self.handle_import_preview_key(key).await;
+            return;
+        }
         if self.showing_changelog {
             self.handle_changelog_key(key).await;
             return;
@@ -447,6 +484,29 @@ impl App {
             return;
         }
         self.handle_normal_key(key).await;
+    }
+
+    async fn handle_import_preview_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.showing_import_preview = false;
+                self.import_preview.clear();
+            }
+            KeyCode::Enter => {
+                use crate::models::history::TaskQueueAction;
+
+                let packages = self
+                    .import_preview
+                    .iter()
+                    .map(|ep| ep.to_install_stub())
+                    .collect();
+
+                self.showing_import_preview = false;
+                self.import_preview.clear();
+                self.queue_tasks(packages, TaskQueueAction::Install).await;
+            }
+            _ => {}
+        }
     }
 
     pub async fn handle_mouse(&mut self, event: MouseEvent, regions: &LayoutRegions) {
@@ -566,7 +626,7 @@ impl App {
                 } else if rect_contains(regions.packages, pos) {
                     self.handle_mouse_packages_click(col, row, is_double, &regions.packages);
                 } else if rect_contains(regions.details, pos) {
-                    self.focus = Focus::Packages;
+                    self.handle_mouse_details_click(col, row, &regions.details);
                 } else if rect_contains(regions.queue_bar, pos) {
                     self.toggle_queue_expanded();
                 } else if rect_contains(regions.expanded_queue, pos) {
@@ -899,6 +959,21 @@ impl App {
                     self.set_status("Cancelled", true);
                 }
             }
+        }
+    }
+
+    pub fn handle_mouse_details_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        details_rect: &ratatui::layout::Rect,
+    ) {
+        self.focus = crate::cli::tui::state::filters::Focus::Packages;
+
+        if let Some(tab) =
+            crate::cli::tui::components::details::details_tab_hit_test(*details_rect, col, row)
+        {
+            self.active_details_tab = tab;
         }
     }
 }

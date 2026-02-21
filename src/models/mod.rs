@@ -24,7 +24,9 @@ pub use history::{
 };
 pub use icons::*;
 pub use insights::{guess_config_paths, guess_log_command, parse_install_date, PackageInsights};
-pub use package::{Package, PackageEnrichment, PackageSource, PackageStatus, UpdateCategory};
+pub use package::{
+    detect_duplicates, Package, PackageEnrichment, PackageSource, PackageStatus, UpdateCategory,
+};
 pub use recommendations::{
     get_global_recommendations, get_package_recommendations, Recommendation,
 };
