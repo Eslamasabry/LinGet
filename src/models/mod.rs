@@ -1,6 +1,7 @@
 pub mod alias;
 pub mod appearance;
 pub mod changelog;
+pub mod package_list;
 mod config;
 mod enrichment;
 mod flatpak_metadata;
