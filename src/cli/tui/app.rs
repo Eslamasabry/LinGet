@@ -10,7 +10,9 @@ use crate::cli::tui::state::queue::{
 };
 use crate::cli::tui::state::sources::SourceManagementState;
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
-use crate::models::{ChangelogSummary, Config, Package, PackageSource, PackageStatus};
+use crate::models::{
+    ChangelogSummary, Config, Package, PackageSource, PackageStatus, UpdateCategory,
+};
 use anyhow::{Context, Result};
 use crossterm::{
     event::{
@@ -40,6 +42,7 @@ const FILTER_ALL_INDEX: usize = 0;
 const FILTER_INSTALLED_INDEX: usize = 1;
 const FILTER_UPDATES_INDEX: usize = 2;
 const FILTER_FAVORITES_INDEX: usize = 3;
+const FILTER_SECURITY_INDEX: usize = 4;
 const QUEUE_AUTO_HIDE_AFTER: Duration = Duration::from_secs(10);
 
 fn rect_contains(rect: Rect, pos: (u16, u16)) -> bool {
@@ -234,6 +237,7 @@ pub enum CommandId {
     FilterInstalled,
     FilterUpdates,
     FilterFavorites,
+    FilterSecurityUpdates,
     ToggleFavorite,
     BulkToggleFavorite,
     ToggleFavoritesUpdatesOnly,
@@ -374,6 +378,12 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         enabled: command_always_enabled,
     },
     CommandDefinition {
+        id: CommandId::FilterSecurityUpdates,
+        label: "Filter security updates",
+        shortcut: "5",
+        enabled: command_always_enabled,
+    },
+    CommandDefinition {
         id: CommandId::ToggleFavorite,
         label: "Toggle favorite",
         shortcut: "f",
@@ -494,7 +504,7 @@ pub struct App {
     pub search_results: Option<Vec<Package>>,
     pub packages: Vec<Package>,
     pub filtered: Vec<usize>,
-    pub filter_counts: [usize; 4],
+    pub filter_counts: [usize; 5],
     pub cursor: usize,
     pub selected: HashSet<String>,
     pub favorite_packages: HashSet<String>,
@@ -542,7 +552,7 @@ pub struct App {
     pub tick: u64,
 
     pub available_sources: Vec<PackageSource>,
-    pub source_counts: HashMap<PackageSource, [usize; 4]>,
+    pub source_counts: HashMap<PackageSource, [usize; 5]>,
 
     pub pm: Arc<Mutex<PackageManager>>,
     pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
@@ -581,7 +591,7 @@ impl App {
             search_results: None,
             packages: Vec::new(),
             filtered: Vec::new(),
-            filter_counts: [0, 0, 0, 0],
+            filter_counts: [0, 0, 0, 0, 0],
             cursor: 0,
             selected: HashSet::new(),
             favorite_packages: HashSet::new(),
@@ -786,11 +796,12 @@ impl App {
 
     pub fn visible_sources(&self) -> Vec<PackageSource> {
         match self.filter {
-            Filter::Updates | Filter::Favorites => {
-                let count_index = if self.filter == Filter::Updates {
-                    FILTER_UPDATES_INDEX
-                } else {
-                    FILTER_FAVORITES_INDEX
+            Filter::Updates | Filter::Favorites | Filter::SecurityUpdates => {
+                let count_index = match self.filter {
+                    Filter::Updates => FILTER_UPDATES_INDEX,
+                    Filter::Favorites => FILTER_FAVORITES_INDEX,
+                    Filter::SecurityUpdates => FILTER_SECURITY_INDEX,
+                    _ => unreachable!(),
                 };
                 self.available_sources
                     .iter()
@@ -1061,10 +1072,12 @@ impl App {
 
     fn can_cancel_selected_task_command(&self) -> bool {
         self.queue_focus_active()
-            && self
-                .tasks
-                .get(self.task_cursor)
-                .is_some_and(|task| matches!(task.status, TaskQueueStatus::Queued | TaskQueueStatus::Failed))
+            && self.tasks.get(self.task_cursor).is_some_and(|task| {
+                matches!(
+                    task.status,
+                    TaskQueueStatus::Queued | TaskQueueStatus::Failed
+                )
+            })
     }
 
     fn can_retry_selected_task_command(&self) -> bool {
@@ -1796,12 +1809,13 @@ impl App {
         let mut n_installed = 0usize;
         let mut n_updates = 0usize;
         let mut n_favorites = 0usize;
+        let mut n_security = 0usize;
 
-        let mut per_source: HashMap<PackageSource, [usize; 4]> = HashMap::new();
+        let mut per_source: HashMap<PackageSource, [usize; 5]> = HashMap::new();
 
         for package in &self.packages {
             n_all += 1;
-            let entry = per_source.entry(package.source).or_insert([0, 0, 0, 0]);
+            let entry = per_source.entry(package.source).or_insert([0, 0, 0, 0, 0]);
             entry[FILTER_ALL_INDEX] += 1;
 
             let is_installed = matches!(
@@ -1818,6 +1832,8 @@ impl App {
             );
             let is_favorite = self.favorite_packages.contains(&package.id());
             let is_favorite_visible = is_favorite && (!self.favorites_updates_only || is_update);
+            let is_security =
+                is_update && package.detect_update_category() == UpdateCategory::Security;
 
             if is_installed {
                 n_installed += 1;
@@ -1831,8 +1847,12 @@ impl App {
                 n_favorites += 1;
                 entry[FILTER_FAVORITES_INDEX] += 1;
             }
+            if is_security {
+                n_security += 1;
+                entry[FILTER_SECURITY_INDEX] += 1;
+            }
         }
-        self.filter_counts = [n_all, n_installed, n_updates, n_favorites];
+        self.filter_counts = [n_all, n_installed, n_updates, n_favorites, n_security];
         self.source_counts = per_source;
 
         // Reset source if it's not visible under the current filter
@@ -1857,7 +1877,7 @@ impl App {
             .map(|(idx, _)| idx)
             .collect();
 
-        if self.filter == Filter::Updates {
+        if self.filter == Filter::Updates || self.filter == Filter::SecurityUpdates {
             self.sort_updates_by_priority();
         } else {
             self.sort_favorites_then_name();
@@ -1932,6 +1952,12 @@ impl App {
                             package.status,
                             PackageStatus::UpdateAvailable | PackageStatus::Updating
                         ))
+            }
+            Filter::SecurityUpdates => {
+                matches!(
+                    package.status,
+                    PackageStatus::UpdateAvailable | PackageStatus::Updating
+                ) && package.detect_update_category() == UpdateCategory::Security
             }
         }
     }
@@ -2089,7 +2115,13 @@ impl App {
             Ok(Ok(repos)) => {
                 self.source_management.repositories = repos;
                 self.source_management.loading = false;
-                self.set_status(format!("Loaded {} repositories", self.source_management.repositories.len()), true);
+                self.set_status(
+                    format!(
+                        "Loaded {} repositories",
+                        self.source_management.repositories.len()
+                    ),
+                    true,
+                );
             }
             Ok(Err(error)) => {
                 self.source_management.loading = false;
@@ -3800,8 +3832,7 @@ impl App {
             self.set_status("No failed tasks to dismiss", true);
             return;
         }
-        self.tasks
-            .retain(|t| t.status != TaskQueueStatus::Failed);
+        self.tasks.retain(|t| t.status != TaskQueueStatus::Failed);
         self.cleanup_task_logs();
         self.clamp_task_cursor();
         self.ensure_queue_cursor_matches_filter();
@@ -4105,7 +4136,11 @@ impl App {
             return 0;
         }
         let (_, running, _, _, _) = self.queue_counts();
-        if running > 0 { 2 } else { 1 }
+        if running > 0 {
+            2
+        } else {
+            1
+        }
     }
 
     pub fn spinner_frame(&self) -> char {
@@ -4232,6 +4267,7 @@ fn command_group(command: CommandId) -> &'static str {
         | CommandId::FilterInstalled
         | CommandId::FilterUpdates
         | CommandId::FilterFavorites
+        | CommandId::FilterSecurityUpdates
         | CommandId::RunRecommended
         | CommandId::ViewChangelog
         | CommandId::Search
@@ -4782,7 +4818,7 @@ Remove   1 Package
         app.apply_filters();
 
         assert_eq!(app.filtered.len(), 3);
-        assert_eq!(app.filter_counts, [3, 2, 1, 0]);
+        assert_eq!(app.filter_counts, [3, 2, 1, 0, 0]);
     }
 
     #[test]
@@ -4828,7 +4864,7 @@ Remove   1 Package
         app.filter = Filter::Favorites;
         app.apply_filters();
 
-        assert_eq!(app.filter_counts, [2, 2, 0, 1]);
+        assert_eq!(app.filter_counts, [2, 2, 0, 1, 0]);
         assert_eq!(app.filtered.len(), 1);
         assert_eq!(app.current_package().map(|p| p.name.as_str()), Some("apt"));
         assert_eq!(app.visible_sources(), vec![PackageSource::Apt]);
@@ -4860,11 +4896,11 @@ Remove   1 Package
 
         assert_eq!(
             app.source_counts.get(&PackageSource::Apt),
-            Some(&[2, 1, 0, 0])
+            Some(&[2, 1, 0, 0, 0])
         );
         assert_eq!(
             app.source_counts.get(&PackageSource::Snap),
-            Some(&[1, 1, 1, 0])
+            Some(&[1, 1, 1, 0, 0])
         );
 
         app.source = Some(PackageSource::Apt);

@@ -4,6 +4,7 @@ pub enum Filter {
     Installed,
     Updates,
     Favorites,
+    SecurityUpdates,
 }
 
 impl Filter {
@@ -12,6 +13,7 @@ impl Filter {
             "installed" => Self::Installed,
             "updates" => Self::Updates,
             "favorites" => Self::Favorites,
+            "security" => Self::SecurityUpdates,
             _ => Self::All,
         }
     }
@@ -22,6 +24,7 @@ impl Filter {
             Self::Installed => "installed",
             Self::Updates => "updates",
             Self::Favorites => "favorites",
+            Self::SecurityUpdates => "security",
         }
     }
 }

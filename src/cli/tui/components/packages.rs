@@ -1,13 +1,14 @@
 use crate::cli::tui::app::App;
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::theme::{
-    dim, loading, muted, row_cursor, row_selected, scrollbar_style, scrollbar_thumb, source_color,
-    table_header, text, warning,
+    dim, error, loading, muted, row_cursor, row_selected, scrollbar_style, scrollbar_thumb,
+    source_color, success, table_header, text, warning,
 };
 use crate::cli::tui::ui::{
     format_package_version, package_status_short, panel_block, truncate_middle_to_width,
     truncate_to_width, window_start,
 };
+use crate::models::{PackageStatus, UpdateCategory};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
@@ -72,6 +73,11 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
                     )),
                 ]
             }
+        } else if app.filter == Filter::SecurityUpdates {
+            vec![
+                Line::from(Span::styled("No security updates available", muted())),
+                Line::from(Span::styled("All packages are secure", dim())),
+            ]
         } else {
             vec![Line::from(Span::styled(
                 "No packages match this filter",
@@ -120,6 +126,30 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
         let version = format_package_version(package);
         let source = package.source.to_string();
         let status = package_status_short(package.status);
+        let status_cell = if !compact && package.status == PackageStatus::UpdateAvailable {
+            let category = package.detect_update_category();
+            let badge_spans: Vec<Span> = match category {
+                UpdateCategory::Security => vec![
+                    Span::styled(status.0, status.1),
+                    Span::raw(" "),
+                    Span::styled("[sec]", error()),
+                ],
+                UpdateCategory::Bugfix => vec![
+                    Span::styled(status.0, status.1),
+                    Span::raw(" "),
+                    Span::styled("[fix]", warning()),
+                ],
+                UpdateCategory::Feature => vec![
+                    Span::styled(status.0, status.1),
+                    Span::raw(" "),
+                    Span::styled("[new]", success()),
+                ],
+                UpdateCategory::Minor => vec![Span::styled(status.0, status.1)],
+            };
+            Cell::from(Line::from(badge_spans))
+        } else {
+            Cell::from(Span::styled(status.0, status.1))
+        };
 
         rows.push(
             Row::new(vec![
@@ -155,7 +185,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
                         source_color(package.source)
                     },
                 )),
-                Cell::from(Span::styled(status.0, status.1)),
+                status_cell,
             ])
             .style(row_style),
         );
@@ -169,7 +199,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
         Constraint::Min(if compact { 11 } else { 20 }),
         Constraint::Min(if compact { 10 } else { 16 }),
         Constraint::Length(10),
-        Constraint::Length(5),
+        Constraint::Length(if compact { 5 } else { 11 }),
     ];
 
     let table = Table::new(rows, widths)

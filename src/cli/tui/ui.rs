@@ -4,8 +4,8 @@ use super::app::{
 };
 use super::theme::*;
 use super::update_center;
-pub use crate::cli::tui::components::layout::LayoutRegions;
 use crate::cli::tui::components::layout::sources_panel_width;
+pub use crate::cli::tui::components::layout::LayoutRegions;
 use crate::cli::tui::components::packages::draw_packages_panel;
 use crate::cli::tui::components::sources::draw_sources_panel;
 use crate::cli::tui::state::filters::{Filter, Focus};
@@ -156,6 +156,16 @@ fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
         app.filter == Filter::Favorites,
         app.searching,
     ));
+    if !app.compact {
+        left.push(Span::raw(" "));
+        left.extend(render_filter_tab(
+            "5",
+            "Security",
+            app.filter_counts[4],
+            app.filter == Filter::SecurityUpdates,
+            app.searching,
+        ));
+    }
 
     let mut right = Vec::new();
 
@@ -304,6 +314,13 @@ pub fn header_filter_hit_test(
             app.filter_counts[3],
             app.filter == Filter::Favorites,
             Filter::Favorites,
+        ),
+        (
+            "5",
+            "Security",
+            app.filter_counts[4],
+            app.filter == Filter::SecurityUpdates,
+            Filter::SecurityUpdates,
         ),
     ];
 
@@ -611,7 +628,7 @@ pub fn panel_block(title: String, focused: bool, _compact: bool) -> Block<'stati
         .title_style(if focused { accent() } else { text() })
 }
 
-pub fn source_count_label(filter: Filter, counts: [usize; 4]) -> String {
+pub fn source_count_label(filter: Filter, counts: [usize; 5]) -> String {
     match filter {
         Filter::All => {
             if counts[2] > 0 {
@@ -623,6 +640,7 @@ pub fn source_count_label(filter: Filter, counts: [usize; 4]) -> String {
         Filter::Installed => format!(" {}", counts[1]),
         Filter::Updates => format!(" {}", counts[2]),
         Filter::Favorites => format!(" {}", counts[3]),
+        Filter::SecurityUpdates => format!(" {}", counts[4]),
     }
 }
 
@@ -827,18 +845,24 @@ fn draw_source_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let repos = &app.source_management.repositories;
     if repos.is_empty() {
-        let empty_text = Paragraph::new(Span::styled("No repositories found or supported by this backend.", muted()))
-            .alignment(ratatui::layout::Alignment::Center);
+        let empty_text = Paragraph::new(Span::styled(
+            "No repositories found or supported by this backend.",
+            muted(),
+        ))
+        .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(empty_text, inner);
         return;
     }
 
     let mut lines = Vec::new();
     let enabled_count = repos.iter().filter(|r| r.enabled).count();
-    
+
     lines.push(Line::from(vec![
         Span::styled("Status: ", section_header()),
-        Span::styled(format!("{} / {} enabled", enabled_count, repos.len()), muted()),
+        Span::styled(
+            format!("{} / {} enabled", enabled_count, repos.len()),
+            muted(),
+        ),
     ]));
     lines.push(Line::from(""));
 
@@ -862,13 +886,10 @@ fn draw_source_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 ]));
             }
         }
-        
+
         if let Some(url) = &repo.url {
             if !url.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(url, dim()),
-                ]));
+                lines.push(Line::from(vec![Span::raw("  "), Span::styled(url, dim())]));
             }
         }
         lines.push(Line::from(""));
@@ -934,10 +955,12 @@ fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
         );
 
         // Row 2: progress gauge with ETA/performance in the label
-        let gauge_label = performance_hint
-            .or(task_eta_hint)
-            .unwrap_or_default();
-        let gauge_style = if failed > 0 { gauge_failed() } else { gauge_bar() };
+        let gauge_label = performance_hint.or(task_eta_hint).unwrap_or_default();
+        let gauge_style = if failed > 0 {
+            gauge_failed()
+        } else {
+            gauge_bar()
+        };
         let gauge = Gauge::default()
             .gauge_style(gauge_style)
             .label(Span::styled(
@@ -1945,7 +1968,10 @@ fn render_task_line(
             // Strip the common redundant "Failed to <verb> <mgr> package <name>: <detail>"
             // prefix — the status/action/name are already shown in the row.
             let detail = if error_text.starts_with("Failed to ") {
-                error_text.split_once(": ").map(|(_, rest)| rest.trim()).unwrap_or("")
+                error_text
+                    .split_once(": ")
+                    .map(|(_, rest)| rest.trim())
+                    .unwrap_or("")
             } else {
                 error_text.trim()
             };
@@ -2017,7 +2043,6 @@ fn blocked_reason_badge_style(category: FailureCategory, selected: bool) -> Styl
         FailureCategory::Unknown => dim(),
     }
 }
-
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct QueueBlockedCategoryCounts {
@@ -3765,11 +3790,24 @@ mod tests {
 
     #[test]
     fn source_count_label_snapshots() {
-        assert_eq!(source_count_label(Filter::All, [42, 31, 3, 9]), " 42 (+3)");
-        assert_eq!(source_count_label(Filter::All, [42, 31, 0, 9]), " 42");
-        assert_eq!(source_count_label(Filter::Installed, [42, 31, 3, 9]), " 31");
-        assert_eq!(source_count_label(Filter::Updates, [42, 31, 3, 9]), " 3");
-        assert_eq!(source_count_label(Filter::Favorites, [42, 31, 3, 9]), " 9");
+        assert_eq!(
+            source_count_label(Filter::All, [42, 31, 3, 9, 1]),
+            " 42 (+3)"
+        );
+        assert_eq!(source_count_label(Filter::All, [42, 31, 0, 9, 0]), " 42");
+        assert_eq!(
+            source_count_label(Filter::Installed, [42, 31, 3, 9, 1]),
+            " 31"
+        );
+        assert_eq!(source_count_label(Filter::Updates, [42, 31, 3, 9, 1]), " 3");
+        assert_eq!(
+            source_count_label(Filter::Favorites, [42, 31, 3, 9, 1]),
+            " 9"
+        );
+        assert_eq!(
+            source_count_label(Filter::SecurityUpdates, [42, 31, 3, 9, 1]),
+            " 1"
+        );
     }
 
     #[test]
@@ -3794,8 +3832,8 @@ mod tests {
         app.filter = Filter::All;
         app.available_sources = vec![PackageSource::Flatpak];
         app.source_counts
-            .insert(PackageSource::Flatpak, [243, 231, 12, 0]);
-        app.filter_counts = [243, 231, 12, 0];
+            .insert(PackageSource::Flatpak, [243, 231, 12, 0, 0]);
+        app.filter_counts = [243, 231, 12, 0, 0];
 
         assert!(sources_panel_width(&app, 120) > 18);
     }
@@ -3811,8 +3849,8 @@ mod tests {
         app.filter = Filter::All;
         app.available_sources = vec![PackageSource::Flatpak];
         app.source_counts
-            .insert(PackageSource::Flatpak, [243, 231, 12, 0]);
-        app.filter_counts = [243, 231, 12, 0];
+            .insert(PackageSource::Flatpak, [243, 231, 12, 0, 0]);
+        app.filter_counts = [243, 231, 12, 0, 0];
 
         assert_eq!(sources_panel_width(&app, 20), 19);
     }
@@ -4097,22 +4135,10 @@ mod tests {
             blocked_reason_badge(FailureCategory::Permissions),
             "permission"
         );
-        assert_eq!(
-            blocked_reason_badge(FailureCategory::Network),
-            "network"
-        );
-        assert_eq!(
-            blocked_reason_badge(FailureCategory::NotFound),
-            "not found"
-        );
-        assert_eq!(
-            blocked_reason_badge(FailureCategory::Conflict),
-            "conflict"
-        );
-        assert_eq!(
-            blocked_reason_badge(FailureCategory::Unknown),
-            "unknown"
-        );
+        assert_eq!(blocked_reason_badge(FailureCategory::Network), "network");
+        assert_eq!(blocked_reason_badge(FailureCategory::NotFound), "not found");
+        assert_eq!(blocked_reason_badge(FailureCategory::Conflict), "conflict");
+        assert_eq!(blocked_reason_badge(FailureCategory::Unknown), "unknown");
     }
 
     #[test]

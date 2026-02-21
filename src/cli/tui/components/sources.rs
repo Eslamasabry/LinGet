@@ -33,6 +33,7 @@ pub fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
                     app.filter_counts[1],
                     app.filter_counts[2],
                     app.filter_counts[3],
+                    app.filter_counts[4],
                 ],
             );
             (
@@ -45,7 +46,7 @@ pub fn draw_sources_panel(frame: &mut Frame, app: &App, area: Rect) {
                 .source_counts
                 .get(&source)
                 .copied()
-                .unwrap_or([0, 0, 0, 0]);
+                .unwrap_or([0, 0, 0, 0, 0]);
             let count_str = source_count_label(app.filter, counts);
             (
                 format!("{}{}", source, count_str),

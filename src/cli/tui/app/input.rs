@@ -165,6 +165,10 @@ impl App {
                 self.filter = Filter::Favorites;
                 self.apply_filters();
             }
+            CommandId::FilterSecurityUpdates => {
+                self.filter = Filter::SecurityUpdates;
+                self.apply_filters();
+            }
             CommandId::ToggleFavorite => self.toggle_favorite_on_cursor(),
             CommandId::BulkToggleFavorite => self.bulk_toggle_favorites(),
             CommandId::ToggleFavoritesUpdatesOnly => self.toggle_favorites_updates_only(),
@@ -371,6 +375,7 @@ impl App {
             KeyCode::Char('2') => self.execute_command(CommandId::FilterInstalled).await,
             KeyCode::Char('3') => self.execute_command(CommandId::FilterUpdates).await,
             KeyCode::Char('4') => self.execute_command(CommandId::FilterFavorites).await,
+            KeyCode::Char('5') => self.execute_command(CommandId::FilterSecurityUpdates).await,
             KeyCode::Char('f') => self.execute_command(CommandId::ToggleFavorite).await,
             KeyCode::Char('F') => self.execute_command(CommandId::BulkToggleFavorite).await,
             KeyCode::Char('v') => {
@@ -401,7 +406,10 @@ impl App {
             }
             KeyCode::Char('C') => {
                 if !self.queue_expanded
-                    && self.tasks.iter().any(|t| t.status == TaskQueueStatus::Failed)
+                    && self
+                        .tasks
+                        .iter()
+                        .any(|t| t.status == TaskQueueStatus::Failed)
                 {
                     self.dismiss_all_failed_tasks();
                 } else {
