@@ -83,7 +83,7 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
 }
 
 pub fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
-    let source_width = sources_panel_width(app, area.width);
+    let source_width = if app.show_sidebar { sources_panel_width(app, area.width) } else { 0 };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(source_width), Constraint::Min(1)])

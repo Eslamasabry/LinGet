@@ -1,7 +1,6 @@
 pub mod alias;
 pub mod appearance;
 pub mod changelog;
-pub mod package_list;
 mod config;
 mod enrichment;
 mod flatpak_metadata;
@@ -10,6 +9,7 @@ pub mod history;
 mod icons;
 pub mod insights;
 mod package;
+pub mod package_list;
 pub mod recommendations;
 mod repository;
 pub mod scheduler;
