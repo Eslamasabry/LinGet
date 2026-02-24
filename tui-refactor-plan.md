@@ -24,8 +24,8 @@ Introduce a more flexible and information-dense layout.
 Make the application easier to use and understand.
 - [x] **Contextual Command Bar:** Implement a bottom bar (like Zellij/Helix) that shows relevant keyboard shortcuts based on the currently focused panel.
 - [ ] **Interactive Task Queue:** Enhance the queue UI to allow expanding/collapsing individual tasks to see more details or logs.
-- [ ] **Fuzzy Search & Highlighting:** (Optional/Stretch) Improve the search experience with visual highlighting of matched terms.
-- [ ] **Mouse Support:** Ensure all new UI elements (Tabs, Table Headers) respond correctly to mouse clicks and scrolling.
+- [x] **Fuzzy Search & Highlighting:** (Optional/Stretch) Improve the search experience with visual highlighting of matched terms.
+- [x] **Mouse Support:** Ensure all new UI elements (Tabs, Table Headers) respond correctly to mouse clicks and scrolling.
 
 ## Execution Strategy
 I will execute this plan sequentially, starting with Phase 1. I will commit changes after significant milestones to ensure the application remains in a working state.
