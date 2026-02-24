@@ -11,7 +11,7 @@ The current TUI is a monolithic `App` struct and a massive `ui.rs` file. This ph
 
 ## Phase 2: Layout & Visual Modernization (UI)
 Introduce a more flexible and information-dense layout.
-- [ ] **Dynamic View System:** Implement a way to switch between full-screen views (e.g., `BrowseView`, `DashboardView`, `QueueView`) rather than a single static layout.
+- [x] **Dynamic View System:** Implement a way to switch between full-screen views (e.g., `BrowseView`, `DashboardView`, `QueueView`) rather than a single static layout.
 - [x] **Multi-Column Package Table:** Replace the simple `List` widget in the packages panel with a `Table` widget.
     - Columns: Name, Version, Source, Status.
     - Implement column widths and basic styling.
