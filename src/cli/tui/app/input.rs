@@ -719,7 +719,7 @@ impl App {
     }
 
     fn handle_mouse_header(&mut self, col: u16, row: u16, regions: &LayoutRegions) {
-        if let Some(filter) = ui::header_filter_hit_test(self, regions.header_filter_row, col, row)
+        if let Some(filter) = crate::cli::tui::components::header::header_filter_hit_test(self, regions.header_filter_row, col, row)
         {
             self.filter = filter;
             self.apply_filters();
@@ -900,11 +900,11 @@ impl App {
         ) {
             self.focus = Focus::Queue;
             match action {
-                ui::QueueHintAction::Retry => self.execute_command(CommandId::QueueRetry).await,
-                ui::QueueHintAction::RetrySafe => {
+                crate::cli::tui::components::header::QueueHintAction::Retry => self.execute_command(CommandId::QueueRetry).await,
+                crate::cli::tui::components::header::QueueHintAction::RetrySafe => {
                     self.execute_command(CommandId::QueueRetrySafe).await;
                 }
-                ui::QueueHintAction::Remediate => {
+                crate::cli::tui::components::header::QueueHintAction::Remediate => {
                     self.execute_command(CommandId::QueueRemediate).await;
                 }
             }
