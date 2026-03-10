@@ -1,0 +1,188 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                  LINGET-TAURI IPC SURFACE - QUICK REFERENCE                   ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ACTIVE COMMANDS (Used by frontend)                                           ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+1. list_installed_packages()             → Vec<Package>
+2. list_available_packages()             → Vec<Package>
+3. check_updates()                       → Vec<Package>
+4. search_packages(query: String)        → Vec<Package>
+5. install_package(name, source)         → () + emits 'operation-progress'
+6. remove_package(name, source)          → () + emits 'operation-progress'
+7. update_package(name, source)          → () + emits 'operation-progress'
+8. update_all_packages()                 → Vec<{name,source,status,error}>
+                                           + emits 'batch-update-progress'
+                                           + emits 'batch-update-completed'
+9. cancel_operation(operation_id)        → ()
+10. load_settings()                       → SettingsData
+11. save_settings(settings)               → ()
+12. list_sources()                        → Vec<SourceInfo>
+13. get_backend_sources()                 → Vec<SourceInfo> + availability flags
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ DEAD CODE COMMANDS (Not called from frontend)                               ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+14. get_operation_status(operation_id)    → {operation_id,is_cancelled,...}
+                                           ❌ SAFE TO REMOVE
+15. get_package_info(name, source)        → Package (stub)
+                                           ❌ SAFE TO REMOVE
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ACTIVE EVENTS (Listened to by frontend)                                      ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+'operation-progress'
+  Payload: {
+    operation_id: string,
+    name: string,
+    status: 'started' | 'running' | 'completed' | 'failed',
+    progress: number,
+    message: string
+  }
+  Sources: install_package, remove_package, update_package
+
+'batch-update-progress'
+  Payload: {
+    completed: number,
+    total: number,
+    progress: number
+  }
+  Sources: update_all_packages
+
+'batch-update-completed'
+  Payload: (empty)
+  Sources: update_all_packages
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ DEAD CODE EVENTS (Emitted but not listened to)                              ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+'update-progress'
+  Payload: { name: string, source: string, status: string, error?: string }
+  ❌ NEVER LISTENED - SAFE TO REMOVE
+
+'batch-update-started'
+  Payload: { total: number, message: string }
+  ❌ NEVER LISTENED - SAFE TO REMOVE
+
+'operation-log'
+  Payload: { operation_id, name, line, is_error }
+  ❌ DEFINED FRONTEND LISTENER BUT NEVER EMITTED - SAFE TO REMOVE
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ SHARED TYPE CONTRACTS (JSON schemas - MUST PRESERVE)                        ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+Package:
+  name: string
+  version: string
+  available_version?: string
+  description: string
+  source: string             ← ENUM STRING: "APT", "Flatpak", "Snap", etc.
+  status: string             ← ENUM STRING: "installed", "update_available", etc.
+  size?: number
+  size_display: string
+  homepage?: string
+  license?: string
+  maintainer?: string
+  dependencies?: string[]
+
+SourceInfo:
+  id: string                 ← Source enum name
+  name: string
+  icon: string               ← Emoji
+  enabled: boolean
+  available?: boolean        ← Only in get_backend_sources
+  description?: string
+
+SettingsData:
+  dark_mode: boolean
+  auto_refresh: boolean
+  refresh_interval: number
+  enabled_sources: string[]  ← Array like ["APT", "Flatpak"]
+
+OperationProgressPayload:
+  operation_id: string
+  name: string
+  status: string             ← "started" | "running" | "completed" | "failed"
+  progress: number           ← 0-100
+  message: string
+
+OperationLogPayload:         ← UNUSED/DEAD
+  operation_id: string
+  name: string
+  line: string
+  is_error: boolean
+
+BatchUpdateProgressPayload:
+  completed: number
+  total: number
+  progress: number           ← 0-100
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ CRITICAL STABILITY RULES FOR REFACTORING                                    ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+DO NOT CHANGE during decomposition:
+  ✓ Command names (search_packages, install_package, etc.)
+  ✓ Event names ('operation-progress', 'batch-update-progress', etc.)
+  ✓ JSON field names in type schemas
+  ✓ Return type serialization (serde_json::json!() output format)
+  ✓ Parameter JSON keys (query, name, source, settings, operation_id)
+  ✓ Status/source enum string representations ("installed", "APT", etc.)
+
+CAN CHANGE (internal only):
+  ✓ AppState structure (doesn't cross IPC)
+  ✓ Handler function organization (extract to services)
+  ✓ Operation state tracking implementation
+  ✓ Conversion logic location (as long as output is same)
+  ✓ Manager initialization (as long as behavior matches)
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ PROPOSED SERVICE LAYER DECOMPOSITION                                         ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+services/
+├── package_service.rs      list_installed(), search(), install(), etc.
+├── operation_service.rs    emit_progress(), emit_batch_progress(), emit_log()
+├── settings_service.rs     load(), save(), apply_to_manager()
+└── source_service.rs       list_all(), list_with_availability()
+
+handlers/
+├── package_commands.rs     @[tauri::command] list_installed_packages, etc.
+├── operation_commands.rs   @[tauri::command] cancel_operation, etc.
+└── settings_commands.rs    @[tauri::command] load_settings, etc.
+
+All handlers stay THIN (delegate to services, no business logic)
+All services ENCAPSULATED (private implementation details)
+IPC BOUNDARY = unchanged (commands & events identical)
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ OPERATION ID NAMING CONVENTION (Keep stable)                                ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+Format: "{operation_type}-{package_name}"
+  install-vim              ← for install operations
+  remove-git               ← for remove operations
+  update-python3           ← for update operations
+
+Used to:
+  1. Track operation in operation_states HashMap
+  2. Send in 'operation-progress' event as operation_id
+  3. Match frontend listener updates to RunningOperation[] by ID
+
+Inferred in frontend when received:
+  type = opId.includes('install') ? 'install' : 
+         opId.includes('remove') ? 'remove' : 'update'
+
+MUST PRESERVE THIS PATTERN during refactoring.
+
+╔════════════════════════════════════════════════════════════════════════════════╗
+║ TOTAL IPC SURFACE: 13 active commands + 3 active events = stable public API   ║
+║ SAFE TO REMOVE: 2 commands + 3 events = dead code                             ║
+║ REFACTORING IMPACT: Zero impact on frontend (services are backend-internal)   ║
+╚════════════════════════════════════════════════════════════════════════════════╝

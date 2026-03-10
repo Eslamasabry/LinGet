@@ -27,7 +27,7 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
 
     let queue_height = app.queue_bar_height();
     let constraints = vec![
-        Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(queue_height),
         Constraint::Length(1),
@@ -36,12 +36,6 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
-
-    let header = chunks[0];
-    let header_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(header);
 
     let main_area = chunks[1];
     let (queue_bar, _footer) = if queue_height > 0 {
@@ -60,7 +54,7 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         expanded_queue_sections(expanded_queue);
 
     LayoutRegions {
-        header_filter_row: header_chunks[0],
+        header_filter_row: chunks[0],
         sources,
         packages,
         details,
@@ -83,7 +77,11 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
 }
 
 pub fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
-    let source_width = if app.show_sidebar { sources_panel_width(app, area.width) } else { 0 };
+    let source_width = if app.show_sidebar {
+        sources_panel_width(app, area.width)
+    } else {
+        0
+    };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(source_width), Constraint::Min(1)])
@@ -123,7 +121,7 @@ pub fn compute_compact_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect
 }
 
 pub fn sources_panel_width(app: &App, area_width: u16) -> u16 {
-    const SOURCES_MIN_WIDTH: u16 = 18;
+    const SOURCES_MIN_WIDTH: u16 = 16;
     const SOURCES_MAX_WIDTH: u16 = 36;
 
     let content_width = u16::try_from(sources_panel_content_width(app)).unwrap_or(u16::MAX);

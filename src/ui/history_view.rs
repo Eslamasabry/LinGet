@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::models::{HistoryEntry, HistoryFilter, HistoryOperation, OperationHistory};
+use crate::ui::escape_markup_text;
 use chrono::{Local, NaiveDate};
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
@@ -349,9 +350,11 @@ where
         time_str
     };
 
+    let row_title = escape_markup_text(&entry.package_name);
+    let row_subtitle = escape_markup_text(&subtitle);
     let row = adw::ActionRow::builder()
-        .title(&entry.package_name)
-        .subtitle(&subtitle)
+        .title(row_title.as_str())
+        .subtitle(row_subtitle.as_str())
         .build();
 
     if selection_mode {

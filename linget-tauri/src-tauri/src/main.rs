@@ -1,32 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use anyhow::{Context, Result};
-use dirs::config_dir();
+use dirs::config_dir;
 use linget_backend_core::{Package, PackageSource, PackageStatus};
 use linget_backends::backends::PackageManager;
-use linget_backends::streaming::StreamLine;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
-use tauri::{Emitter, Manager};
-
-#[derive(Serialize, Deserialize, Clone)]
-struct PackageJson {
-    name: String,
-    version: String,
-    available_version: Option<String>,
-    description: String,
-    source: String,
-    status: String,
-    size: Option<u64>,
-    size_display: String,
-    homepage: Option<String>,
-    license: Option<String>,
-    maintainer: Option<String>,
-    dependencies: Vec<String>,
-}
+use tauri::{Emitter, State};
+use tokio::sync::{Mutex, RwLock};
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct AppSettings {
@@ -47,12 +31,10 @@ impl AppSettings {
 
     fn load() -> Self {
         match Self::path() {
-            Some(path) if path.exists() => {
-                std::fs::read_to_string(path)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_default()
-            }
+            Some(path) if path.exists() => std::fs::read_to_string(path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
             _ => Self::default(),
         }
     }
@@ -66,34 +48,6 @@ impl AppSettings {
             std::fs::write(path, json)?;
         }
         Ok(())
-    }
-}
-
-impl From<Package> for PackageJson {
-    fn from(p: Package) -> Self {
-        let size_display = p.size_display();
-        Self {
-            name: p.name,
-            version: p.version,
-            available_version: p.available_version,
-            description: p.description,
-            source: p.source.to_string(),
-            status: match p.status {
-                PackageStatus::Installed => "installed",
-                PackageStatus::UpdateAvailable => "update_available",
-                PackageStatus::NotInstalled => "not_installed",
-                PackageStatus::Installing => "installing",
-                PackageStatus::Removing => "removing",
-                PackageStatus::Updating => "updating",
-            }
-            .to_string(),
-            size: p.size,
-            size_display,
-            homepage: p.homepage,
-            license: p.license,
-            maintainer: p.maintainer,
-            dependencies: p.dependencies,
-        }
     }
 }
 
@@ -111,32 +65,82 @@ impl OperationState {
             message: Mutex::new(String::new()),
         }
     }
-
-    fn clone_arc(&self) -> Arc<Self> {
-        Arc::new(Self {
-            cancelled: AtomicBool::new(self.cancelled.load(Ordering::Relaxed)),
-            progress: AtomicU64::new(self.progress.load(Ordering::Relaxed)),
-            message: Mutex::new(self.message.lock().await.clone()),
-        })
-    }
 }
 
 struct AppState {
-    package_manager: Mutex<PackageManager>,
+    package_manager: RwLock<PackageManager>,
     settings: Mutex<AppSettings>,
-    operation_states: Mutex<std::collections::HashMap<String, Arc<OperationState>>>,
+    operation_states: Mutex<HashMap<String, Arc<OperationState>>>,
+}
+
+fn enabled_sources_from_settings(settings: &AppSettings) -> HashSet<PackageSource> {
+    settings
+        .enabled_sources
+        .iter()
+        .filter_map(|source| PackageSource::from_str(source))
+        .collect()
+}
+
+fn apply_settings_to_manager(manager: &mut PackageManager, settings: &AppSettings) {
+    let configured_sources = enabled_sources_from_settings(settings);
+    if configured_sources.is_empty() {
+        manager.set_enabled_sources(manager.available_sources());
+    } else {
+        manager.set_enabled_sources(configured_sources);
+    }
+}
+
+fn source_enabled(settings: &AppSettings, source: PackageSource, available: bool) -> bool {
+    let configured_sources = enabled_sources_from_settings(settings);
+    if configured_sources.is_empty() {
+        available
+    } else {
+        configured_sources.contains(&source)
+    }
+}
+
+fn package_status_value(status: PackageStatus) -> &'static str {
+    match status {
+        PackageStatus::Installed => "installed",
+        PackageStatus::UpdateAvailable => "update_available",
+        PackageStatus::NotInstalled => "not_installed",
+        PackageStatus::Installing => "installing",
+        PackageStatus::Removing => "removing",
+        PackageStatus::Updating => "updating",
+    }
+}
+
+fn package_to_json(package: Package) -> serde_json::Value {
+    serde_json::json!({
+        "name": package.name,
+        "version": package.version,
+        "available_version": package.available_version,
+        "description": package.description,
+        "source": package.source.to_string(),
+        "status": package_status_value(package.status),
+        "size": package.size,
+        "size_display": package.size_display(),
+        "homepage": package.homepage,
+        "license": package.license,
+        "maintainer": package.maintainer,
+        "dependencies": package.dependencies,
+    })
 }
 
 impl AppState {
     fn new() -> Self {
+        let settings = AppSettings::load();
+        let mut package_manager = PackageManager::new();
+        apply_settings_to_manager(&mut package_manager, &settings);
+
         Self {
-            package_manager: Mutex::new(PackageManager::new()),
-            settings: Mutex::new(AppSettings::load()),
-            operation_states: Mutex::new(std::collections::HashMap::new()),
+            package_manager: RwLock::new(package_manager),
+            settings: Mutex::new(settings),
+            operation_states: Mutex::new(HashMap::new()),
         }
     }
 
-    fn get_operation_state(&self, operation_id: &str) -> Arc<OperationState> {
+    async fn get_operation_state(&self, operation_id: &str) -> Arc<OperationState> {
         let mut states = self.operation_states.lock().await;
         if let Some(state) = states.get(operation_id) {
             return state.clone();
@@ -151,11 +155,12 @@ impl AppState {
 async fn list_sources() -> Result<Vec<serde_json::Value>, String> {
     Ok(PackageSource::ALL
         .iter()
-        .map(|s| {
+        .map(|source| {
             serde_json::json!({
-                "source": s.to_string(),
-                "display": s.description(),
-                "icon": s.icon_name(),
+                "id": source.to_string(),
+                "name": source.to_string(),
+                "description": source.description(),
+                "icon": source.icon_name(),
                 "enabled": true
             })
         })
@@ -164,40 +169,23 @@ async fn list_sources() -> Result<Vec<serde_json::Value>, String> {
 
 #[tauri::command]
 async fn list_installed_packages(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let manager = state.package_manager.lock().await;
+    let manager = state.package_manager.read().await;
     let packages = manager
         .list_all_installed()
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(packages
-        .into_iter()
-        .map(|p| serde_json::json!({
-            "name": p.name,
-            "version": p.version,
-            "available_version": p.available_version,
-            "description": p.description,
-            "source": p.source.to_string(),
-            "status": match p.status {
-                PackageStatus::Installed => "installed",
-                PackageStatus::UpdateAvailable => "update_available",
-                PackageStatus::NotInstalled => "not_installed",
-                _ => "unknown",
-            },
-            "size": p.size,
-            "size_display": p.size_display(),
-        }))
-        .collect())
+    Ok(packages.into_iter().map(package_to_json).collect())
 }
 
 #[tauri::command]
 async fn list_available_packages(
     _source: Option<String>,
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let manager = state.package_manager.lock().await;
+    let manager = state.package_manager.read().await;
     let packages = manager
         .list_all_installed()
         .await
@@ -206,78 +194,38 @@ async fn list_available_packages(
     Ok(packages
         .into_iter()
         .filter(|p| p.status == PackageStatus::NotInstalled)
-        .map(|p| serde_json::json!({
-            "name": p.name,
-            "version": p.version,
-            "available_version": p.available_version,
-            "description": p.description,
-            "source": p.source.to_string(),
-            "status": "not_installed",
-            "size": p.size,
-            "size_display": p.size_display(),
-        }))
+        .map(package_to_json)
         .collect())
 }
 
 #[tauri::command]
-async fn check_updates(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Vec<serde_json::Value>, String> {
-    let manager = state.package_manager.lock().await;
+async fn check_updates(state: State<'_, Arc<AppState>>) -> Result<Vec<serde_json::Value>, String> {
+    let manager = state.package_manager.read().await;
     let updates = manager
         .check_all_updates()
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(updates
-        .into_iter()
-        .map(|p| serde_json::json!({
-            "name": p.name,
-            "version": p.version,
-            "available_version": p.available_version,
-            "description": p.description,
-            "source": p.source.to_string(),
-            "status": "update_available",
-            "size": p.size,
-            "size_display": p.size_display(),
-        }))
-        .collect())
+    Ok(updates.into_iter().map(package_to_json).collect())
 }
 
 #[tauri::command]
 async fn install_package(
     name: String,
     source: String,
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
     window: tauri::Window,
 ) -> Result<(), String> {
     let source_enum =
         PackageSource::from_str(&source).ok_or_else(|| format!("Unknown source: {}", source))?;
 
-    let manager = state.package_manager.lock().await;
+    let manager = state.package_manager.read().await;
     let operation_id = format!("install-{}", name);
-    let op_state = state.get_operation_state(&operation_id);
+    let op_state = state.get_operation_state(&operation_id).await;
 
     op_state.cancelled.store(false, Ordering::Relaxed);
     op_state.progress.store(0, Ordering::Relaxed);
     *op_state.message.lock().await = format!("Installing {}", name);
-
-    let (log_sender, mut log_receiver): (mpsc::Sender<StreamLine>, mpsc::Receiver<StreamLine>) = mpsc::channel(100);
-
-    let window_clone = window.clone();
-    let log_task = tokio::spawn(async move {
-        while let Some(line) = log_receiver.recv().await {
-            let _ = window_clone.emit(
-                "operation-log",
-                serde_json::json!({
-                    "operation_id": "install",
-                    "name": name,
-                    "line": line.text,
-                    "is_error": line.is_error,
-                }),
-            );
-        }
-    });
 
     let _ = window.emit(
         "operation-progress",
@@ -307,9 +255,16 @@ async fn install_package(
     };
 
     let result = manager.install(&package).await;
-
-    drop(log_sender);
-    let _ = log_task.await;
+    op_state.progress.store(100, Ordering::Relaxed);
+    *op_state.message.lock().await = if result.is_ok() {
+        format!("Installed {}", name)
+    } else {
+        format!(
+            "Failed to install {}: {}",
+            name,
+            result.as_ref().err().expect("install error should exist")
+        )
+    };
 
     let _ = window.emit(
         "operation-progress",
@@ -333,17 +288,18 @@ async fn install_package(
 async fn remove_package(
     name: String,
     source: String,
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
     window: tauri::Window,
 ) -> Result<(), String> {
     let source_enum =
         PackageSource::from_str(&source).ok_or_else(|| format!("Unknown source: {}", source))?;
 
-    let manager = state.package_manager.lock().await;
+    let manager = state.package_manager.read().await;
     let operation_id = format!("remove-{}", name);
-    let op_state = state.get_operation_state(&operation_id);
+    let op_state = state.get_operation_state(&operation_id).await;
 
     op_state.cancelled.store(false, Ordering::Relaxed);
+    op_state.progress.store(0, Ordering::Relaxed);
     *op_state.message.lock().await = format!("Removing {}", name);
 
     let _ = window.emit(
@@ -374,6 +330,16 @@ async fn remove_package(
     };
 
     let result = manager.remove(&package).await;
+    op_state.progress.store(100, Ordering::Relaxed);
+    *op_state.message.lock().await = if result.is_ok() {
+        format!("Removed {}", name)
+    } else {
+        format!(
+            "Failed to remove {}: {}",
+            name,
+            result.as_ref().err().expect("remove error should exist")
+        )
+    };
 
     let _ = window.emit(
         "operation-progress",
@@ -397,17 +363,18 @@ async fn remove_package(
 async fn update_package(
     name: String,
     source: String,
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
     window: tauri::Window,
 ) -> Result<(), String> {
     let source_enum =
         PackageSource::from_str(&source).ok_or_else(|| format!("Unknown source: {}", source))?;
 
-    let manager = state.package_manager.lock().await;
+    let manager = state.package_manager.read().await;
     let operation_id = format!("update-{}", name);
-    let op_state = state.get_operation_state(&operation_id);
+    let op_state = state.get_operation_state(&operation_id).await;
 
     op_state.cancelled.store(false, Ordering::Relaxed);
+    op_state.progress.store(0, Ordering::Relaxed);
     *op_state.message.lock().await = format!("Updating {}", name);
 
     let _ = window.emit(
@@ -438,6 +405,16 @@ async fn update_package(
     };
 
     let result = manager.update(&package).await;
+    op_state.progress.store(100, Ordering::Relaxed);
+    *op_state.message.lock().await = if result.is_ok() {
+        format!("Updated {}", name)
+    } else {
+        format!(
+            "Failed to update {}: {}",
+            name,
+            result.as_ref().err().expect("update error should exist")
+        )
+    };
 
     let _ = window.emit(
         "operation-progress",
@@ -460,29 +437,12 @@ async fn update_package(
 #[tauri::command]
 async fn search_packages(
     query: String,
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let manager = state.package_manager.lock().await;
+    let manager = state.package_manager.read().await;
     let results = manager.search(&query).await.map_err(|e| e.to_string())?;
 
-    Ok(results
-        .into_iter()
-        .map(|p| serde_json::json!({
-            "name": p.name,
-            "version": p.version,
-            "available_version": p.available_version,
-            "description": p.description,
-            "source": p.source.to_string(),
-            "status": match p.status {
-                PackageStatus::Installed => "installed",
-                PackageStatus::UpdateAvailable => "update_available",
-                PackageStatus::NotInstalled => "not_installed",
-                _ => "unknown",
-            },
-            "size": p.size,
-            "size_display": p.size_display(),
-        }))
-        .collect())
+    Ok(results.into_iter().map(package_to_json).collect())
 }
 
 #[tauri::command]
@@ -512,7 +472,7 @@ async fn get_package_info(name: String, source: String) -> Result<serde_json::Va
 }
 
 #[tauri::command]
-async fn load_settings(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+async fn load_settings(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let settings = state.settings.lock().await;
     Ok(serde_json::json!({
         "dark_mode": settings.dark_mode,
@@ -525,7 +485,7 @@ async fn load_settings(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_j
 #[tauri::command]
 async fn save_settings(
     settings: serde_json::Value,
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let mut app_settings = state.settings.lock().await;
 
@@ -545,31 +505,37 @@ async fn save_settings(
             .collect();
     }
 
-    app_settings.save().map_err(|e| e.to_string())
+    let updated_settings = app_settings.clone();
+    app_settings.save().map_err(|e| e.to_string())?;
+    drop(app_settings);
+
+    let mut manager = state.package_manager.write().await;
+    apply_settings_to_manager(&mut manager, &updated_settings);
+
+    Ok(())
 }
 
 #[tauri::command]
 async fn get_backend_sources(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let manager = state.package_manager.lock().await;
-    let sources = manager.available_sources();
+    let manager = state.package_manager.read().await;
+    let available_sources = manager.available_sources();
+    drop(manager);
 
     let settings = state.settings.lock().await;
-    let enabled_sources: std::collections::HashSet<String> =
-        settings.enabled_sources.iter().cloned().collect();
 
-    Ok(sources
+    Ok(PackageSource::ALL
         .iter()
-        .map(|s| {
-            let id = s.to_string();
-            let is_enabled = enabled_sources.is_empty() || enabled_sources.contains(&id);
+        .map(|source| {
+            let available = available_sources.contains(source);
             serde_json::json!({
-                "id": id,
-                "name": s.to_string(),
-                "description": s.description(),
-                "icon": s.icon_name(),
-                "enabled": is_enabled
+                "id": source.to_string(),
+                "name": source.to_string(),
+                "description": source.description(),
+                "icon": source.icon_name(),
+                "available": available,
+                "enabled": available && source_enabled(&settings, *source, available)
             })
         })
         .collect())
@@ -577,11 +543,14 @@ async fn get_backend_sources(
 
 #[tauri::command]
 async fn update_all_packages(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
     window: tauri::Window,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let manager = state.package_manager.lock().await;
-    let updates = manager.check_all_updates().await.map_err(|e| e.to_string())?;
+    let manager = state.package_manager.read().await;
+    let updates = manager
+        .check_all_updates()
+        .await
+        .map_err(|e| e.to_string())?;
 
     let total = updates.len();
     let mut completed = 0;
@@ -595,57 +564,71 @@ async fn update_all_packages(
         }),
     );
 
-    use futures::stream::FuturesUnordered;
+    for pkg in updates {
+        let name = pkg.name.clone();
+        let source = pkg.source.to_string();
+        let operation_id = format!("batch-update-{}-{}", source, name);
 
-    let mut tasks: FuturesUnordered<_> = updates
-        .into_iter()
-        .map(|pkg| {
-            let manager = &manager;
-            let window = window.clone();
-            let name = pkg.name.clone();
-            let source = pkg.source.to_string();
-
-            tokio::spawn(async move {
-                let result = manager.update(&pkg).await;
-                let status = if result.is_ok() { "updated" } else { "failed" };
-                let error = result.as_ref().err().map(|e| e.to_string());
-
-                let _ = window.emit(
-                    "update-progress",
-                    serde_json::json!({
-                        "name": name,
-                        "source": source,
-                        "status": status,
-                        "error": error,
-                    }),
-                );
-
-                serde_json::json!({
-                    "name": name,
-                    "source": source,
-                    "status": status,
-                    "error": error
-                })
-            })
-        })
-        .collect();
-
-    while let Some(result) = tasks.next().await {
-        completed += 1;
-        let json_result = result.unwrap_or_else(|e| {
+        let _ = window.emit(
+            "operation-progress",
             serde_json::json!({
-                "status": "error",
-                "error": e.to_string()
-            })
+                "operation_id": operation_id,
+                "name": name,
+                "status": "started",
+                "progress": 0,
+                "message": format!("Starting update of {} from {}", name, source),
+            }),
+        );
+
+        let result = manager.update(&pkg).await;
+        let status = if result.is_ok() { "updated" } else { "failed" };
+        let error = result.as_ref().err().map(|e| e.to_string());
+
+        let _ = window.emit(
+            "operation-progress",
+            serde_json::json!({
+                "operation_id": operation_id,
+                "name": name,
+                "status": if result.is_ok() { "completed" } else { "failed" },
+                "progress": 100,
+                "message": if result.is_ok() {
+                    format!("Updated {} from {}", name, source)
+                } else {
+                    format!(
+                        "Failed to update {} from {}: {}",
+                        name,
+                        source,
+                        result.as_ref().err().unwrap()
+                    )
+                },
+            }),
+        );
+
+        let _ = window.emit(
+            "update-progress",
+            serde_json::json!({
+                "name": name,
+                "source": source,
+                "status": status,
+                "error": error,
+            }),
+        );
+
+        let json_result = serde_json::json!({
+            "name": name,
+            "source": source,
+            "status": status,
+            "error": error
         });
         results.push(json_result);
+        completed += 1;
 
         let _ = window.emit(
             "batch-update-progress",
             serde_json::json!({
                 "completed": completed,
                 "total": total,
-                "progress": (completed * 100) / total,
+                "progress": if total == 0 { 100 } else { (completed * 100) / total },
             }),
         );
     }
@@ -671,7 +654,7 @@ async fn update_all_packages(
 #[tauri::command]
 async fn cancel_operation(
     operation_id: String,
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let states = state.operation_states.lock().await;
     if let Some(op_state) = states.get(&operation_id) {
@@ -684,7 +667,7 @@ async fn cancel_operation(
 #[tauri::command]
 async fn get_operation_status(
     operation_id: String,
-    state: tauri::State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<serde_json::Value, String> {
     let states = state.operation_states.lock().await;
     if let Some(op_state) = states.get(&operation_id) {

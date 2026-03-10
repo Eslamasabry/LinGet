@@ -467,6 +467,8 @@ mod tests {
             perms.set_mode(0o755);
         }
         fs::set_permissions(&script_path, perms).expect("chmod fake mamba script");
+        script.flush().expect("flush fake mamba script");
+        drop(script);
 
         let old_path = env::var_os("PATH");
         let joined_path = match old_path.clone() {
@@ -485,9 +487,7 @@ mod tests {
     #[tokio::test]
     #[cfg(target_os = "linux")]
     async fn test_check_updates_uses_dry_run_and_json() {
-        let _path_env_guard = TEST_PATH_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _path_env_guard = TEST_PATH_ENV_LOCK.lock().await;
         let (fixture_dir, log_path, old_path) = create_fake_mamba_script();
         let script_path = fixture_dir.join("mamba");
 
@@ -556,9 +556,7 @@ mod tests {
     #[tokio::test]
     #[cfg(target_os = "linux")]
     async fn test_get_changelog_builds_version_timeline_from_search() {
-        let _path_env_guard = TEST_PATH_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _path_env_guard = TEST_PATH_ENV_LOCK.lock().await;
         let (fixture_dir, log_path, old_path) = create_fake_mamba_script();
 
         let backend = MambaBackend::new();

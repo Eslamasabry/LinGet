@@ -1,55 +1,5 @@
+pub use crate::models::history::FailureCategory;
 use crate::models::history::{TaskQueueEntry, TaskQueueStatus};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FailureCategory {
-    Permissions,
-    Network,
-    NotFound,
-    Conflict,
-    Unknown,
-}
-
-impl FailureCategory {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Permissions => "Permissions",
-            Self::Network => "Network",
-            Self::NotFound => "Not Found",
-            Self::Conflict => "Conflict",
-            Self::Unknown => "Unknown",
-        }
-    }
-
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::Permissions => "E_PERMISSION",
-            Self::Network => "E_NETWORK",
-            Self::NotFound => "E_NOT_FOUND",
-            Self::Conflict => "E_CONFLICT",
-            Self::Unknown => "E_UNKNOWN",
-        }
-    }
-
-    pub fn remediation_copy(self) -> &'static str {
-        match self {
-            Self::Permissions => "Authentication or privilege escalation was rejected.",
-            Self::Network => "Network issue detected while contacting package source.",
-            Self::NotFound => "Package or version was not found in enabled repositories.",
-            Self::Conflict => "Package manager reported lock/dependency conflicts.",
-            Self::Unknown => "No specific category matched this failure.",
-        }
-    }
-
-    pub fn action_hint(self) -> &'static str {
-        match self {
-            Self::Permissions => "[M] re-authenticate, then [R] retry",
-            Self::Network => "[M] refresh metadata, then [R] retry",
-            Self::NotFound => "[M] refresh and verify package/source before retry",
-            Self::Conflict => "[M] resolve lock/conflict, then [R] retry",
-            Self::Unknown => "[R] retry, then [M] inspect remediation guidance",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct RecoveryState {

@@ -1,4 +1,4 @@
-use crate::models::{fetch_enrichment, get_package_icon, Package, PackageStatus};
+use crate::models::{fetch_enrichment, get_package_icon, Package, PackageSource, PackageStatus};
 use crate::ui::strip_html_tags;
 use crate::ui::widgets::{PackageRowInit, PackageRowInput, PackageRowOutput};
 
@@ -14,6 +14,7 @@ pub enum PackageCardCmd {
 
 pub struct PackageCardModel {
     pub package: Package,
+    pub alternative_sources: Vec<PackageSource>,
     pub is_favorite: bool,
     pub is_selected: bool,
     pub selection_mode: bool,
@@ -67,6 +68,40 @@ fn get_status_badge_class(status: PackageStatus) -> &'static str {
 }
 
 impl PackageCardModel {
+    fn alternative_sources_label(&self) -> Option<String> {
+        if self.alternative_sources.is_empty() {
+            return None;
+        }
+
+        let mut labels: Vec<String> = self
+            .alternative_sources
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        labels.sort();
+        Some(format!("Also in {}", labels.join(", ")))
+    }
+
+    fn source_badge_label(&self) -> String {
+        if self.alternative_sources.is_empty() {
+            self.package.source.to_string()
+        } else {
+            format!("{}+{}", self.package.source, self.alternative_sources.len())
+        }
+    }
+
+    fn source_badge_tooltip(&self) -> String {
+        if let Some(alternatives) = self.alternative_sources_label() {
+            format!("Filter by {}\n{}", self.package.source, alternatives)
+        } else {
+            format!("Filter by {}", self.package.source)
+        }
+    }
+
+    fn has_alternative_sources(&self) -> bool {
+        !self.alternative_sources.is_empty()
+    }
+
     fn get_css_classes(&self) -> Vec<String> {
         let mut classes = vec!["pkg-card".to_string()];
         if self.is_selected {
@@ -310,9 +345,12 @@ impl FactoryComponent for PackageCardModel {
                             },
 
                             gtk::Label {
-                                set_label: &self.package.source.to_string(),
+                                #[watch]
+                                set_label: &self.source_badge_label(),
                                 add_css_class: "chip",
                                 add_css_class: self.package.source.color_class(),
+                                #[watch]
+                                set_tooltip_text: Some(&self.source_badge_tooltip()),
                             },
                         },
 
@@ -330,6 +368,20 @@ impl FactoryComponent for PackageCardModel {
                             #[watch]
                             set_visible: !self.compact && !self.package.description.is_empty(),
                             set_max_width_chars: 32,
+                        },
+
+                        gtk::Label {
+                            #[watch]
+                            set_label: self.alternative_sources_label().as_deref().unwrap_or(""),
+                            add_css_class: "caption",
+                            add_css_class: "dim-label",
+                            set_wrap: true,
+                            set_wrap_mode: pango::WrapMode::WordChar,
+                            set_xalign: 0.5,
+                            set_justify: gtk::Justification::Center,
+                            #[watch]
+                            set_visible: !self.compact && self.has_alternative_sources(),
+                            set_max_width_chars: 28,
                         },
                     },
                 },
@@ -386,6 +438,7 @@ impl FactoryComponent for PackageCardModel {
 
         Self {
             package: init.package,
+            alternative_sources: init.alternative_sources,
             is_favorite: init.is_favorite,
             is_selected: false,
             selection_mode: init.selection_mode,

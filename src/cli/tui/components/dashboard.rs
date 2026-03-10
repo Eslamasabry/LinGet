@@ -35,14 +35,11 @@ pub fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
 
     let summary = format!(
         "Total Packages: {} | Installed: {} | Updates: {} | Favorites: {}",
-        app.filter_counts[0],
-        app.filter_counts[1],
-        app.filter_counts[2],
-        app.filter_counts[3]
+        app.filter_counts[0], app.filter_counts[1], app.filter_counts[2], app.filter_counts[3]
     );
 
-    let summary_paragraph = Paragraph::new(Line::from(Span::styled(summary, text())))
-        .alignment(Alignment::Center);
+    let summary_paragraph =
+        Paragraph::new(Line::from(Span::styled(summary, text()))).alignment(Alignment::Center);
     frame.render_widget(summary_paragraph, chunks[1]);
 
     let mut lines = vec![Line::from(Span::styled("Available Sources:", dim()))];
@@ -52,9 +49,12 @@ pub fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!("{} updates", counts[2]), accent()),
         ]));
     }
-    
+
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Press F2 to browse packages.", dim())));
+    lines.push(Line::from(Span::styled(
+        "Press F2 to browse packages.",
+        dim(),
+    )));
 
     frame.render_widget(Paragraph::new(lines), chunks[2]);
 }

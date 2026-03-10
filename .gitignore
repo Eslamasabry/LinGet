@@ -31,3 +31,18 @@ logs
 .ralph-tui
 .beads
 worktrees
+
+# Generated release artifacts
+linget-v*.tar.gz
+dist/linget-*/
+dist/linget-v*.tar.gz
+
+# Tauri generated assets
+linget-tauri/src-tauri/target/
+linget-tauri/ui/node_modules/
+linget-tauri/ui/dist/
+
+# Session and local scratch artifacts
+session-ses_*.md
+temp_*.rs
+autoremove

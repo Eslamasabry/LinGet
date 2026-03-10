@@ -5,31 +5,30 @@ use ratatui::symbols::border;
 pub mod palette {
     use super::*;
 
-    pub const CYAN: Color = Color::Rgb(102, 217, 239);
-    pub const YELLOW: Color = Color::Rgb(230, 219, 116);
-    pub const GREEN: Color = Color::Rgb(166, 226, 46);
-    pub const RED: Color = Color::Rgb(249, 38, 114);
-    pub const WHITE: Color = Color::Rgb(248, 248, 242);
-    pub const LIGHT_GRAY: Color = Color::Rgb(185, 185, 185);
-    pub const DARK_GRAY: Color = Color::Rgb(140, 140, 140);
-    pub const INACTIVE_BORDER: Color = Color::Rgb(90, 90, 90);
+    pub const CYAN: Color = Color::Rgb(136, 192, 208);
+    pub const YELLOW: Color = Color::Rgb(235, 203, 139);
+    pub const GREEN: Color = Color::Rgb(163, 190, 140);
+    pub const RED: Color = Color::Rgb(191, 97, 106);
+    pub const WHITE: Color = Color::Rgb(236, 239, 244);
+    pub const LIGHT_GRAY: Color = Color::Rgb(196, 201, 209);
+    pub const DARK_GRAY: Color = Color::Rgb(142, 151, 165);
+    pub const INACTIVE_BORDER: Color = Color::Rgb(76, 86, 106);
 
-    pub const MAGENTA: Color = Color::Rgb(174, 129, 255);
-    pub const BLUE: Color = Color::Rgb(104, 159, 232);
-    pub const ORANGE: Color = Color::Rgb(253, 151, 31);
-    pub const TEAL: Color = Color::Rgb(72, 209, 204);
-    pub const PEACH: Color = Color::Rgb(255, 183, 139);
-    pub const LAVENDER: Color = Color::Rgb(189, 147, 249);
-    pub const PINK: Color = Color::Rgb(255, 121, 198);
-    pub const SKY: Color = Color::Rgb(137, 220, 235);
+    pub const MAGENTA: Color = Color::Rgb(180, 142, 173);
+    pub const BLUE: Color = Color::Rgb(129, 161, 193);
+    pub const ORANGE: Color = Color::Rgb(208, 135, 112);
+    pub const TEAL: Color = Color::Rgb(143, 188, 187);
+    pub const PEACH: Color = Color::Rgb(216, 183, 148);
+    pub const LAVENDER: Color = Color::Rgb(180, 190, 254);
+    pub const PINK: Color = Color::Rgb(191, 120, 150);
+    pub const SKY: Color = Color::Rgb(129, 185, 223);
 
-    pub const SURFACE: Color = Color::Rgb(40, 42, 54);
-    pub const HEADER_BG: Color = Color::Rgb(30, 32, 46);
-    pub const BADGE_INSTALLED_BG: Color = Color::Rgb(30, 60, 20);
-    pub const BADGE_UPDATE_BG: Color = Color::Rgb(60, 55, 10);
-    pub const BADGE_NOT_INSTALLED_BG: Color = Color::Rgb(50, 50, 50);
-    pub const BADGE_PROGRESS_BG: Color = Color::Rgb(20, 50, 60);
-    pub const TAB_ACTIVE_BG: Color = Color::Rgb(55, 60, 80);
+    pub const HEADER_BG: Color = Color::Rgb(31, 35, 44);
+    pub const BADGE_INSTALLED_BG: Color = Color::Rgb(46, 64, 46);
+    pub const BADGE_UPDATE_BG: Color = Color::Rgb(74, 67, 42);
+    pub const BADGE_NOT_INSTALLED_BG: Color = Color::Rgb(56, 61, 74);
+    pub const BADGE_PROGRESS_BG: Color = Color::Rgb(44, 63, 74);
+    pub const TAB_ACTIVE_BG: Color = Color::Rgb(53, 74, 92);
 }
 
 pub const ROUNDED: border::Set = border::ROUNDED;
@@ -54,8 +53,8 @@ pub fn accent() -> Style {
 
 pub fn primary_action_button() -> Style {
     Style::default()
-        .bg(palette::CYAN)
-        .fg(Color::Black)
+        .bg(palette::TAB_ACTIVE_BG)
+        .fg(palette::WHITE)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -75,8 +74,8 @@ pub fn border_unfocused() -> Style {
 
 pub fn row_cursor() -> Style {
     Style::default()
-        .bg(palette::CYAN)
-        .fg(Color::Black)
+        .bg(palette::TAB_ACTIVE_BG)
+        .fg(palette::WHITE)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -130,7 +129,7 @@ pub fn header_bar() -> Style {
 
 pub fn tab_active() -> Style {
     Style::default()
-        .fg(palette::CYAN)
+        .fg(palette::WHITE)
         .bg(palette::TAB_ACTIVE_BG)
         .add_modifier(Modifier::BOLD)
 }
@@ -162,14 +161,6 @@ pub fn badge_progress() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-pub fn gauge_bar() -> Style {
-    Style::default().fg(palette::CYAN).bg(palette::SURFACE)
-}
-
-pub fn gauge_failed() -> Style {
-    Style::default().fg(palette::RED).bg(palette::SURFACE)
-}
-
 pub fn scrollbar_style() -> Style {
     Style::default().fg(palette::DARK_GRAY)
 }
@@ -197,6 +188,9 @@ pub fn source_color(source: PackageSource) -> Style {
         PackageSource::Dart => palette::BLUE,
         PackageSource::Deb => palette::PINK,
         PackageSource::AppImage => palette::PEACH,
+        PackageSource::Winget => palette::LAVENDER,
+        PackageSource::Chocolatey => palette::YELLOW,
+        PackageSource::Scoop => palette::SKY,
     };
     Style::default().fg(color)
 }

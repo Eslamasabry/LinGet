@@ -20,7 +20,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev build-essential pkg-config
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev build-essential pkg-config xvfb
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -28,8 +28,14 @@ jobs:
       - name: Install cargo-deb
         run: cargo install cargo-deb
 
+      - name: Run Tests
+        run: cargo test
+
       - name: Build Release Binary
         run: cargo build --release
+
+      - name: Smoke (install + headless GUI)
+        run: bash scripts/smoke-install.sh
 
       - name: Build Debian Package
         run: cargo deb
@@ -47,11 +53,15 @@ jobs:
           tar -czvf ../linget-v${VERSION}-linux-x86_64.tar.gz *
           cd ..
 
+      - name: Generate Checksums
+        run: sha256sum linget-v*-linux-x86_64.tar.gz target/debian/*.deb > linget-v${GITHUB_REF#refs/tags/v}-checksums.txt
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
             linget-v*-linux-x86_64.tar.gz
             target/debian/*.deb
+            linget-v*-checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

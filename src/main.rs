@@ -2,6 +2,7 @@ mod app;
 mod backend;
 mod cli;
 mod models;
+mod scheduler_runtime;
 mod ui;
 
 use clap::Parser;
@@ -18,9 +19,9 @@ enum RunMode {
 fn detect_run_mode() -> RunMode {
     let args: Vec<String> = std::env::args().collect();
 
-    // No arguments = TUI mode (interactive by default)
+    // No arguments = GUI mode (matches README, desktop launcher, and user expectations)
     if args.len() <= 1 {
-        return RunMode::Tui;
+        return RunMode::Gui;
     }
 
     match args[1].as_str() {
@@ -30,7 +31,9 @@ fn detect_run_mode() -> RunMode {
         "tui" => RunMode::Tui,
         // CLI commands
         "list" | "search" | "install" | "remove" | "update" | "info" | "sources" | "check"
-        | "completions" | "help" | "--help" | "-h" | "--version" | "-V" => RunMode::Cli,
+        | "completions" | "help" | "--help" | "-h" | "--version" | "-V" | "schedule" => {
+            RunMode::Cli
+        }
         // Unknown argument - let clap handle it (will show error or help)
         _ => RunMode::Cli,
     }

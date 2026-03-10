@@ -1,11 +1,18 @@
 use crate::backend::streaming::StreamLine;
-use crate::backend::{HistoryTracker, PackageManager};
+use crate::backend::{
+    BackendCapability, HistoryTracker, PackageManager, SearchCatalog, SourceCapabilityContext,
+};
 use crate::models::{
     alias::AliasViewData, get_global_recommendations, Config, EnabledSources, LayoutMode, Package,
     PackageSource, PackageStatus, Recommendation,
 };
+use crate::scheduler_runtime::{
+    execute_scheduled_task, sync_systemd_runtime, ScheduledTaskExecutionLock,
+    SchedulerRuntimeStatus,
+};
 use crate::ui::alias_view::AliasViewAction;
 use crate::ui::appearance::apply_appearance;
+use crate::ui::command_palette::PaletteCommandEntry;
 use crate::ui::header::Header;
 use crate::ui::health_dashboard::{
     build_health_dashboard, HealthAction, HealthData, HealthIssueData, Severity,
@@ -22,7 +29,9 @@ use crate::ui::storage_view::{CleanupAction, CleanupStats};
 use crate::ui::task_hub::{
     PackageOp, RetrySpec, TaskHubInit, TaskHubInput, TaskHubModel, TaskHubOutput, TaskStatus,
 };
-use crate::ui::task_queue_view::{build_task_queue_view, TaskQueueAction, TaskQueueViewData};
+use crate::ui::task_queue_view::{
+    build_task_queue_view, retry_failed_task_ids, TaskQueueAction, TaskQueueViewData,
+};
 use crate::ui::widgets::{
     ActionPreview, ActionType, CollectionDialogInit, CollectionDialogInput, CollectionDialogModel,
     CollectionDialogOutput, PackageCardModel, PackageRowInit, PackageRowModel, PackageRowOutput,
@@ -174,7 +183,7 @@ pub enum AppMsg {
     EscapePressed,
     LoadMore,
     DiscoverSearch(String),
-    DiscoverResultsLoaded(Vec<Package>),
+    DiscoverResultsLoaded(SearchCatalog),
     DiscoverSearchFailed(String),
     SetLayoutMode(LayoutMode),
     NewCollection,
@@ -253,6 +262,13 @@ pub enum AppMsg {
     FilterAliasesByShell(Option<crate::models::alias::Shell>),
     ScheduleTask(crate::models::ScheduledTask),
     ScheduleBulkTasks(Vec<crate::models::ScheduledTask>),
+    SyncSchedulerRuntime {
+        notify_if_fallback: bool,
+    },
+    SchedulerRuntimeSynchronized {
+        status: SchedulerRuntimeStatus,
+        notify_if_fallback: bool,
+    },
     CheckScheduledTasks,
     ExecuteScheduledTask(String),
     ScheduledTaskCompleted {
@@ -315,6 +331,7 @@ pub struct AppModel {
     pub total_filtered_count: usize,
     pub layout_mode: LayoutMode,
     pub discover_results: Vec<Package>,
+    pub discover_source_alternatives: HashMap<String, Vec<PackageSource>>,
     pub discover_loading: bool,
     pub pending_show_collection_dialog: RefCell<bool>,
     pub pending_sidebar_collections: RefCell<Option<HashMap<String, usize>>>,
@@ -343,6 +360,40 @@ pub struct AppModel {
 
 const DEFAULT_VISIBLE_LIMIT: usize = 100;
 const LOAD_MORE_INCREMENT: usize = 100;
+
+fn discover_alternative_sources(catalog: &SearchCatalog) -> HashMap<String, Vec<PackageSource>> {
+    catalog
+        .matches
+        .iter()
+        .filter(|entry| !entry.alternative_sources.is_empty())
+        .map(|entry| (entry.package.id(), entry.alternative_sources.clone()))
+        .collect()
+}
+
+fn reschedule_scheduled_tasks_now(
+    tasks: &mut [crate::models::ScheduledTask],
+    task_ids: &[String],
+) -> usize {
+    if task_ids.is_empty() {
+        return 0;
+    }
+
+    let now = chrono::Utc::now();
+    let task_ids: HashSet<&str> = task_ids.iter().map(String::as_str).collect();
+    let mut updated = 0usize;
+
+    for task in tasks.iter_mut() {
+        if task_ids.contains(task.id.as_str()) {
+            task.completed = false;
+            task.completed_at = None;
+            task.error = None;
+            task.scheduled_at = now;
+            updated += 1;
+        }
+    }
+
+    updated
+}
 
 impl AppModel {
     fn filtered_packages(&self) -> (Vec<Package>, usize) {
@@ -417,6 +468,90 @@ impl AppModel {
         (packages, total_count)
     }
 
+    fn source_capability_context(&self, source: PackageSource) -> SourceCapabilityContext {
+        SourceCapabilityContext::new(
+            source,
+            self.available_sources.contains(&source),
+            self.enabled_sources.contains(&source),
+        )
+    }
+
+    fn any_enabled_source_supports(&self, capability: BackendCapability) -> bool {
+        self.enabled_sources.iter().copied().any(|source| {
+            self.source_capability_context(source)
+                .status(capability)
+                .is_supported()
+        })
+    }
+
+    fn command_palette_entries(&self) -> Vec<PaletteCommandEntry> {
+        use crate::ui::command_palette::PaletteCommand;
+
+        PaletteCommand::all_static()
+            .into_iter()
+            .map(|command| match command {
+                PaletteCommand::UpdateAll => {
+                    if self.updates_count == 0 {
+                        PaletteCommandEntry::disabled(command, "No pending updates")
+                    } else if self.any_enabled_source_supports(BackendCapability::Update) {
+                        PaletteCommandEntry::enabled(command)
+                    } else {
+                        PaletteCommandEntry::disabled(
+                            command,
+                            "No enabled source supports update operations",
+                        )
+                    }
+                }
+                PaletteCommand::ScheduleAllUpdates => {
+                    if self.updates_count == 0 {
+                        PaletteCommandEntry::disabled(command, "No pending updates to schedule")
+                    } else if self.any_enabled_source_supports(BackendCapability::Update) {
+                        PaletteCommandEntry::enabled(command)
+                    } else {
+                        PaletteCommandEntry::disabled(
+                            command,
+                            "No enabled source supports update operations",
+                        )
+                    }
+                }
+                PaletteCommand::CleanCaches => {
+                    if self.any_enabled_source_supports(BackendCapability::CleanupCache) {
+                        PaletteCommandEntry::enabled(command)
+                    } else {
+                        PaletteCommandEntry::disabled(
+                            command,
+                            "No enabled source supports cache cleanup",
+                        )
+                    }
+                }
+                PaletteCommand::RefreshPackages => {
+                    if self.is_loading {
+                        PaletteCommandEntry::disabled(command, "Package refresh is already running")
+                    } else {
+                        PaletteCommandEntry::enabled(command)
+                    }
+                }
+                PaletteCommand::ExportPackages => {
+                    if self.packages.is_empty() {
+                        PaletteCommandEntry::disabled(command, "No packages available to export")
+                    } else {
+                        PaletteCommandEntry::enabled(command)
+                    }
+                }
+                _ => PaletteCommandEntry::enabled(command),
+            })
+            .collect()
+    }
+
+    fn sync_enabled_sources_with_manager(&self) {
+        let pm = self.package_manager.clone();
+        let enabled_sources = self.enabled_sources.clone();
+        relm4::spawn(async move {
+            let mut manager = pm.lock().await;
+            manager.set_enabled_sources(enabled_sources);
+        });
+    }
+
     fn update_counts(&mut self) {
         let config = self.config.borrow();
         let enabled_packages: Vec<_> = self
@@ -473,6 +608,14 @@ impl AppModel {
                 list_guard.clear();
                 let mut last_source: Option<PackageSource> = None;
                 for pkg in filtered {
+                    let alternative_sources = if self.current_view == View::Home {
+                        self.discover_source_alternatives
+                            .get(&pkg.id())
+                            .cloned()
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
                     let is_favorite = favorite_ids.contains(&pkg.id());
                     let is_scheduled = scheduler.has_pending_schedule(&pkg.id());
                     let is_group_header = last_source != Some(pkg.source);
@@ -485,6 +628,7 @@ impl AppModel {
                         compact,
                         is_scheduled,
                         is_group_header,
+                        alternative_sources,
                     });
                 }
             }
@@ -492,6 +636,14 @@ impl AppModel {
                 let mut card_guard = self.package_cards.guard();
                 card_guard.clear();
                 for pkg in filtered {
+                    let alternative_sources = if self.current_view == View::Home {
+                        self.discover_source_alternatives
+                            .get(&pkg.id())
+                            .cloned()
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
                     let is_favorite = favorite_ids.contains(&pkg.id());
                     let is_scheduled = scheduler.has_pending_schedule(&pkg.id());
                     card_guard.push_back(PackageRowInit {
@@ -502,6 +654,7 @@ impl AppModel {
                         compact,
                         is_scheduled,
                         is_group_header: false,
+                        alternative_sources,
                     });
                 }
             }
@@ -616,7 +769,7 @@ impl SimpleComponent for AppModel {
             apply_appearance(&cfg.appearance);
         }
 
-        let manager = PackageManager::new();
+        let mut manager = PackageManager::new();
         let available_sources = manager.available_sources();
 
         let enabled_from_config = config.borrow().enabled_sources.to_sources();
@@ -624,6 +777,7 @@ impl SimpleComponent for AppModel {
             .into_iter()
             .filter(|s| available_sources.contains(s))
             .collect();
+        manager.set_enabled_sources(enabled_sources.clone());
 
         let package_rows: FactoryVecDeque<PackageRowModel> = FactoryVecDeque::builder()
             .launch(
@@ -717,6 +871,7 @@ impl SimpleComponent for AppModel {
             total_filtered_count: 0,
             layout_mode,
             discover_results: Vec::new(),
+            discover_source_alternatives: HashMap::new(),
             discover_loading: false,
             pending_show_collection_dialog: RefCell::new(false),
             pending_sidebar_collections: RefCell::new(None),
@@ -1250,6 +1405,7 @@ impl SimpleComponent for AppModel {
                 .forward(sender.input_sender(), |output| match output {
                     TaskHubOutput::UnreadCountChanged(count) => AppMsg::UnreadCountChanged(count),
                     TaskHubOutput::RetryOperation(spec) => AppMsg::RetryOperation(spec),
+                    TaskHubOutput::CopyText(text) => AppMsg::CopyToClipboard(text),
                 });
 
         let task_hub_popover = gtk::Popover::builder()
@@ -1386,6 +1542,9 @@ impl SimpleComponent for AppModel {
         toolbar_view.set_content(Some(&toast_overlay));
 
         root.set_content(Some(&toolbar_view));
+        if !start_minimized {
+            root.present();
+        }
 
         let key_controller = gtk::EventControllerKey::new();
         let waiting_for_g = Rc::new(RefCell::new(false));
@@ -1665,6 +1824,9 @@ impl SimpleComponent for AppModel {
                 glib::ControlFlow::Continue
             });
             sender.input(AppMsg::CheckScheduledTasks);
+            sender.input(AppMsg::SyncSchedulerRuntime {
+                notify_if_fallback: false,
+            });
         }
 
         {
@@ -1734,6 +1896,7 @@ impl SimpleComponent for AppModel {
                 }
                 if view == View::Home {
                     self.discover_results.clear();
+                    self.discover_source_alternatives.clear();
                     if !self.search_query.is_empty() {
                         sender.input(AppMsg::DiscoverSearch(self.search_query.clone()));
                     }
@@ -2298,6 +2461,7 @@ impl SimpleComponent for AppModel {
                     let _ = config.save();
                 }
 
+                self.sync_enabled_sources_with_manager();
                 self.update_counts();
                 sender.input(AppMsg::LoadPackages);
             }
@@ -2311,6 +2475,7 @@ impl SimpleComponent for AppModel {
                     let _ = config.save();
                 }
 
+                self.sync_enabled_sources_with_manager();
                 self.update_counts();
                 sender.input(AppMsg::LoadPackages);
             }
@@ -2442,6 +2607,7 @@ impl SimpleComponent for AppModel {
             AppMsg::DiscoverSearch(query) => {
                 if query.len() < 2 {
                     self.discover_results.clear();
+                    self.discover_source_alternatives.clear();
                     self.refresh_package_list();
                     return;
                 }
@@ -2453,24 +2619,26 @@ impl SimpleComponent for AppModel {
                 relm4::spawn(async move {
                     let result = {
                         let manager = pm.lock().await;
-                        manager.search(&query).await
+                        manager.search_catalog(&query).await
                     };
                     match result {
-                        Ok(pkgs) => sender.input(AppMsg::DiscoverResultsLoaded(pkgs)),
+                        Ok(catalog) => sender.input(AppMsg::DiscoverResultsLoaded(catalog)),
                         Err(e) => sender.input(AppMsg::DiscoverSearchFailed(e.to_string())),
                     }
                 });
             }
 
-            AppMsg::DiscoverResultsLoaded(packages) => {
+            AppMsg::DiscoverResultsLoaded(catalog) => {
                 self.discover_loading = false;
-                self.discover_results = packages;
+                self.discover_source_alternatives = discover_alternative_sources(&catalog);
+                self.discover_results = catalog.packages();
                 self.refresh_package_list();
             }
 
             AppMsg::DiscoverSearchFailed(error) => {
                 self.discover_loading = false;
                 self.discover_results.clear();
+                self.discover_source_alternatives.clear();
                 sender.input(AppMsg::ShowToast(
                     format!("Search failed: {}", error),
                     ToastType::Error,
@@ -2590,11 +2758,19 @@ impl SimpleComponent for AppModel {
                                     stats.total_recoverable += cache_size;
                                 }
                             }
-                            if let Ok(orphans) = backend.get_orphaned_packages().await {
-                                let count = orphans.len();
-                                if count > 0 {
-                                    stats.total_orphaned += count;
-                                    stats.orphaned_packages.insert(source, orphans);
+                            if manager
+                                .source_capability_status(
+                                    source,
+                                    BackendCapability::ListOrphanedPackages,
+                                )
+                                .is_supported()
+                            {
+                                if let Ok(orphans) = backend.get_orphaned_packages().await {
+                                    let count = orphans.len();
+                                    if count > 0 {
+                                        stats.total_orphaned += count;
+                                        stats.orphaned_packages.insert(source, orphans);
+                                    }
                                 }
                             }
                         }
@@ -3763,6 +3939,9 @@ impl SimpleComponent for AppModel {
                     notifications::send_task_scheduled_notification(&package_name, &scheduled_time);
                 }
                 sender.input(AppMsg::CheckScheduledTasks);
+                sender.input(AppMsg::SyncSchedulerRuntime {
+                    notify_if_fallback: true,
+                });
             }
 
             AppMsg::ScheduleBulkTasks(tasks) => {
@@ -3799,7 +3978,45 @@ impl SimpleComponent for AppModel {
                 ));
                 sender.input(AppMsg::DeselectAll);
                 sender.input(AppMsg::CheckScheduledTasks);
+                sender.input(AppMsg::SyncSchedulerRuntime {
+                    notify_if_fallback: true,
+                });
             }
+
+            AppMsg::SyncSchedulerRuntime { notify_if_fallback } => {
+                let has_pending_tasks = self.config.borrow().scheduler.pending_count() > 0;
+                let sender_sync = sender.clone();
+                glib::spawn_future_local(async move {
+                    let status = sync_systemd_runtime(has_pending_tasks).await;
+                    sender_sync.input(AppMsg::SchedulerRuntimeSynchronized {
+                        status,
+                        notify_if_fallback,
+                    });
+                });
+            }
+
+            AppMsg::SchedulerRuntimeSynchronized {
+                status,
+                notify_if_fallback,
+            } => match status {
+                SchedulerRuntimeStatus::SystemdUser => {
+                    tracing::debug!("Persistent scheduler synced with systemd --user");
+                }
+                SchedulerRuntimeStatus::InAppFallback { reason } => {
+                    tracing::warn!(
+                        reason = %reason,
+                        "Persistent scheduler unavailable; falling back to in-app execution"
+                    );
+                    if notify_if_fallback {
+                        sender.input(AppMsg::ShowToast(
+                            format!(
+                                "Background scheduler unavailable; tasks will run while LinGet stays open ({reason})"
+                            ),
+                            ToastType::Info,
+                        ));
+                    }
+                }
+            },
 
             AppMsg::CheckScheduledTasks => {
                 if self.tasks_data.running_task_id.is_some() {
@@ -3838,6 +4055,25 @@ impl SimpleComponent for AppModel {
                         return;
                     }
 
+                    let execution_lock = match ScheduledTaskExecutionLock::try_acquire() {
+                        Ok(Some(lock)) => lock,
+                        Ok(None) => {
+                            tracing::debug!(
+                                task_id = %task_id,
+                                "Skipping in-app scheduled task execution because another runner holds the scheduler lock"
+                            );
+                            return;
+                        }
+                        Err(error) => {
+                            tracing::error!(
+                                error = %error,
+                                task_id = %task_id,
+                                "Failed to acquire scheduler execution lock"
+                            );
+                            return;
+                        }
+                    };
+
                     self.tasks_data.running_task_id = Some(task_id.clone());
                     *self.pending_tasks_rebuild.borrow_mut() = true;
 
@@ -3848,28 +4084,10 @@ impl SimpleComponent for AppModel {
                     let package_name = task.package_name.clone();
 
                     glib::spawn_future_local(async move {
-                        let packages = {
+                        let _execution_lock = execution_lock;
+                        let result = {
                             let manager = pm.lock().await;
-                            manager.list_all_installed().await.unwrap_or_default()
-                        };
-
-                        let pkg = packages.iter().find(|p| p.id() == task.package_id);
-
-                        let result = if let Some(pkg) = pkg {
-                            let manager = pm.lock().await;
-                            match task.operation {
-                                crate::models::ScheduledOperation::Update => {
-                                    manager.update(pkg).await
-                                }
-                                crate::models::ScheduledOperation::Install => {
-                                    manager.install(pkg).await
-                                }
-                                crate::models::ScheduledOperation::Remove => {
-                                    manager.remove(pkg).await
-                                }
-                            }
-                        } else {
-                            Err(anyhow::anyhow!("Package not found"))
+                            execute_scheduled_task(&manager, &task).await
                         };
 
                         match result {
@@ -3936,6 +4154,9 @@ impl SimpleComponent for AppModel {
                 ));
                 sender.input(AppMsg::LoadPackages);
                 sender.input(AppMsg::CheckScheduledTasks);
+                sender.input(AppMsg::SyncSchedulerRuntime {
+                    notify_if_fallback: false,
+                });
             }
 
             AppMsg::ScheduledTaskFailed {
@@ -3959,6 +4180,9 @@ impl SimpleComponent for AppModel {
                     ToastType::Error,
                 ));
                 sender.input(AppMsg::CheckScheduledTasks);
+                sender.input(AppMsg::SyncSchedulerRuntime {
+                    notify_if_fallback: false,
+                });
             }
 
             AppMsg::CancelScheduledTask(task_id) => {
@@ -3973,6 +4197,9 @@ impl SimpleComponent for AppModel {
                 }
                 *self.pending_tasks_rebuild.borrow_mut() = true;
                 sender.input(AppMsg::CheckScheduledTasks);
+                sender.input(AppMsg::SyncSchedulerRuntime {
+                    notify_if_fallback: false,
+                });
             }
 
             AppMsg::TaskQueueAction(action) => match action {
@@ -4009,9 +4236,59 @@ impl SimpleComponent for AppModel {
                             ToastType::Info,
                         ));
                     }
+                    sender.input(AppMsg::SyncSchedulerRuntime {
+                        notify_if_fallback: false,
+                    });
                 }
                 TaskQueueAction::ClearCompleted => {
                     sender.input(AppMsg::ClearCompletedTasks);
+                }
+                TaskQueueAction::CopyFailureDetails(report) => {
+                    sender.input(AppMsg::CopyToClipboard(report));
+                }
+                TaskQueueAction::RetryFailed => {
+                    let task_ids = {
+                        let config = self.config.borrow();
+                        retry_failed_task_ids(&config.scheduler)
+                    };
+
+                    if task_ids.is_empty() {
+                        sender.input(AppMsg::ShowToast(
+                            "No failed scheduled tasks to retry".to_string(),
+                            ToastType::Info,
+                        ));
+                        return;
+                    }
+
+                    let retried = {
+                        let mut config = self.config.borrow_mut();
+                        let retried =
+                            reschedule_scheduled_tasks_now(&mut config.scheduler.tasks, &task_ids);
+                        if retried > 0 {
+                            let _ = config.save();
+                        }
+                        self.tasks_data.scheduler = config.scheduler.clone();
+                        retried
+                    };
+
+                    *self.pending_tasks_rebuild.borrow_mut() = true;
+                    let queue_state = if self.tasks_data.running_task_id.is_some() {
+                        " They will run after the current task."
+                    } else {
+                        ""
+                    };
+                    sender.input(AppMsg::ShowToast(
+                        format!(
+                            "Retrying {} failed scheduled task{}.{queue_state}",
+                            retried,
+                            if retried == 1 { "" } else { "s" }
+                        ),
+                        ToastType::Info,
+                    ));
+                    sender.input(AppMsg::CheckScheduledTasks);
+                    sender.input(AppMsg::SyncSchedulerRuntime {
+                        notify_if_fallback: false,
+                    });
                 }
                 TaskQueueAction::Retry(task_id) => {
                     let task_opt = {
@@ -4027,14 +4304,13 @@ impl SimpleComponent for AppModel {
                     if let Some(task) = task_opt {
                         {
                             let mut config = self.config.borrow_mut();
-                            if let Some(t) =
-                                config.scheduler.tasks.iter_mut().find(|t| t.id == task_id)
-                            {
-                                t.completed = false;
-                                t.error = None;
-                                t.scheduled_at = chrono::Utc::now();
+                            let retried = reschedule_scheduled_tasks_now(
+                                &mut config.scheduler.tasks,
+                                std::slice::from_ref(&task_id),
+                            );
+                            if retried > 0 {
+                                let _ = config.save();
                             }
-                            let _ = config.save();
                         }
 
                         self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
@@ -4048,6 +4324,9 @@ impl SimpleComponent for AppModel {
                                 ToastType::Info,
                             ));
                         }
+                        sender.input(AppMsg::SyncSchedulerRuntime {
+                            notify_if_fallback: false,
+                        });
                     }
                 }
             },
@@ -4103,6 +4382,9 @@ impl SimpleComponent for AppModel {
                     "Cleared completed tasks".to_string(),
                     ToastType::Success,
                 ));
+                sender.input(AppMsg::SyncSchedulerRuntime {
+                    notify_if_fallback: false,
+                });
             }
 
             AppMsg::DowngradePackage {
@@ -4806,6 +5088,7 @@ impl SimpleComponent for AppModel {
             *self.pending_command_palette.borrow_mut() = false;
 
             let palette = crate::ui::command_palette::CommandPalette::new(&widgets.split_view);
+            palette.set_commands(self.command_palette_entries());
             let sender = _sender.clone();
             palette.connect_command(move |cmd| {
                 sender.input(AppMsg::ExecutePaletteCommand(cmd));
@@ -4956,6 +5239,7 @@ pub fn run_relm4_app() {
                     let prefs_window = crate::ui::build_preferences_window(
                         &window,
                         config,
+                        PackageManager::new(),
                         move |scheme, accent| {
                             crate::ui::apply_theme_settings(&window_clone, scheme, accent);
                             apply_appearance(&config_clone.borrow().appearance);
@@ -5034,6 +5318,8 @@ pub fn run_relm4_app() {
         app.add_action(&view_updates_action);
     });
 
-    let app = RelmApp::from_app(app);
+    let app = RelmApp::from_app(app).with_args(vec![std::env::args()
+        .next()
+        .unwrap_or_else(|| "linget".to_string())]);
     app.run::<AppModel>(());
 }

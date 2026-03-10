@@ -10,6 +10,31 @@ use std::rc::Rc;
 type CommandCallback = Rc<RefCell<Option<Box<dyn Fn(PaletteCommand)>>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteCommandEntry {
+    pub command: PaletteCommand,
+    pub enabled: bool,
+    pub disabled_reason: Option<String>,
+}
+
+impl PaletteCommandEntry {
+    pub fn enabled(command: PaletteCommand) -> Self {
+        Self {
+            command,
+            enabled: true,
+            disabled_reason: None,
+        }
+    }
+
+    pub fn disabled(command: PaletteCommand, reason: impl Into<String>) -> Self {
+        Self {
+            command,
+            enabled: false,
+            disabled_reason: Some(reason.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteCommand {
     UpdateAll,
     ScheduleAllUpdates,
@@ -114,7 +139,7 @@ impl PaletteCommand {
         }
     }
 
-    fn all_static() -> Vec<PaletteCommand> {
+    pub fn all_static() -> Vec<PaletteCommand> {
         vec![
             PaletteCommand::UpdateAll,
             PaletteCommand::ScheduleAllUpdates,
@@ -192,7 +217,7 @@ pub struct CommandPalette {
     window: adw::Window,
     search_entry: gtk::SearchEntry,
     results_list: gtk::ListBox,
-    commands: Rc<RefCell<Vec<PaletteCommand>>>,
+    commands: Rc<RefCell<Vec<PaletteCommandEntry>>>,
     on_command: CommandCallback,
 }
 
@@ -260,7 +285,12 @@ impl CommandPalette {
         container.append(&list_container);
         window.set_content(Some(&container));
 
-        let commands = Rc::new(RefCell::new(PaletteCommand::all_static()));
+        let commands = Rc::new(RefCell::new(
+            PaletteCommand::all_static()
+                .into_iter()
+                .map(PaletteCommandEntry::enabled)
+                .collect(),
+        ));
         let on_command: CommandCallback = Rc::new(RefCell::new(None));
 
         let palette = Self {
@@ -299,9 +329,12 @@ impl CommandPalette {
             move |_, row| {
                 let idx = row.index() as usize;
                 let cmds = commands_for_activate.borrow();
-                if let Some(cmd) = cmds.get(idx) {
+                if let Some(entry) = cmds.get(idx) {
+                    if !entry.enabled {
+                        return;
+                    }
                     if let Some(ref callback) = *on_command.borrow() {
-                        callback(cmd.clone());
+                        callback(entry.command.clone());
                     }
                     window.close();
                 }
@@ -323,9 +356,12 @@ impl CommandPalette {
                 if let Some(row) = results_list_for_key.selected_row() {
                     let idx = row.index() as usize;
                     let cmds = commands_for_key.borrow();
-                    if let Some(cmd) = cmds.get(idx) {
+                    if let Some(entry) = cmds.get(idx) {
+                        if !entry.enabled {
+                            return glib::Propagation::Stop;
+                        }
                         if let Some(ref callback) = *on_command_for_key.borrow() {
-                            callback(cmd.clone());
+                            callback(entry.command.clone());
                         }
                         window_for_key.close();
                     }
@@ -360,20 +396,20 @@ impl CommandPalette {
         Self::update_results(&self.results_list, &self.commands.borrow(), query);
     }
 
-    fn update_results(list: &gtk::ListBox, commands: &[PaletteCommand], query: &str) {
+    fn update_results(list: &gtk::ListBox, commands: &[PaletteCommandEntry], query: &str) {
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
 
-        let mut scored: Vec<(i32, &PaletteCommand)> = commands
+        let mut scored: Vec<(i32, &PaletteCommandEntry)> = commands
             .iter()
-            .filter_map(|cmd| score_match(query, cmd).map(|score| (score, cmd)))
+            .filter_map(|entry| score_match(query, &entry.command).map(|score| (score, entry)))
             .collect();
 
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.enabled.cmp(&a.1.enabled)));
 
-        for (_, cmd) in scored.iter().take(10) {
-            let row = Self::create_command_row(cmd);
+        for (_, entry) in scored.iter().take(10) {
+            let row = Self::create_command_row(entry);
             list.append(&row);
         }
 
@@ -382,16 +418,23 @@ impl CommandPalette {
         }
     }
 
-    fn create_command_row(cmd: &PaletteCommand) -> adw::ActionRow {
+    fn create_command_row(entry: &PaletteCommandEntry) -> adw::ActionRow {
         let row = adw::ActionRow::builder()
-            .title(cmd.label())
-            .activatable(true)
+            .title(entry.command.label())
+            .activatable(entry.enabled)
             .build();
+        row.set_sensitive(entry.enabled);
 
-        let icon = gtk::Image::builder().icon_name(cmd.icon()).build();
+        if let Some(reason) = entry.disabled_reason.as_deref() {
+            row.set_subtitle(reason);
+        }
+
+        let icon = gtk::Image::builder()
+            .icon_name(entry.command.icon())
+            .build();
         row.add_prefix(&icon);
 
-        if let Some(shortcut) = cmd.shortcut() {
+        if let Some(shortcut) = entry.command.shortcut() {
             let shortcut_label = gtk::Label::builder().label(shortcut).build();
             shortcut_label.add_css_class("dim-label");
             shortcut_label.add_css_class("caption");
@@ -403,6 +446,11 @@ impl CommandPalette {
 
     pub fn connect_command<F: Fn(PaletteCommand) + 'static>(&self, callback: F) {
         *self.on_command.borrow_mut() = Some(Box::new(callback));
+    }
+
+    pub fn set_commands(&self, commands: Vec<PaletteCommandEntry>) {
+        *self.commands.borrow_mut() = commands;
+        self.populate_results(&self.search_entry.text());
     }
 
     pub fn present(&self) {

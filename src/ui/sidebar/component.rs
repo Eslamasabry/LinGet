@@ -562,7 +562,7 @@ impl SimpleComponent for SidebarModel {
         let updating_switches = Rc::new(RefCell::new(true));
 
         let mut provider_rows = HashMap::new();
-        for source in PackageSource::ALL {
+        for &source in PackageSource::current_platform_sources() {
             let row_widgets = Self::create_provider_row(source, &sender, updating_switches.clone());
 
             let is_available = init.available_sources.contains(&source);
@@ -744,7 +744,8 @@ impl SimpleComponent for SidebarModel {
 
         *widgets.updating_switches.borrow_mut() = true;
 
-        let mut sorted_sources: Vec<PackageSource> = PackageSource::ALL.to_vec();
+        let mut sorted_sources: Vec<PackageSource> =
+            PackageSource::current_platform_sources().to_vec();
         sorted_sources.sort_by(|a, b| {
             let count_a = self.provider_counts.get(a).copied().unwrap_or(0);
             let count_b = self.provider_counts.get(b).copied().unwrap_or(0);

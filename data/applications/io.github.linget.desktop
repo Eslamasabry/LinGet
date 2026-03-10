@@ -2,7 +2,7 @@
 Name=LinGet
 GenericName=Package Manager
 Comment=A modern package manager for Linux
-Exec=linget %U
+Exec=linget
 Icon=io.github.linget
 Terminal=false
 Type=Application

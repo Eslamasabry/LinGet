@@ -304,3 +304,22 @@ impl PackageBackend for DartBackend {
         Ok(commands)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_newer_version_detects_numeric_progression() {
+        assert!(DartBackend::is_newer_version("1.0.1", "1.0.0"));
+        assert!(DartBackend::is_newer_version("1.10.0", "1.9.9"));
+        assert!(!DartBackend::is_newer_version("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn is_newer_version_handles_suffixes_and_invalid_versions() {
+        assert!(DartBackend::is_newer_version("1.0.0-2", "1.0.0-1"));
+        assert!(DartBackend::is_newer_version("1.0.0", ""));
+        assert!(!DartBackend::is_newer_version("beta", "1.0.0"));
+    }
+}

@@ -106,3 +106,26 @@ pub fn strip_html_tags(text: &str) -> String {
     let stripped = HTML_TAG_PATTERN.replace_all(text, "");
     stripped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
+
+/// Escapes text for safe display in Adwaita row titles/subtitles, which parse Pango markup.
+pub fn escape_markup_text(text: &str) -> String {
+    glib::markup_escape_text(text).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{escape_markup_text, strip_html_tags};
+
+    #[test]
+    fn strip_html_tags_collapses_markup_and_whitespace() {
+        assert_eq!(
+            strip_html_tags("Hello <b>world</b>\n  from   <i>LinGet</i>"),
+            "Hello world from LinGet"
+        );
+    }
+
+    #[test]
+    fn escape_markup_text_escapes_pango_special_chars() {
+        assert_eq!(escape_markup_text("AT&T <pkg>"), "AT&amp;T &lt;pkg&gt;");
+    }
+}

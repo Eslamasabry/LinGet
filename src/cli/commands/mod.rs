@@ -8,6 +8,7 @@ pub mod list;
 pub mod permissions;
 pub mod providers;
 pub mod remove;
+pub mod schedule;
 pub mod search;
 pub mod sources;
 pub mod update;

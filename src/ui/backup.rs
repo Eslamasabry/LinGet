@@ -1,38 +1,17 @@
+use super::escape_markup_text;
 use crate::backend::PackageManager;
-use crate::models::{Config, Package, PackageSource, PackageStatus};
+use crate::models::{Config, ExportedPackage, PackageListExport, PackageSource};
 
 use gtk4::prelude::*;
 use gtk4::{self as gtk, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct BackupData {
-    pub version: u32,
-    pub created_at: String,
-    pub config: BackupConfig,
-    pub packages: HashMap<String, Vec<PackageEntry>>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct BackupConfig {
-    pub enabled_sources: Vec<String>,
-    pub ignored_packages: Vec<String>,
-    pub favorite_packages: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct PackageEntry {
-    pub name: String,
-    pub version: String,
-}
 
 #[derive(Clone)]
 struct ImportPackage {
@@ -86,39 +65,11 @@ fn run_export(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, path: PathBuf
 
         match all_packages {
             Ok(packages) => {
-                let mut packages_by_source: HashMap<String, Vec<PackageEntry>> = HashMap::new();
-                for pkg in packages {
-                    let source_key = format!("{:?}", pkg.source).to_lowercase();
-                    packages_by_source
-                        .entry(source_key)
-                        .or_default()
-                        .push(PackageEntry {
-                            name: pkg.name,
-                            version: pkg.version,
-                        });
-                }
+                let backup =
+                    PackageListExport::from_installed_with_config(&packages, Some(&config));
+                let total_packages = backup.package_count();
 
-                let enabled_sources: Vec<String> = config
-                    .enabled_sources
-                    .to_sources()
-                    .iter()
-                    .map(|s| format!("{:?}", s).to_lowercase())
-                    .collect();
-
-                let backup = BackupData {
-                    version: 1,
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                    config: BackupConfig {
-                        enabled_sources,
-                        ignored_packages: config.ignored_packages.clone(),
-                        favorite_packages: config.favorite_packages.clone(),
-                    },
-                    packages: packages_by_source,
-                };
-
-                let total_packages: usize = backup.packages.values().map(|v| v.len()).sum();
-
-                match serde_json::to_string_pretty(&backup) {
+                match backup.to_json_pretty() {
                     Ok(json) => match std::fs::write(&path, json) {
                         Ok(_) => {
                             if let Some(overlay) = &toast_overlay {
@@ -183,13 +134,19 @@ fn show_import_diff_dialog(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, 
         }
     };
 
-    let backup: BackupData = match serde_json::from_str(&content) {
-        Ok(b) => b,
+    let parsed = match PackageListExport::from_json_str(&content) {
+        Ok(parsed) => parsed,
         Err(e) => {
             show_error_dialog(&window, &format!("Invalid backup file: {}", e));
             return;
         }
     };
+
+    let toast_overlay = find_toast_overlay(&window);
+    for warning in &parsed.warnings {
+        show_error_toast(&toast_overlay, warning);
+    }
+    let backup = parsed.export;
 
     let pm_clone = pm.clone();
     let window_clone = window.clone();
@@ -201,36 +158,30 @@ fn show_import_diff_dialog(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, 
             manager.list_all_installed().await.unwrap_or_default()
         };
 
-        let installed_set: HashSet<(String, String)> = installed_packages
+        let installed_set: HashSet<(String, PackageSource)> = installed_packages
             .iter()
-            .map(|p| (p.name.clone(), format!("{:?}", p.source).to_lowercase()))
+            .map(|p| (p.name.clone(), p.source))
             .collect();
 
         let mut import_packages: Vec<ImportPackage> = Vec::new();
         let mut missing_count = 0;
         let mut already_installed_count = 0;
 
-        for (source_str, packages) in &backup_clone.packages {
-            let Some(source) = PackageSource::from_str(source_str) else {
-                continue;
-            };
-
-            for pkg in packages {
-                let is_missing = !installed_set.contains(&(pkg.name.clone(), source_str.clone()));
-                if is_missing {
-                    missing_count += 1;
-                } else {
-                    already_installed_count += 1;
-                }
-
-                import_packages.push(ImportPackage {
-                    name: pkg.name.clone(),
-                    version: pkg.version.clone(),
-                    source,
-                    is_missing,
-                    selected: is_missing,
-                });
+        for pkg in &backup_clone.packages {
+            let is_missing = !installed_set.contains(&(pkg.name.clone(), pkg.source));
+            if is_missing {
+                missing_count += 1;
+            } else {
+                already_installed_count += 1;
             }
+
+            import_packages.push(ImportPackage {
+                name: pkg.name.clone(),
+                version: pkg.version.clone(),
+                source: pkg.source,
+                is_missing,
+                selected: is_missing,
+            });
         }
 
         import_packages.sort_by(|a, b| {
@@ -254,7 +205,7 @@ fn show_import_diff_dialog(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, 
 fn build_import_dialog(
     window: gtk::Window,
     pm: Arc<Mutex<PackageManager>>,
-    backup: BackupData,
+    backup: PackageListExport,
     import_packages: Vec<ImportPackage>,
     missing_count: usize,
     already_installed_count: usize,
@@ -296,14 +247,7 @@ fn build_import_dialog(
         .build();
 
     let created_label = gtk::Label::builder()
-        .label(format!(
-            "Backup from {}",
-            backup
-                .created_at
-                .split('T')
-                .next()
-                .unwrap_or(&backup.created_at)
-        ))
+        .label(format!("Backup from {}", backup.export_date_label()))
         .css_classes(["dim-label"])
         .hexpand(true)
         .halign(gtk::Align::End)
@@ -361,9 +305,10 @@ fn build_import_dialog(
         Rc::new(RefCell::new(Vec::new()));
 
     for pkg in &import_packages {
+        let subtitle = format!("{} • {}", pkg.source, pkg.version);
         let row = adw::ActionRow::builder()
-            .title(&pkg.name)
-            .subtitle(format!("{} • {}", pkg.source, pkg.version))
+            .title(escape_markup_text(&pkg.name))
+            .subtitle(escape_markup_text(&subtitle))
             .build();
 
         if !pkg.is_missing {
@@ -529,7 +474,7 @@ fn run_selective_import(
     window: gtk::Window,
     pm: Arc<Mutex<PackageManager>>,
     packages: Vec<ImportPackage>,
-    backup: BackupData,
+    backup: PackageListExport,
 ) {
     let toast_overlay = find_toast_overlay(&window);
     let count = packages.len();
@@ -548,22 +493,12 @@ fn run_selective_import(
         let mut failed = 0;
 
         for pkg in &packages {
-            let stub_pkg = Package {
+            let stub_pkg = ExportedPackage {
                 name: pkg.name.clone(),
-                version: String::new(),
-                available_version: None,
-                description: String::new(),
                 source: pkg.source,
-                status: PackageStatus::NotInstalled,
-                size: None,
-                homepage: None,
-                license: None,
-                maintainer: None,
-                dependencies: Vec::new(),
-                install_date: None,
-                update_category: None,
-                enrichment: None,
-            };
+                version: pkg.version.clone(),
+            }
+            .to_install_stub();
 
             match manager.install(&stub_pkg).await {
                 Ok(_) => installed += 1,
@@ -573,10 +508,13 @@ fn run_selective_import(
 
         drop(manager);
 
-        let mut config = Config::load();
-        config.ignored_packages = backup.config.ignored_packages;
-        config.favorite_packages = backup.config.favorite_packages;
-        let _ = config.save();
+        let config_save_result = if let Some(saved_config) = backup.config.as_ref() {
+            let mut config = Config::load();
+            saved_config.apply_preferences(&mut config);
+            Some(config.save())
+        } else {
+            None
+        };
 
         if let Some(overlay) = &toast_overlay {
             let message = if failed > 0 {
@@ -589,6 +527,25 @@ fn run_selective_import(
             };
             let toast = adw::Toast::builder().title(&message).timeout(5).build();
             overlay.add_toast(toast);
+
+            if let Some(Err(error)) = config_save_result {
+                let toast = adw::Toast::builder()
+                    .title(format!(
+                        "Packages imported, but restoring backup preferences failed: {}",
+                        error
+                    ))
+                    .timeout(5)
+                    .build();
+                overlay.add_toast(toast);
+            }
+        } else if let Some(Err(error)) = config_save_result {
+            show_error_dialog(
+                &window,
+                &format!(
+                    "Packages were imported, but restoring backup preferences failed: {}",
+                    error
+                ),
+            );
         }
     });
 }

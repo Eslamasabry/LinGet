@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
 
 env:
@@ -18,7 +18,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev build-essential pkg-config
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev build-essential pkg-config xvfb
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -37,3 +37,5 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
+      - name: Smoke (install + headless GUI)
+        run: bash scripts/smoke-install.sh

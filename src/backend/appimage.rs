@@ -195,3 +195,68 @@ impl PackageBackend for AppImageBackend {
         Ok(commands)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "linget-appimage-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn extract_name_formats_common_filenames() {
+        assert_eq!(
+            AppImageBackend::extract_name(Path::new("my_tool-1.0.appimage")),
+            "My tool 1.0"
+        );
+        assert_eq!(
+            AppImageBackend::extract_name(Path::new("Calculator")),
+            "Calculator"
+        );
+    }
+
+    #[test]
+    fn appimage_extension_is_detected() {
+        let path = temp_path("extension").with_extension("AppImage");
+        File::create(&path).expect("create test appimage");
+        assert!(AppImageBackend::is_appimage(&path));
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn executable_magic_bytes_are_detected() {
+        let path = temp_path("magic");
+        let mut bytes = vec![0u8; 10];
+        bytes[8] = b'A';
+        bytes[9] = b'I';
+        fs::write(&path, bytes).expect("write appimage bytes");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms).expect("chmod appimage bytes");
+        }
+
+        assert!(AppImageBackend::is_appimage(&path));
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn search_dirs_include_opt() {
+        assert!(AppImageBackend::get_search_dirs().contains(&PathBuf::from("/opt")));
+    }
+}

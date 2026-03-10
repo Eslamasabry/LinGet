@@ -94,7 +94,7 @@ fn print_providers_human(providers: &[ProviderStatus], writer: &OutputWriter, sh
     println!();
 
     if !show_all {
-        let total = crate::models::PackageSource::ALL.len();
+        let total = crate::models::PackageSource::current_platform_sources().len();
         let unavailable = total - available_count;
         if unavailable > 0 {
             println!(

@@ -1,12 +1,14 @@
 use crate::cli::tui::app::App;
 use crate::cli::tui::state::filters::Filter;
-use crate::cli::tui::theme::{accent, badge_installed, badge_not_installed, badge_progress, badge_update, footer_label, header_bar, loading, muted, palette, tab_active, italic_status};
+use crate::cli::tui::theme::{
+    accent, dim, header_bar, italic_status, loading, muted, palette, tab_active,
+};
 use crate::cli::tui::ui::{compose_left_right, spans_width};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    text::Span,
+    widgets::Paragraph,
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -36,7 +38,7 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     left.extend(render_filter_tab(
         "1",
         "All",
-        app.filter_counts[0],
+        (app.filter == Filter::All).then_some(app.filter_counts[0]),
         app.filter == Filter::All,
         app.searching,
     ));
@@ -44,7 +46,7 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     left.extend(render_filter_tab(
         "2",
         installed_label,
-        app.filter_counts[1],
+        (app.filter == Filter::Installed).then_some(app.filter_counts[1]),
         app.filter == Filter::Installed,
         app.searching,
     ));
@@ -52,7 +54,7 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     left.extend(render_filter_tab(
         "3",
         updates_label,
-        app.filter_counts[2],
+        (app.filter == Filter::Updates).then_some(app.filter_counts[2]),
         app.filter == Filter::Updates,
         app.searching,
     ));
@@ -60,7 +62,7 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     left.extend(render_filter_tab(
         "4",
         favorites_label,
-        app.filter_counts[3],
+        (app.filter == Filter::Favorites).then_some(app.filter_counts[3]),
         app.filter == Filter::Favorites,
         app.searching,
     ));
@@ -69,7 +71,7 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
         left.extend(render_filter_tab(
             "5",
             "Security",
-            app.filter_counts[4],
+            (app.filter == Filter::SecurityUpdates).then_some(app.filter_counts[4]),
             app.filter == Filter::SecurityUpdates,
             app.searching,
         ));
@@ -79,15 +81,18 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     left.extend(render_filter_tab(
         "6",
         dupes_label,
-        app.filter_counts[5],
+        (app.filter == Filter::Duplicates).then_some(app.filter_counts[5]),
         app.filter == Filter::Duplicates,
         app.searching,
     ));
 
     let mut right = Vec::new();
 
-    if app.loading {
-        right.push(Span::styled(format!("{} ", app.spinner_frame()), loading()));
+    if let Some(activity) = app.catalog_activity_label() {
+        right.push(Span::styled(
+            format!("{} {} ", app.spinner_frame(), activity),
+            loading(),
+        ));
     }
 
     if app.searching {
@@ -98,8 +103,25 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
             ),
             accent(),
         ));
+        if area.width > 110 {
+            right.push(Span::styled("Enter provider search  Esc clear ", muted()));
+        }
     } else if !app.search.is_empty() {
-        right.push(Span::styled(format!("/ \"{}\" ", app.search), muted()));
+        let scope = if app.search_results.is_some() {
+            app.provider_search_scope_label()
+                .unwrap_or_else(|| "provider results".to_string())
+        } else {
+            "local filter".to_string()
+        };
+        right.push(Span::styled(
+            format!("/ \"{}\" [{}] ", app.search, scope),
+            muted(),
+        ));
+        if area.width > 120 {
+            if let Some(summary) = app.provider_search_summary() {
+                right.push(Span::styled(format!("{} ", summary), dim()));
+            }
+        }
     } else if app.filter == Filter::Favorites && app.favorites_updates_only {
         right.push(Span::styled("Favorites: updates only [v] ", muted()));
     }
@@ -113,32 +135,15 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-
-pub fn draw_status_legend(frame: &mut Frame, area: Rect) {
-    let legend = Line::from(vec![
-        Span::styled("Status ", footer_label()),
-        Span::styled(" ✓ ", badge_installed()),
-        Span::styled("installed  ", muted()),
-        Span::styled(" ↑ ", badge_update()),
-        Span::styled("updates  ", muted()),
-        Span::styled(" ⟳ ", badge_progress()),
-        Span::styled("in-progress  ", muted()),
-        Span::styled(" ○ ", badge_not_installed()),
-        Span::styled("available", muted()),
-    ]);
-    frame.render_widget(Paragraph::new(legend).style(header_bar()), area);
-}
-
-
 fn render_filter_tab(
     key: &str,
     label: &str,
-    count: usize,
+    count: Option<usize>,
     active: bool,
     searching: bool,
 ) -> Vec<Span<'static>> {
     if active && !searching {
-        vec![
+        let mut spans = vec![
             Span::styled(" ", tab_active()),
             Span::styled(
                 key.to_string(),
@@ -149,12 +154,15 @@ fn render_filter_tab(
             ),
             Span::styled(" ", tab_active()),
             Span::styled(label.to_string(), tab_active()),
-            Span::styled(" ", tab_active()),
-            Span::styled(count.to_string(), tab_active()),
-            Span::styled(" ", tab_active()),
-        ]
+        ];
+        if let Some(count) = count {
+            spans.push(Span::styled(" ", tab_active()));
+            spans.push(Span::styled(count.to_string(), tab_active()));
+        }
+        spans.push(Span::styled(" ", tab_active()));
+        spans
     } else {
-        vec![
+        let mut spans = vec![
             Span::styled(" ", header_bar()),
             Span::styled(
                 key.to_string(),
@@ -169,15 +177,18 @@ fn render_filter_tab(
                     .fg(palette::DARK_GRAY)
                     .bg(palette::HEADER_BG),
             ),
-            Span::styled(" ", header_bar()),
-            Span::styled(
+        ];
+        if let Some(count) = count {
+            spans.push(Span::styled(" ", header_bar()));
+            spans.push(Span::styled(
                 count.to_string(),
                 Style::default()
                     .fg(palette::DARK_GRAY)
                     .bg(palette::HEADER_BG),
-            ),
-            Span::styled(" ", header_bar()),
-        ]
+            ));
+        }
+        spans.push(Span::styled(" ", header_bar()));
+        spans
     }
 }
 
@@ -187,7 +198,6 @@ pub enum QueueHintAction {
     RetrySafe,
     Remediate,
 }
-
 
 pub fn header_filter_hit_test(
     app: &App,
@@ -211,42 +221,42 @@ pub fn header_filter_hit_test(
         (
             "1",
             "All",
-            app.filter_counts[0],
+            (app.filter == Filter::All).then_some(app.filter_counts[0]),
             app.filter == Filter::All,
             Filter::All,
         ),
         (
             "2",
             installed_label,
-            app.filter_counts[1],
+            (app.filter == Filter::Installed).then_some(app.filter_counts[1]),
             app.filter == Filter::Installed,
             Filter::Installed,
         ),
         (
             "3",
             updates_label,
-            app.filter_counts[2],
+            (app.filter == Filter::Updates).then_some(app.filter_counts[2]),
             app.filter == Filter::Updates,
             Filter::Updates,
         ),
         (
             "4",
             favorites_label,
-            app.filter_counts[3],
+            (app.filter == Filter::Favorites).then_some(app.filter_counts[3]),
             app.filter == Filter::Favorites,
             Filter::Favorites,
         ),
         (
             "5",
             "Security",
-            app.filter_counts[4],
+            (app.filter == Filter::SecurityUpdates).then_some(app.filter_counts[4]),
             app.filter == Filter::SecurityUpdates,
             Filter::SecurityUpdates,
         ),
         (
             "6",
             dupes_label,
-            app.filter_counts[5],
+            (app.filter == Filter::Duplicates).then_some(app.filter_counts[5]),
             app.filter == Filter::Duplicates,
             Filter::Duplicates,
         ),
@@ -277,7 +287,6 @@ pub fn header_filter_hit_test(
     None
 }
 
-
 fn render_search_input(query: &str, max_width: usize) -> String {
     if UnicodeWidthStr::width(query) <= max_width {
         return query.to_string();
@@ -301,5 +310,3 @@ fn render_search_input(query: &str, max_width: usize) -> String {
 
     format!("...{}", out)
 }
-
-

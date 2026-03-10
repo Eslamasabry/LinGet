@@ -47,16 +47,20 @@ pub use zypper::ZypperBackend;
 use crate::backend::streaming::StreamLine;
 use crate::models::history::{TaskQueueAction, TaskQueueEntry};
 use crate::models::{
-    FlatpakMetadata, FlatpakPermission, Package, PackageSource, PackageStatus, Repository,
+    normalize_name_for_dedup, FlatpakMetadata, FlatpakPermission, Package, PackageSource,
+    PackageStatus, Repository,
 };
 use anyhow::{Context, Result};
+#[cfg(test)]
+use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, instrument, warn};
 
 #[cfg(test)]
-pub(crate) static TEST_PATH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static TEST_PATH_ENV_LOCK: Lazy<tokio::sync::Mutex<()>> =
+    Lazy::new(|| tokio::sync::Mutex::new(()));
 
 #[derive(Debug, Clone)]
 pub enum TaskQueueEvent {
@@ -221,11 +225,16 @@ impl TaskQueueExecutor {
 pub struct PackageManager {
     backends: HashMap<PackageSource, Box<dyn PackageBackend>>,
     enabled_sources: HashSet<PackageSource>,
+    provider_statuses: HashMap<PackageSource, ProviderStatus>,
 }
 
 impl PackageManager {
     pub fn new() -> Self {
         info!("Initializing PackageManager, detecting available backends");
+        let provider_statuses = detect_providers()
+            .into_iter()
+            .map(|status| (status.source, status))
+            .collect();
         let mut backends: HashMap<PackageSource, Box<dyn PackageBackend>> = HashMap::new();
 
         // Add available backends with logging
@@ -335,6 +344,7 @@ impl PackageManager {
         Self {
             backends,
             enabled_sources,
+            provider_statuses,
         }
     }
 
@@ -357,6 +367,101 @@ impl PackageManager {
 
     pub fn get_backend(&self, source: PackageSource) -> Option<&dyn PackageBackend> {
         self.backends.get(&source).map(|b| b.as_ref())
+    }
+
+    pub fn source_capability_status(
+        &self,
+        source: PackageSource,
+        capability: BackendCapability,
+    ) -> CapabilityStatus {
+        if !self.enabled_sources.contains(&source) {
+            return SourceCapabilityContext::new(source, true, false).status(capability);
+        }
+
+        if let Some(backend) = self.backends.get(&source) {
+            backend.capabilities().status(capability)
+        } else {
+            CapabilityStatus::unsupported(self.backend_unavailable_reason(source))
+        }
+    }
+
+    pub fn package_capability_status(
+        &self,
+        package: &Package,
+        capability: BackendCapability,
+    ) -> CapabilityStatus {
+        if !self.enabled_sources.contains(&package.source) {
+            return SourceCapabilityContext::new(package.source, true, false)
+                .package_status(package, capability);
+        }
+
+        let Some(backend) = self.backends.get(&package.source) else {
+            return CapabilityStatus::unsupported(self.backend_unavailable_reason(package.source));
+        };
+
+        let source_status = backend.capabilities().status(capability);
+        if !source_status.is_supported() {
+            return source_status;
+        }
+
+        SourceCapabilityContext::available(package.source).package_status(package, capability)
+    }
+
+    fn ensure_source_capability(
+        &self,
+        source: PackageSource,
+        capability: BackendCapability,
+    ) -> Result<()> {
+        let status = self.source_capability_status(source, capability);
+        match status.reason() {
+            Some(reason) => anyhow::bail!(reason.to_string()),
+            None => Ok(()),
+        }
+    }
+
+    fn ensure_package_capability(
+        &self,
+        package: &Package,
+        capability: BackendCapability,
+    ) -> Result<()> {
+        let status = self.package_capability_status(package, capability);
+        match status.reason() {
+            Some(reason) => anyhow::bail!(reason.to_string()),
+            None => Ok(()),
+        }
+    }
+
+    fn backend_unavailable_reason(&self, source: PackageSource) -> String {
+        if !source.supported_on_current_platform() {
+            return format!(
+                "{} is only supported on {}. {}",
+                source,
+                source.platform_family().label(),
+                source
+                    .install_hint()
+                    .unwrap_or("This provider is not available on the current platform.")
+            );
+        }
+
+        let mut reason = format!(
+            "No backend available for {}. This package source may not be installed on your system.",
+            source
+        );
+
+        if let Some(status) = self.provider_statuses.get(&source) {
+            if let Some(status_reason) = status.reason.as_deref() {
+                reason.push(' ');
+                reason.push_str(status_reason);
+                reason.push('.');
+            }
+        }
+
+        if let Some(hint) = source.install_hint() {
+            reason.push(' ');
+            reason.push_str(hint);
+        }
+
+        reason
     }
 
     fn validate_package_name(name: &str) -> Result<()> {
@@ -483,26 +588,23 @@ impl PackageManager {
     #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
     pub async fn install(&self, package: &Package) -> Result<()> {
         Self::validate_package_name(&package.name)?;
-        if !self.enabled_sources.contains(&package.source) {
-            warn!(source = ?package.source, "Attempted to install from disabled source");
-            anyhow::bail!("{} source is disabled. Enable it in settings to install packages from this source.", package.source);
-        }
+        self.ensure_package_capability(package, BackendCapability::Install)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            info!(package = %package.name, source = ?package.source, "Installing package");
-            match backend.install(&package.name).await {
-                Ok(()) => {
-                    info!(package = %package.name, source = ?package.source, "Package installed successfully");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to install package");
-                    Err(e)
-                }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Install capability check should guarantee backend availability")?;
+
+        info!(package = %package.name, source = ?package.source, "Installing package");
+        match backend.install(&package.name).await {
+            Ok(()) => {
+                info!(package = %package.name, source = ?package.source, "Package installed successfully");
+                Ok(())
             }
-        } else {
-            error!(source = ?package.source, "No backend available for source");
-            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
+            Err(e) => {
+                error!(package = %package.name, source = ?package.source, error = %e, "Failed to install package");
+                Err(e)
+            }
         }
     }
 
@@ -513,55 +615,46 @@ impl PackageManager {
         log_sender: Option<mpsc::Sender<StreamLine>>,
     ) -> Result<()> {
         Self::validate_package_name(&package.name)?;
-        if !self.enabled_sources.contains(&package.source) {
-            warn!(source = ?package.source, "Attempted to install from disabled source");
-            anyhow::bail!("{} source is disabled. Enable it in settings to install packages from this source.", package.source);
-        }
+        self.ensure_package_capability(package, BackendCapability::Install)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            info!(package = %package.name, source = ?package.source, "Installing package");
-            match backend.install_streaming(&package.name, log_sender).await {
-                Ok(()) => {
-                    info!(package = %package.name, source = ?package.source, "Package installed successfully");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to install package");
-                    Err(e)
-                }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Install capability check should guarantee backend availability")?;
+
+        info!(package = %package.name, source = ?package.source, "Installing package");
+        match backend.install_streaming(&package.name, log_sender).await {
+            Ok(()) => {
+                info!(package = %package.name, source = ?package.source, "Package installed successfully");
+                Ok(())
             }
-        } else {
-            error!(source = ?package.source, "No backend available for source");
-            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
+            Err(e) => {
+                error!(package = %package.name, source = ?package.source, error = %e, "Failed to install package");
+                Err(e)
+            }
         }
     }
 
     #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
     pub async fn remove(&self, package: &Package) -> Result<()> {
         Self::validate_package_name(&package.name)?;
-        if !self.enabled_sources.contains(&package.source) {
-            warn!(source = ?package.source, "Attempted to remove from disabled source");
-            anyhow::bail!(
-                "{} source is disabled. Enable it in settings to manage packages from this source.",
-                package.source
-            );
-        }
+        self.ensure_package_capability(package, BackendCapability::Remove)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            info!(package = %package.name, source = ?package.source, "Removing package");
-            match backend.remove(&package.name).await {
-                Ok(()) => {
-                    info!(package = %package.name, source = ?package.source, "Package removed successfully");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to remove package");
-                    Err(e)
-                }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Remove capability check should guarantee backend availability")?;
+
+        info!(package = %package.name, source = ?package.source, "Removing package");
+        match backend.remove(&package.name).await {
+            Ok(()) => {
+                info!(package = %package.name, source = ?package.source, "Package removed successfully");
+                Ok(())
             }
-        } else {
-            error!(source = ?package.source, "No backend available for source");
-            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
+            Err(e) => {
+                error!(package = %package.name, source = ?package.source, error = %e, "Failed to remove package");
+                Err(e)
+            }
         }
     }
 
@@ -572,58 +665,46 @@ impl PackageManager {
         log_sender: Option<mpsc::Sender<StreamLine>>,
     ) -> Result<()> {
         Self::validate_package_name(&package.name)?;
-        if !self.enabled_sources.contains(&package.source) {
-            warn!(source = ?package.source, "Attempted to remove from disabled source");
-            anyhow::bail!(
-                "{} source is disabled. Enable it in settings to manage packages from this source.",
-                package.source
-            );
-        }
+        self.ensure_package_capability(package, BackendCapability::Remove)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            info!(package = %package.name, source = ?package.source, "Removing package");
-            match backend.remove_streaming(&package.name, log_sender).await {
-                Ok(()) => {
-                    info!(package = %package.name, source = ?package.source, "Package removed successfully");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to remove package");
-                    Err(e)
-                }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Remove capability check should guarantee backend availability")?;
+
+        info!(package = %package.name, source = ?package.source, "Removing package");
+        match backend.remove_streaming(&package.name, log_sender).await {
+            Ok(()) => {
+                info!(package = %package.name, source = ?package.source, "Package removed successfully");
+                Ok(())
             }
-        } else {
-            error!(source = ?package.source, "No backend available for source");
-            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
+            Err(e) => {
+                error!(package = %package.name, source = ?package.source, error = %e, "Failed to remove package");
+                Err(e)
+            }
         }
     }
 
     #[instrument(skip(self), fields(package = %package.name, source = ?package.source))]
     pub async fn update(&self, package: &Package) -> Result<()> {
         Self::validate_package_name(&package.name)?;
-        if !self.enabled_sources.contains(&package.source) {
-            warn!(source = ?package.source, "Attempted to update from disabled source");
-            anyhow::bail!(
-                "{} source is disabled. Enable it in settings to manage packages from this source.",
-                package.source
-            );
-        }
+        self.ensure_package_capability(package, BackendCapability::Update)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            info!(package = %package.name, source = ?package.source, "Updating package");
-            match backend.update(&package.name).await {
-                Ok(()) => {
-                    info!(package = %package.name, source = ?package.source, "Package updated successfully");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to update package");
-                    Err(e)
-                }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Update capability check should guarantee backend availability")?;
+
+        info!(package = %package.name, source = ?package.source, "Updating package");
+        match backend.update(&package.name).await {
+            Ok(()) => {
+                info!(package = %package.name, source = ?package.source, "Package updated successfully");
+                Ok(())
             }
-        } else {
-            error!(source = ?package.source, "No backend available for source");
-            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
+            Err(e) => {
+                error!(package = %package.name, source = ?package.source, error = %e, "Failed to update package");
+                Err(e)
+            }
         }
     }
 
@@ -634,100 +715,92 @@ impl PackageManager {
         log_sender: Option<mpsc::Sender<StreamLine>>,
     ) -> Result<()> {
         Self::validate_package_name(&package.name)?;
-        if !self.enabled_sources.contains(&package.source) {
-            warn!(source = ?package.source, "Attempted to update from disabled source");
-            anyhow::bail!(
-                "{} source is disabled. Enable it in settings to manage packages from this source.",
-                package.source
-            );
-        }
+        self.ensure_package_capability(package, BackendCapability::Update)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            info!(package = %package.name, source = ?package.source, "Updating package");
-            match backend.update_streaming(&package.name, log_sender).await {
-                Ok(()) => {
-                    info!(package = %package.name, source = ?package.source, "Package updated successfully");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!(package = %package.name, source = ?package.source, error = %e, "Failed to update package");
-                    Err(e)
-                }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Update capability check should guarantee backend availability")?;
+
+        info!(package = %package.name, source = ?package.source, "Updating package");
+        match backend.update_streaming(&package.name, log_sender).await {
+            Ok(()) => {
+                info!(package = %package.name, source = ?package.source, "Package updated successfully");
+                Ok(())
             }
-        } else {
-            error!(source = ?package.source, "No backend available for source");
-            anyhow::bail!("No backend available for {}. This package source may not be installed on your system.", package.source)
+            Err(e) => {
+                error!(package = %package.name, source = ?package.source, error = %e, "Failed to update package");
+                Err(e)
+            }
         }
     }
 
     pub async fn downgrade(&self, package: &Package) -> Result<()> {
         Self::validate_package_name(&package.name)?;
-        if !self.enabled_sources.contains(&package.source) {
-            anyhow::bail!("{:?} source is disabled", package.source);
-        }
+        self.ensure_package_capability(package, BackendCapability::Downgrade)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            backend.downgrade(&package.name).await
-        } else {
-            anyhow::bail!("No backend available for {:?}", package.source)
-        }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Downgrade capability check should guarantee backend availability")?;
+        backend.downgrade(&package.name).await
     }
 
     #[allow(dead_code)]
     pub async fn downgrade_to(&self, package: &Package, version: &str) -> Result<()> {
         Self::validate_package_name(&package.name)?;
-        if !self.enabled_sources.contains(&package.source) {
-            anyhow::bail!("{:?} source is disabled", package.source);
-        }
+        self.ensure_package_capability(package, BackendCapability::DowngradeToVersion)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            backend.downgrade_to(&package.name, version).await
-        } else {
-            anyhow::bail!("No backend available for {:?}", package.source)
-        }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Version downgrade capability check should guarantee backend availability")?;
+        backend.downgrade_to(&package.name, version).await
     }
 
     #[allow(dead_code)]
     pub async fn available_downgrade_versions(&self, package: &Package) -> Result<Vec<String>> {
         Self::validate_package_name(&package.name)?;
-        if !self.enabled_sources.contains(&package.source) {
-            anyhow::bail!("{:?} source is disabled", package.source);
-        }
+        self.ensure_package_capability(package, BackendCapability::AvailableDowngradeVersions)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            backend.available_downgrade_versions(&package.name).await
-        } else {
-            anyhow::bail!("No backend available for {:?}", package.source)
-        }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Downgrade history capability check should guarantee backend availability")?;
+        backend.available_downgrade_versions(&package.name).await
     }
 
     pub async fn get_changelog(&self, package: &Package) -> Result<Option<String>> {
         Self::validate_package_name(&package.name)?;
+        self.ensure_package_capability(package, BackendCapability::Changelog)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            backend.get_changelog(&package.name).await
-        } else {
-            Ok(None)
-        }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Changelog capability check should guarantee backend availability")?;
+        backend.get_changelog(&package.name).await
     }
 
     pub async fn get_reverse_dependencies(&self, package: &Package) -> Result<Vec<String>> {
         Self::validate_package_name(&package.name)?;
+        self.ensure_package_capability(package, BackendCapability::ReverseDependencies)?;
 
-        if let Some(backend) = self.backends.get(&package.source) {
-            backend.get_reverse_dependencies(&package.name).await
-        } else {
-            anyhow::bail!("No backend available for {:?}", package.source)
-        }
+        let backend = self
+            .backends
+            .get(&package.source)
+            .context("Reverse dependency capability check should guarantee backend availability")?;
+        backend.get_reverse_dependencies(&package.name).await
     }
 
     #[allow(dead_code)]
     pub async fn list_repositories(&self, source: PackageSource) -> Result<Vec<Repository>> {
-        if let Some(backend) = self.backends.get(&source) {
-            backend.list_repositories().await
-        } else {
-            Ok(Vec::new())
-        }
+        self.ensure_source_capability(source, BackendCapability::ListRepositories)?;
+
+        let backend = self
+            .backends
+            .get(&source)
+            .context("Repository listing capability check should guarantee backend availability")?;
+        backend.list_repositories().await
     }
 
     #[allow(dead_code)] // Useful for future multi-backend repository listing
@@ -759,38 +832,214 @@ impl PackageManager {
         url: &str,
         name: Option<&str>,
     ) -> Result<()> {
-        if let Some(backend) = self.backends.get(&source) {
-            backend.add_repository(url, name).await
-        } else {
-            anyhow::bail!("No backend available for {:?}", source)
-        }
+        self.ensure_source_capability(source, BackendCapability::AddRepository)?;
+
+        let backend = self
+            .backends
+            .get(&source)
+            .context("Repository add capability check should guarantee backend availability")?;
+        backend.add_repository(url, name).await
     }
 
     #[allow(dead_code)]
     pub async fn remove_repository(&self, source: PackageSource, name: &str) -> Result<()> {
-        if let Some(backend) = self.backends.get(&source) {
-            backend.remove_repository(name).await
-        } else {
-            anyhow::bail!("No backend available for {:?}", source)
-        }
+        self.ensure_source_capability(source, BackendCapability::RemoveRepository)?;
+
+        let backend = self
+            .backends
+            .get(&source)
+            .context("Repository removal capability check should guarantee backend availability")?;
+        backend.remove_repository(name).await
     }
 
-    #[instrument(skip(self), fields(query = %query))]
-    pub async fn search(&self, query: &str) -> Result<Vec<Package>> {
+    async fn collect_search_results(
+        &self,
+        query: &str,
+    ) -> Vec<(PackageSource, Result<Vec<Package>, anyhow::Error>)> {
         use futures::future::join_all;
-
-        debug!(query = %query, "Searching across all enabled backends");
 
         let futures: Vec<_> = self
             .enabled_backends()
+            .filter(|(_, backend)| {
+                backend
+                    .capabilities()
+                    .status(BackendCapability::Search)
+                    .is_supported()
+            })
             .map(|(source, backend)| {
                 let source = *source;
                 async move { (source, backend.search(query).await) }
             })
             .collect();
 
-        let results = join_all(futures).await;
+        join_all(futures).await
+    }
 
+    fn primary_search_package(packages: &[Package]) -> Option<Package> {
+        packages
+            .iter()
+            .min_by(|left, right| {
+                let left_status_rank = matches!(
+                    left.status,
+                    PackageStatus::Installed
+                        | PackageStatus::UpdateAvailable
+                        | PackageStatus::Updating
+                );
+                let right_status_rank = matches!(
+                    right.status,
+                    PackageStatus::Installed
+                        | PackageStatus::UpdateAvailable
+                        | PackageStatus::Updating
+                );
+
+                right_status_rank
+                    .cmp(&left_status_rank)
+                    .then_with(|| {
+                        left.source
+                            .discovery_priority()
+                            .cmp(&right.source.discovery_priority())
+                    })
+                    .then_with(|| left.name.len().cmp(&right.name.len()))
+                    .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            })
+            .cloned()
+    }
+
+    fn build_search_catalog(
+        query: &str,
+        results: Vec<(PackageSource, Result<Vec<Package>>)>,
+    ) -> SearchCatalog {
+        let mut providers = Vec::new();
+        let mut raw_packages = Vec::new();
+
+        for (source, result) in results {
+            match result {
+                Ok(packages) => {
+                    if !packages.is_empty() {
+                        debug!(
+                            source = ?source,
+                            result_count = packages.len(),
+                            "Search results from backend"
+                        );
+                    }
+
+                    providers.push(SearchProviderSummary {
+                        source,
+                        result_count: packages.len(),
+                        surfaced_count: 0,
+                        error: None,
+                    });
+                    raw_packages.extend(packages);
+                }
+                Err(error) => {
+                    warn!(source = ?source, error = %error, "Search failed for backend");
+                    providers.push(SearchProviderSummary {
+                        source,
+                        result_count: 0,
+                        surfaced_count: 0,
+                        error: Some(error.to_string()),
+                    });
+                }
+            }
+        }
+
+        let mut grouped: HashMap<String, Vec<Package>> = HashMap::new();
+        for package in raw_packages {
+            let normalized = normalize_name_for_dedup(&package.name, package.source);
+            grouped.entry(normalized).or_default().push(package);
+        }
+
+        let mut matches = Vec::new();
+        for (_normalized_name, group) in grouped {
+            let Some(mut primary) = Self::primary_search_package(&group) else {
+                continue;
+            };
+
+            let mut alternative_sources: Vec<_> = group
+                .iter()
+                .map(|package| package.source)
+                .filter(|source| *source != primary.source)
+                .collect();
+            alternative_sources.sort_by_key(|source| source.discovery_priority());
+            alternative_sources.dedup();
+
+            if primary.description.trim().is_empty() {
+                if let Some(best_description) = group
+                    .iter()
+                    .filter(|package| !package.description.trim().is_empty())
+                    .max_by_key(|package| package.description.len())
+                {
+                    primary.description = best_description.description.clone();
+                }
+            }
+
+            if primary.homepage.is_none() {
+                primary.homepage = group.iter().find_map(|package| package.homepage.clone());
+            }
+            if primary.license.is_none() {
+                primary.license = group.iter().find_map(|package| package.license.clone());
+            }
+            if primary.maintainer.is_none() {
+                primary.maintainer = group.iter().find_map(|package| package.maintainer.clone());
+            }
+
+            for provider in &mut providers {
+                if provider.source == primary.source
+                    || alternative_sources.contains(&provider.source)
+                {
+                    provider.surfaced_count += 1;
+                }
+            }
+
+            matches.push(SearchMatch {
+                package: primary,
+                alternative_sources,
+            });
+        }
+
+        matches.sort_by(|left, right| {
+            left.package
+                .name
+                .to_lowercase()
+                .cmp(&right.package.name.to_lowercase())
+                .then_with(|| {
+                    left.package
+                        .source
+                        .discovery_priority()
+                        .cmp(&right.package.source.discovery_priority())
+                })
+        });
+        providers.sort_by_key(|provider| provider.source.discovery_priority());
+
+        SearchCatalog {
+            query: query.to_string(),
+            matches,
+            providers,
+        }
+    }
+
+    #[instrument(skip(self), fields(query = %query))]
+    pub async fn search_catalog(&self, query: &str) -> Result<SearchCatalog> {
+        debug!(query = %query, "Searching provider catalog across enabled backends");
+        let results = self.collect_search_results(query).await;
+        let catalog = Self::build_search_catalog(query, results);
+
+        info!(
+            query = %query,
+            total_results = catalog.matches.len(),
+            raw_results = catalog.total_result_count(),
+            represented_sources = catalog.represented_provider_count(),
+            "Provider catalog search completed"
+        );
+
+        Ok(catalog)
+    }
+
+    #[instrument(skip(self), fields(query = %query))]
+    pub async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        debug!(query = %query, "Searching across all enabled backends");
+
+        let results = self.collect_search_results(query).await;
         let mut all_results = Vec::new();
         let mut success_count = 0;
         let mut error_count = 0;
@@ -829,10 +1078,12 @@ impl PackageManager {
         name: &str,
         source: PackageSource,
     ) -> Result<Vec<(String, std::path::PathBuf)>> {
-        let Some(backend) = self.backends.get(&source) else {
-            tracing::info!(package = %name, source = ?source, "Backend not available for get_package_commands");
-            return Ok(Vec::new());
-        };
+        self.ensure_source_capability(source, BackendCapability::PackageCommands)?;
+
+        let backend = self
+            .backends
+            .get(&source)
+            .context("Package commands capability check should guarantee backend availability")?;
 
         tracing::info!(package = %name, source = ?source, "Calling backend.get_package_commands");
         let result = backend.get_package_commands(name).await;
@@ -897,6 +1148,12 @@ impl PackageManager {
         let futures: Vec<_> = self
             .backends
             .iter()
+            .filter(|(_, backend)| {
+                backend
+                    .capabilities()
+                    .status(BackendCapability::CheckLockStatus)
+                    .is_supported()
+            })
             .map(|(source, backend)| {
                 let source = *source;
                 async move { (source, backend.check_lock_status().await) }
@@ -914,5 +1171,221 @@ impl PackageManager {
 impl Default for PackageManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+
+    struct FakeSearchBackend {
+        source: PackageSource,
+        packages: Vec<Package>,
+        fail: bool,
+    }
+
+    impl FakeSearchBackend {
+        fn new(source: PackageSource, packages: Vec<Package>) -> Self {
+            Self {
+                source,
+                packages,
+                fail: false,
+            }
+        }
+
+        fn failing(source: PackageSource) -> Self {
+            Self {
+                source,
+                packages: Vec::new(),
+                fail: true,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl PackageBackend for FakeSearchBackend {
+        fn is_available() -> bool
+        where
+            Self: Sized,
+        {
+            true
+        }
+
+        async fn list_installed(&self) -> Result<Vec<Package>> {
+            Ok(Vec::new())
+        }
+
+        async fn check_updates(&self) -> Result<Vec<Package>> {
+            Ok(Vec::new())
+        }
+
+        async fn install(&self, _name: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn remove(&self, _name: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn update(&self, _name: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn search(&self, _query: &str) -> Result<Vec<Package>> {
+            if self.fail {
+                anyhow::bail!("backend unavailable")
+            } else {
+                Ok(self.packages.clone())
+            }
+        }
+
+        fn source(&self) -> PackageSource {
+            self.source
+        }
+    }
+
+    fn search_package(name: &str, source: PackageSource, status: PackageStatus) -> Package {
+        Package {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            available_version: None,
+            description: format!("{name} package"),
+            source,
+            status,
+            size: None,
+            homepage: None,
+            license: None,
+            maintainer: None,
+            dependencies: Vec::new(),
+            install_date: None,
+            update_category: None,
+            enrichment: None,
+        }
+    }
+
+    fn test_package_manager(
+        backends: Vec<(PackageSource, Box<dyn PackageBackend>)>,
+    ) -> PackageManager {
+        let enabled_sources = backends.iter().map(|(source, _)| *source).collect();
+        let backends = backends.into_iter().collect();
+        PackageManager {
+            backends,
+            enabled_sources,
+            provider_statuses: HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn search_catalog_deduplicates_cross_source_matches() {
+        let manager = test_package_manager(vec![
+            (
+                PackageSource::Apt,
+                Box::new(FakeSearchBackend::new(
+                    PackageSource::Apt,
+                    vec![search_package(
+                        "firefox",
+                        PackageSource::Apt,
+                        PackageStatus::NotInstalled,
+                    )],
+                )),
+            ),
+            (
+                PackageSource::Flatpak,
+                Box::new(FakeSearchBackend::new(
+                    PackageSource::Flatpak,
+                    vec![search_package(
+                        "org.mozilla.firefox",
+                        PackageSource::Flatpak,
+                        PackageStatus::NotInstalled,
+                    )],
+                )),
+            ),
+        ]);
+
+        let catalog = manager
+            .search_catalog("firefox")
+            .await
+            .expect("catalog search");
+
+        assert_eq!(catalog.matches.len(), 1);
+        assert_eq!(catalog.matches[0].package.source, PackageSource::Apt);
+        assert_eq!(
+            catalog.matches[0].alternative_sources,
+            vec![PackageSource::Flatpak]
+        );
+        assert_eq!(catalog.total_result_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_catalog_prefers_installed_match_over_source_priority() {
+        let manager = test_package_manager(vec![
+            (
+                PackageSource::Apt,
+                Box::new(FakeSearchBackend::new(
+                    PackageSource::Apt,
+                    vec![search_package(
+                        "demo",
+                        PackageSource::Apt,
+                        PackageStatus::NotInstalled,
+                    )],
+                )),
+            ),
+            (
+                PackageSource::Npm,
+                Box::new(FakeSearchBackend::new(
+                    PackageSource::Npm,
+                    vec![search_package(
+                        "demo",
+                        PackageSource::Npm,
+                        PackageStatus::Installed,
+                    )],
+                )),
+            ),
+        ]);
+
+        let catalog = manager
+            .search_catalog("demo")
+            .await
+            .expect("catalog search");
+
+        assert_eq!(catalog.matches.len(), 1);
+        assert_eq!(catalog.matches[0].package.source, PackageSource::Npm);
+        assert_eq!(
+            catalog.matches[0].alternative_sources,
+            vec![PackageSource::Apt]
+        );
+    }
+
+    #[tokio::test]
+    async fn search_catalog_keeps_provider_failures_in_summary() {
+        let manager = test_package_manager(vec![
+            (
+                PackageSource::Apt,
+                Box::new(FakeSearchBackend::new(
+                    PackageSource::Apt,
+                    vec![search_package(
+                        "ripgrep",
+                        PackageSource::Apt,
+                        PackageStatus::NotInstalled,
+                    )],
+                )),
+            ),
+            (
+                PackageSource::Snap,
+                Box::new(FakeSearchBackend::failing(PackageSource::Snap)),
+            ),
+        ]);
+
+        let catalog = manager.search_catalog("rg").await.expect("catalog search");
+
+        assert_eq!(catalog.matches.len(), 1);
+        assert_eq!(catalog.represented_provider_count(), 1);
+        assert!(catalog
+            .providers
+            .iter()
+            .any(|provider| provider.source == PackageSource::Snap
+                && provider.error.as_deref() == Some("backend unavailable")));
     }
 }

@@ -246,6 +246,9 @@ pub struct EnabledSources {
     pub dart: bool,
     pub deb: bool,
     pub appimage: bool,
+    pub winget: bool,
+    pub chocolatey: bool,
+    pub scoop: bool,
 }
 
 impl Default for EnabledSources {
@@ -268,6 +271,9 @@ impl Default for EnabledSources {
             dart: true,
             deb: true,
             appimage: true,
+            winget: true,
+            chocolatey: true,
+            scoop: true,
         }
     }
 }
@@ -292,6 +298,9 @@ impl EnabledSources {
             PackageSource::Dart => self.dart = enabled,
             PackageSource::Deb => self.deb = enabled,
             PackageSource::AppImage => self.appimage = enabled,
+            PackageSource::Winget => self.winget = enabled,
+            PackageSource::Chocolatey => self.chocolatey = enabled,
+            PackageSource::Scoop => self.scoop = enabled,
         }
     }
 
@@ -314,6 +323,9 @@ impl EnabledSources {
             PackageSource::Dart => self.dart,
             PackageSource::Deb => self.deb,
             PackageSource::AppImage => self.appimage,
+            PackageSource::Winget => self.winget,
+            PackageSource::Chocolatey => self.chocolatey,
+            PackageSource::Scoop => self.scoop,
         }
     }
 
@@ -336,6 +348,9 @@ impl EnabledSources {
             dart: sources.contains(&PackageSource::Dart),
             deb: sources.contains(&PackageSource::Deb),
             appimage: sources.contains(&PackageSource::AppImage),
+            winget: sources.contains(&PackageSource::Winget),
+            chocolatey: sources.contains(&PackageSource::Chocolatey),
+            scoop: sources.contains(&PackageSource::Scoop),
         }
     }
 
@@ -391,6 +406,15 @@ impl EnabledSources {
         }
         if self.appimage {
             sources.insert(PackageSource::AppImage);
+        }
+        if self.winget {
+            sources.insert(PackageSource::Winget);
+        }
+        if self.chocolatey {
+            sources.insert(PackageSource::Chocolatey);
+        }
+        if self.scoop {
+            sources.insert(PackageSource::Scoop);
         }
         sources
     }

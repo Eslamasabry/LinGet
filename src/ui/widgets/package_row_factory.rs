@@ -1,5 +1,5 @@
 use crate::models::{get_package_icon, Package, PackageStatus, UpdateCategory};
-use crate::ui::strip_html_tags;
+use crate::ui::{escape_markup_text, strip_html_tags};
 
 use gtk4::prelude::*;
 use gtk4::{self as gtk, pango};
@@ -10,6 +10,7 @@ use relm4::prelude::*;
 #[derive(Debug)]
 pub struct PackageRowModel {
     pub package: Package,
+    pub alternative_sources: Vec<crate::models::PackageSource>,
     pub is_favorite: bool,
     pub is_selected: bool,
     pub selection_mode: bool,
@@ -24,6 +25,7 @@ pub struct PackageRowModel {
 #[derive(Debug, Clone)]
 pub struct PackageRowInit {
     pub package: Package,
+    pub alternative_sources: Vec<crate::models::PackageSource>,
     pub is_favorite: bool,
     pub selection_mode: bool,
     pub show_icons: bool,
@@ -52,12 +54,60 @@ pub enum PackageRowOutput {
     SelectionChanged(Package, bool),
 }
 
-fn get_subtitle(pkg: &Package) -> String {
-    if pkg.description.is_empty() {
+fn alternative_sources_label(
+    alternative_sources: &[crate::models::PackageSource],
+) -> Option<String> {
+    if alternative_sources.is_empty() {
+        return None;
+    }
+
+    let mut labels: Vec<String> = alternative_sources
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    labels.sort();
+    Some(format!("Also in {}", labels.join(", ")))
+}
+
+fn source_badge_label(
+    source: crate::models::PackageSource,
+    alternative_sources: &[crate::models::PackageSource],
+) -> String {
+    if alternative_sources.is_empty() {
+        source.to_string()
+    } else {
+        format!("{}+{}", source, alternative_sources.len())
+    }
+}
+
+fn source_badge_tooltip(
+    source: crate::models::PackageSource,
+    alternative_sources: &[crate::models::PackageSource],
+) -> String {
+    if let Some(alternatives) = alternative_sources_label(alternative_sources) {
+        format!("Filter by {}\n{}", source, alternatives)
+    } else {
+        format!("Filter by {}", source)
+    }
+}
+
+fn get_subtitle(pkg: &Package, alternative_sources: &[crate::models::PackageSource]) -> String {
+    let mut subtitle = if pkg.description.is_empty() {
         pkg.source.to_string()
     } else {
         strip_html_tags(&pkg.description)
+    };
+
+    if let Some(alternatives) = alternative_sources_label(alternative_sources) {
+        if subtitle.is_empty() {
+            subtitle = alternatives;
+        } else {
+            subtitle.push_str(" · ");
+            subtitle.push_str(&alternatives);
+        }
     }
+
+    subtitle
 }
 
 fn get_action_icon(status: PackageStatus) -> &'static str {
@@ -112,9 +162,9 @@ impl FactoryComponent for PackageRowModel {
         #[root]
         adw::ActionRow {
             #[watch]
-            set_title: &self.package.name,
+            set_title: &escape_markup_text(&self.package.name),
             #[watch]
-            set_subtitle: &get_subtitle(&self.package),
+            set_subtitle: &escape_markup_text(&get_subtitle(&self.package, &self.alternative_sources)),
             set_activatable: true,
             add_css_class: "pkg-row",
             #[watch]
@@ -173,9 +223,14 @@ impl FactoryComponent for PackageRowModel {
                 },
 
                 gtk::Button {
-                    set_label: &self.package.source.to_string(),
+                    #[watch]
+                    set_label: &source_badge_label(self.package.source, &self.alternative_sources),
                     set_valign: gtk::Align::Center,
-                    set_tooltip_text: Some(&format!("Filter by {}", self.package.source)),
+                    #[watch]
+                    set_tooltip_text: Some(&source_badge_tooltip(
+                        self.package.source,
+                        &self.alternative_sources,
+                    )),
                     add_css_class: "flat",
                     add_css_class: "chip",
                     add_css_class: "source-chip",
@@ -280,6 +335,7 @@ impl FactoryComponent for PackageRowModel {
         let icon_name = get_package_icon(&init.package.name, init.package.source);
         Self {
             package: init.package,
+            alternative_sources: init.alternative_sources,
             is_favorite: init.is_favorite,
             is_selected: false,
             selection_mode: init.selection_mode,
@@ -313,5 +369,47 @@ impl FactoryComponent for PackageRowModel {
                 self.package = *pkg;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::PackageSource;
+
+    #[test]
+    fn source_badge_label_includes_alternative_count() {
+        assert_eq!(
+            source_badge_label(
+                PackageSource::Apt,
+                &[PackageSource::Snap, PackageSource::Flatpak]
+            ),
+            "APT+2"
+        );
+        assert_eq!(source_badge_label(PackageSource::Apt, &[]), "APT");
+    }
+
+    #[test]
+    fn subtitle_mentions_alternative_sources() {
+        let package = Package {
+            name: "demo".to_string(),
+            version: "1.0.0".to_string(),
+            available_version: None,
+            description: "Handy package".to_string(),
+            source: PackageSource::Apt,
+            status: PackageStatus::Installed,
+            size: None,
+            homepage: None,
+            license: None,
+            maintainer: None,
+            dependencies: Vec::new(),
+            install_date: None,
+            update_category: None,
+            enrichment: None,
+        };
+
+        let subtitle = get_subtitle(&package, &[PackageSource::Snap]);
+        assert!(subtitle.contains("Handy package"));
+        assert!(subtitle.contains("Also in Snap"));
     }
 }

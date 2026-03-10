@@ -489,3 +489,24 @@ impl SnapBackend {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pids_deduplicates_numeric_tokens() {
+        assert_eq!(
+            SnapBackend::parse_pids("apps running (foo), pids: 99 100 99"),
+            vec!["100".to_string(), "99".to_string()]
+        );
+    }
+
+    #[test]
+    fn running_error_includes_pid_summary_when_present() {
+        let error = SnapBackend::format_snap_running_error("code", "pids:\n15704\n15705");
+        assert!(error.contains("code"));
+        assert!(error.contains("15704"));
+        assert!(error.contains("15705"));
+    }
+}

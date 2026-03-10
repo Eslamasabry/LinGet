@@ -1,35 +1,13 @@
 use crate::backend::PackageManager;
 use crate::cli::{BackupAction, OutputWriter};
-use crate::models::{Config, Package, PackageSource, PackageStatus};
+use crate::models::{Config, PackageListExport};
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 const DEFAULT_BACKUP_FILE: &str = "linget-backup.json";
-
-#[derive(Serialize, Deserialize)]
-struct BackupData {
-    version: u32,
-    created_at: String,
-    config: BackupConfig,
-    packages: HashMap<String, Vec<PackageEntry>>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct BackupConfig {
-    enabled_sources: Vec<String>,
-    ignored_packages: Vec<String>,
-    favorite_packages: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct PackageEntry {
-    name: String,
-    version: String,
-}
 
 pub async fn run(
     pm: Arc<Mutex<PackageManager>>,
@@ -54,46 +32,18 @@ async fn create_backup(
 
     let manager = pm.lock().await;
     let all_packages = manager.list_all_installed().await?;
+    let backup = PackageListExport::from_installed_with_config(&all_packages, Some(&config));
 
-    let mut packages_by_source: HashMap<String, Vec<PackageEntry>> = HashMap::new();
-    for pkg in all_packages {
-        let source_key = format!("{:?}", pkg.source).to_lowercase();
-        packages_by_source
-            .entry(source_key)
-            .or_default()
-            .push(PackageEntry {
-                name: pkg.name,
-                version: pkg.version,
-            });
-    }
-
-    let enabled_sources: Vec<String> = config
-        .enabled_sources
-        .to_sources()
-        .iter()
-        .map(|s| format!("{:?}", s).to_lowercase())
-        .collect();
-
-    let backup = BackupData {
-        version: 1,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        config: BackupConfig {
-            enabled_sources,
-            ignored_packages: config.ignored_packages.clone(),
-            favorite_packages: config.favorite_packages.clone(),
-        },
-        packages: packages_by_source,
-    };
-
-    let json = serde_json::to_string_pretty(&backup).context("Failed to serialize backup")?;
+    let json = backup
+        .to_json_pretty()
+        .context("Failed to serialize backup")?;
     std::fs::write(&output_path, json).context("Failed to write backup file")?;
 
-    let total_packages: usize = backup.packages.values().map(|v| v.len()).sum();
     writer.success(&format!(
         "Backup created: {} ({} packages from {} sources)",
         output_path,
-        total_packages,
-        backup.packages.len()
+        backup.package_count(),
+        backup.source_count()
     ));
 
     Ok(())
@@ -111,16 +61,20 @@ async fn restore_backup(
     }
 
     let content = std::fs::read_to_string(&path).context("Failed to read backup file")?;
-    let backup: BackupData =
-        serde_json::from_str(&content).context("Failed to parse backup file")?;
+    let parsed =
+        PackageListExport::from_json_str(&content).context("Failed to parse backup file")?;
+    let backup = parsed.export;
 
-    writer.message(&format!("Backup from: {}", backup.created_at));
+    for warning in parsed.warnings {
+        writer.warning(&warning);
+    }
 
-    let total_packages: usize = backup.packages.values().map(|v| v.len()).sum();
+    writer.message(&format!("Backup from: {}", backup.export_date_label()));
+
     writer.message(&format!(
         "Contains {} packages from {} sources",
-        total_packages,
-        backup.packages.len()
+        backup.package_count(),
+        backup.source_count()
     ));
 
     if !skip_confirm {
@@ -132,15 +86,15 @@ async fn restore_backup(
     let manager = pm.lock().await;
     let mut installed = 0;
     let mut failed = 0;
+    let mut packages_by_source = BTreeMap::new();
+    for package in &backup.packages {
+        packages_by_source
+            .entry(package.source)
+            .or_insert_with(Vec::new)
+            .push(package);
+    }
 
-    for (source_str, packages) in &backup.packages {
-        let source = PackageSource::from_str(source_str);
-        if source.is_none() {
-            writer.warning(&format!("Unknown source: {}, skipping", source_str));
-            continue;
-        }
-        let source = source.unwrap();
-
+    for (source, packages) in packages_by_source {
         writer.message(&format!(
             "Installing {} packages from {:?}...",
             packages.len(),
@@ -148,22 +102,7 @@ async fn restore_backup(
         ));
 
         for pkg in packages {
-            let stub_pkg = Package {
-                name: pkg.name.clone(),
-                version: String::new(),
-                available_version: None,
-                description: String::new(),
-                source,
-                status: PackageStatus::NotInstalled,
-                size: None,
-                homepage: None,
-                license: None,
-                maintainer: None,
-                dependencies: Vec::new(),
-                install_date: None,
-                update_category: None,
-                enrichment: None,
-            };
+            let stub_pkg = pkg.to_install_stub();
 
             match manager.install(&stub_pkg).await {
                 Ok(_) => {
@@ -178,10 +117,11 @@ async fn restore_backup(
         }
     }
 
-    let mut config = Config::load();
-    config.ignored_packages = backup.config.ignored_packages;
-    config.favorite_packages = backup.config.favorite_packages;
-    config.save()?;
+    if let Some(saved_config) = backup.config.as_ref() {
+        let mut config = Config::load();
+        saved_config.apply_preferences(&mut config);
+        config.save()?;
+    }
 
     writer.success(&format!(
         "Restore complete: {} installed, {} failed",

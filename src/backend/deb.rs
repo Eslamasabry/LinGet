@@ -189,3 +189,103 @@ impl PackageBackend for DebBackend {
         PackageSource::Deb
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::TEST_PATH_ENV_LOCK;
+    use std::env;
+    use std::ffi::OsString;
+    use std::fs::{self, File};
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct PathGuard {
+        old_path: Option<OsString>,
+    }
+
+    impl PathGuard {
+        fn new(old_path: Option<OsString>) -> Self {
+            Self { old_path }
+        }
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            if let Some(path) = self.old_path.take() {
+                env::set_var("PATH", path);
+            } else {
+                env::remove_var("PATH");
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn create_fake_dpkg_deb_script() -> (std::path::PathBuf, Option<std::ffi::OsString>) {
+        let fixture_dir = std::env::temp_dir().join(format!(
+            "linget-deb-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture_dir).expect("create fixture dir");
+
+        let script_path = fixture_dir.join("dpkg-deb");
+        let mut script = File::create(&script_path).expect("create fake dpkg-deb");
+        writeln!(script, "#!/usr/bin/env sh").expect("write fake dpkg-deb");
+        writeln!(script, "echo 'demo-pkg'").expect("write fake dpkg-deb");
+        writeln!(script, "echo '1.2.3'").expect("write fake dpkg-deb");
+        writeln!(script, "echo 'Demo package description'").expect("write fake dpkg-deb");
+
+        let mut perms = script.metadata().expect("metadata").permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o755);
+        }
+        fs::set_permissions(&script_path, perms).expect("chmod fake dpkg-deb");
+        script.flush().expect("flush fake dpkg-deb");
+        drop(script);
+
+        let old_path = env::var_os("PATH");
+        let joined_path = match old_path.clone() {
+            Some(path) => format!(
+                "{}:{}",
+                fixture_dir.to_string_lossy(),
+                path.to_string_lossy()
+            ),
+            None => fixture_dir.to_string_lossy().into_owned(),
+        };
+        env::set_var("PATH", joined_path);
+
+        (fixture_dir, old_path)
+    }
+
+    #[test]
+    fn downloads_dirs_include_tmp() {
+        assert!(DebBackend::get_downloads_dirs().contains(&PathBuf::from("/tmp")));
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn get_deb_info_parses_show_output() {
+        let _path_env_guard = TEST_PATH_ENV_LOCK.lock().await;
+        let (fixture_dir, old_path) = create_fake_dpkg_deb_script();
+        let _restore_path = PathGuard::new(old_path);
+
+        let info = DebBackend::get_deb_info(&PathBuf::from("/tmp/demo.deb"))
+            .await
+            .expect("expected deb info");
+        assert_eq!(
+            info,
+            (
+                "demo-pkg".to_string(),
+                "1.2.3".to_string(),
+                "Demo package description".to_string()
+            )
+        );
+        fs::remove_dir_all(fixture_dir).ok();
+    }
+}

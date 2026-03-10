@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
+use crate::models::history::FailureCategory;
 use crate::models::{ScheduledTask, SchedulerState};
+use crate::ui::escape_markup_text;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
@@ -19,7 +21,69 @@ pub enum TaskQueueAction {
     Refresh,
     RunNow(String),
     ClearCompleted,
+    CopyFailureDetails(String),
+    RetryFailed,
     Retry(String),
+}
+
+fn queue_summary_label(
+    active_count: usize,
+    completed_count: usize,
+    failed_count: usize,
+    running: bool,
+) -> Option<String> {
+    let total = active_count + completed_count;
+    if total == 0 {
+        return None;
+    }
+
+    let status = if running { "running" } else { "idle" };
+    Some(if failed_count > 0 {
+        format!(
+            "{} active • {} completed ({} failed) • {}",
+            active_count, completed_count, failed_count, status
+        )
+    } else {
+        format!(
+            "{} active • {} completed • {}",
+            active_count, completed_count, status
+        )
+    })
+}
+
+fn retry_failed_button_label(failed_count: usize) -> String {
+    if failed_count == 1 {
+        "Retry Failed".to_string()
+    } else {
+        format!("Retry Failed ({failed_count})")
+    }
+}
+
+pub(crate) fn retry_failed_task_ids(scheduler: &SchedulerState) -> Vec<String> {
+    scheduler
+        .tasks
+        .iter()
+        .filter(|task| task.completed && task.error.is_some())
+        .map(|task| task.id.clone())
+        .collect()
+}
+
+fn scheduled_task_failure_report(task: &ScheduledTask) -> Option<String> {
+    let error = task.error.as_deref()?;
+    let category = FailureCategory::classify(error);
+
+    Some(
+        [
+            format!("Task: {}", task.package_name),
+            format!("Operation: {}", task.operation.display_name()),
+            format!("Source: {}", task.source),
+            format!("Failure: {} ({})", category.label(), category.code()),
+            format!("Provider error: {}", error),
+            format!("Recovery: {}", category.remediation_copy()),
+            format!("Next step: {}", category.action_hint()),
+        ]
+        .join("\n"),
+    )
 }
 
 pub fn build_task_queue_view<F>(data: &TaskQueueViewData, on_action: F) -> gtk::Box
@@ -31,7 +95,8 @@ where
         .spacing(0)
         .build();
 
-    let header = build_header(on_action.clone());
+    let failed_task_ids = retry_failed_task_ids(&data.scheduler);
+    let header = build_header(failed_task_ids.len(), on_action.clone());
     container.append(&header);
 
     let scrolled = gtk::ScrolledWindow::builder()
@@ -65,10 +130,7 @@ where
         if let Some(summary) = build_queue_summary(
             active_tasks.len(),
             completed_tasks.len(),
-            completed_tasks
-                .iter()
-                .filter(|task| task.error.is_some())
-                .count(),
+            failed_task_ids.len(),
             data.running_task_id.is_some(),
         ) {
             container.append(&summary);
@@ -92,7 +154,7 @@ where
     container
 }
 
-fn build_header<F>(on_action: F) -> gtk::Box
+fn build_header<F>(failed_count: usize, on_action: F) -> gtk::Box
 where
     F: Fn(TaskQueueAction) + Clone + 'static,
 {
@@ -113,6 +175,21 @@ where
     title.add_css_class("dim-label");
 
     header.append(&title);
+
+    if failed_count > 0 {
+        let retry_failed_btn = gtk::Button::builder()
+            .label(retry_failed_button_label(failed_count))
+            .tooltip_text("Mark failed tasks due now and retry them in queue order")
+            .build();
+        retry_failed_btn.add_css_class("suggested-action");
+
+        let on_action_retry = on_action.clone();
+        retry_failed_btn.connect_clicked(move |_| {
+            on_action_retry(TaskQueueAction::RetryFailed);
+        });
+
+        header.append(&retry_failed_btn);
+    }
 
     let clear_btn = gtk::Button::builder()
         .label("Clear Completed")
@@ -148,10 +225,8 @@ fn build_queue_summary(
     failed_count: usize,
     running: bool,
 ) -> Option<gtk::Box> {
+    let label_text = queue_summary_label(active_count, completed_count, failed_count, running)?;
     let total = active_count + completed_count;
-    if total == 0 {
-        return None;
-    }
 
     let wrapper = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -160,19 +235,6 @@ fn build_queue_summary(
         .margin_end(24)
         .margin_bottom(8)
         .build();
-
-    let status = if running { "running" } else { "idle" };
-    let label_text = if failed_count > 0 {
-        format!(
-            "{} active • {} completed ({} failed) • {}",
-            active_count, completed_count, failed_count, status
-        )
-    } else {
-        format!(
-            "{} active • {} completed • {}",
-            active_count, completed_count, status
-        )
-    };
 
     let label = gtk::Label::builder()
         .label(&label_text)
@@ -188,6 +250,14 @@ fn build_queue_summary(
     progress.set_text(Some(&format!("{}/{} complete", completed_count, total)));
 
     wrapper.append(&label);
+    if failed_count > 0 {
+        let guidance = gtk::Label::builder()
+            .label("Failed tasks need attention. Use Retry Failed to requeue them now.")
+            .xalign(0.0)
+            .css_classes(vec!["caption", "warning"])
+            .build();
+        wrapper.append(&guidance);
+    }
     wrapper.append(&progress);
     Some(wrapper)
 }
@@ -289,8 +359,8 @@ where
     };
 
     let row = adw::ActionRow::builder()
-        .title(&task.package_name)
-        .subtitle(&subtitle)
+        .title(escape_markup_text(&task.package_name).as_str())
+        .subtitle(escape_markup_text(&subtitle).as_str())
         .build();
 
     if is_running {
@@ -352,11 +422,15 @@ where
     F: Fn(TaskQueueAction) + Clone + 'static,
 {
     let completed_time = task.completed_time_display();
+    let failure_context = task
+        .error
+        .as_deref()
+        .map(|error| (FailureCategory::classify(error), error));
 
-    let status_text = if task.error.is_some() {
-        "Failed"
+    let status_text = if let Some((category, _)) = failure_context {
+        format!("Failed · {} ({})", category.label(), category.code())
     } else {
-        "Completed"
+        "Completed".to_string()
     };
 
     let subtitle = format!(
@@ -367,8 +441,8 @@ where
     );
 
     let row = adw::ActionRow::builder()
-        .title(&task.package_name)
-        .subtitle(&subtitle)
+        .title(escape_markup_text(&task.package_name).as_str())
+        .subtitle(escape_markup_text(&subtitle).as_str())
         .build();
 
     let (icon_name, icon_class) = if task.error.is_some() {
@@ -381,12 +455,43 @@ where
     icon.add_css_class(icon_class);
     row.add_prefix(&icon);
 
+    let meta_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+
     let source_label = gtk::Label::builder().label(task.source.to_string()).build();
     source_label.add_css_class("caption");
     source_label.add_css_class("dim-label");
-    row.add_suffix(&source_label);
+    meta_box.append(&source_label);
+
+    if let Some((category, _)) = failure_context {
+        let code_label = gtk::Label::builder().label(category.code()).build();
+        code_label.add_css_class("caption");
+        code_label.add_css_class("error");
+        meta_box.append(&code_label);
+    }
+
+    row.add_suffix(&meta_box);
 
     if task.error.is_some() {
+        if let Some(report) = scheduled_task_failure_report(task) {
+            let on_action_copy = on_action.clone();
+            let copy_btn = gtk::Button::builder()
+                .icon_name("edit-copy-symbolic")
+                .tooltip_text("Copy failure details")
+                .valign(gtk::Align::Center)
+                .build();
+            copy_btn.add_css_class("flat");
+            copy_btn.add_css_class("circular");
+
+            copy_btn.connect_clicked(move |_| {
+                on_action_copy(TaskQueueAction::CopyFailureDetails(report.clone()));
+            });
+            row.add_suffix(&copy_btn);
+        }
+
         let retry_btn = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
             .tooltip_text("Retry")
@@ -396,15 +501,94 @@ where
         retry_btn.add_css_class("circular");
 
         let task_id = task.id.clone();
+        let on_action_retry = on_action.clone();
         retry_btn.connect_clicked(move |_| {
-            on_action(TaskQueueAction::Retry(task_id.clone()));
+            on_action_retry(TaskQueueAction::Retry(task_id.clone()));
         });
         row.add_suffix(&retry_btn);
 
-        if let Some(ref error) = task.error {
-            row.set_tooltip_text(Some(error));
+        if let Some((category, error)) = failure_context {
+            row.set_tooltip_text(Some(&format!(
+                "{}\nRecovery: {}\nNext step: {}",
+                error,
+                category.remediation_copy(),
+                category.action_hint()
+            )));
         }
     }
 
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{PackageSource, ScheduledOperation, ScheduledTask};
+    use chrono::Utc;
+
+    #[test]
+    fn queue_summary_label_mentions_failed_tasks() {
+        assert_eq!(
+            queue_summary_label(1, 2, 1, true).as_deref(),
+            Some("1 active • 2 completed (1 failed) • running")
+        );
+        assert_eq!(
+            queue_summary_label(1, 2, 0, false).as_deref(),
+            Some("1 active • 2 completed • idle")
+        );
+    }
+
+    #[test]
+    fn retry_failed_task_ids_only_returns_failed_completed_entries() {
+        let mut failed = ScheduledTask::new(
+            "APT:vim".to_string(),
+            "vim".to_string(),
+            PackageSource::Apt,
+            ScheduledOperation::Update,
+            Utc::now(),
+        );
+        failed.completed = true;
+        failed.error = Some("network timeout".to_string());
+
+        let mut completed = ScheduledTask::new(
+            "APT:curl".to_string(),
+            "curl".to_string(),
+            PackageSource::Apt,
+            ScheduledOperation::Update,
+            Utc::now(),
+        );
+        completed.completed = true;
+
+        let running = ScheduledTask::new(
+            "APT:git".to_string(),
+            "git".to_string(),
+            PackageSource::Apt,
+            ScheduledOperation::Update,
+            Utc::now(),
+        );
+
+        let scheduler = SchedulerState {
+            tasks: vec![failed.clone(), completed, running],
+        };
+
+        assert_eq!(retry_failed_task_ids(&scheduler), vec![failed.id]);
+    }
+
+    #[test]
+    fn scheduled_task_failure_report_contains_recovery_guidance() {
+        let mut failed = ScheduledTask::new(
+            "APT:vim".to_string(),
+            "vim".to_string(),
+            PackageSource::Apt,
+            ScheduledOperation::Update,
+            Utc::now(),
+        );
+        failed.completed = true;
+        failed.error = Some("permission denied".to_string());
+
+        let report = scheduled_task_failure_report(&failed).expect("expected failure report");
+        assert!(report.contains("Failure: Permissions"));
+        assert!(report.contains("Recovery:"));
+        assert!(report.contains("Next step:"));
+    }
 }

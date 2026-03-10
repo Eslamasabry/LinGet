@@ -1,5 +1,6 @@
 mod app;
 pub mod components;
+pub(crate) mod format;
 pub mod state;
 mod theme;
 mod ui;

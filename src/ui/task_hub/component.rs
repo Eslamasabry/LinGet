@@ -1,4 +1,6 @@
+use crate::models::history::FailureCategory;
 use crate::models::Package;
+use crate::ui::escape_markup_text;
 
 use chrono::Local;
 use gtk4::prelude::*;
@@ -100,7 +102,7 @@ impl BatchProgress {
     }
 }
 
-const MAX_LOG_LINES: usize = 50;
+const MAX_LOG_LINES: usize = 120;
 
 #[derive(Clone, Debug)]
 pub struct TaskEntry {
@@ -132,6 +134,55 @@ impl TaskEntry {
             TaskStatus::Error => "dialog-error-symbolic",
             TaskStatus::Info => "dialog-information-symbolic",
         }
+    }
+
+    fn failure_context(&self) -> Option<(FailureCategory, String)> {
+        if !matches!(self.status, TaskStatus::Error) {
+            return None;
+        }
+
+        let details = self.details.trim();
+        if !details.is_empty() {
+            return Some((FailureCategory::classify(details), details.to_owned()));
+        }
+
+        self.log_lines
+            .last()
+            .map(|line| (FailureCategory::classify(line), line.clone()))
+    }
+
+    fn failure_report(&self) -> Option<String> {
+        let (category, error_text) = self.failure_context()?;
+        let mut lines = vec![
+            format!("Task: {}", self.title),
+            format!("Time: {}", self.timestamp),
+            format!("Failure: {} ({})", category.label(), category.code()),
+        ];
+
+        let details = self.details.trim();
+        if !details.is_empty() {
+            lines.push(format!("Details: {}", details));
+        }
+
+        if let Some(command) = self.command.as_deref() {
+            lines.push(format!("Command: {}", command));
+        }
+
+        if !error_text.trim().is_empty() {
+            lines.push(format!("Provider error: {}", error_text.trim()));
+        }
+
+        lines.push(format!("Recovery: {}", category.remediation_copy()));
+        lines.push(format!("Next step: {}", category.action_hint()));
+
+        if !self.log_lines.is_empty() {
+            lines.push("Recent logs:".to_string());
+            for line in self.log_lines.iter().rev().take(10).rev() {
+                lines.push(format!("- {}", line));
+            }
+        }
+
+        Some(lines.join("\n"))
     }
 }
 
@@ -178,12 +229,14 @@ pub enum TaskHubInput {
     Clear,
     MarkRead,
     CopyCommand(usize),
+    CopyFailureDetails(usize),
     Retry(usize),
 }
 
 #[derive(Debug, Clone)]
 pub enum TaskHubOutput {
     RetryOperation(RetrySpec),
+    CopyText(String),
     UnreadCountChanged(u32),
 }
 
@@ -522,10 +575,15 @@ impl SimpleComponent for TaskHubModel {
             TaskHubInput::CopyCommand(task_id) => {
                 if let Some(task) = self.tasks.iter().find(|t| t.id == task_id) {
                     if let Some(ref cmd) = task.command {
-                        if let Some(display) = gtk::gdk::Display::default() {
-                            display.clipboard().set_text(cmd);
-                            display.primary_clipboard().set_text(cmd);
-                        }
+                        let _ = sender.output(TaskHubOutput::CopyText(cmd.clone()));
+                    }
+                }
+            }
+
+            TaskHubInput::CopyFailureDetails(task_id) => {
+                if let Some(task) = self.tasks.iter().find(|t| t.id == task_id) {
+                    if let Some(report) = task.failure_report() {
+                        let _ = sender.output(TaskHubOutput::CopyText(report));
                     }
                 }
             }
@@ -580,15 +638,10 @@ impl SimpleComponent for TaskHubModel {
 
 impl TaskHubModel {
     fn build_task_row(&self, task: &TaskEntry, sender: &ComponentSender<Self>) -> gtk::ListBoxRow {
-        let row = adw::ActionRow::builder()
-            .title(&task.title)
-            .subtitle(task.subtitle())
-            .css_classes(vec!["cmd-row"])
-            .build();
-
-        let icon = gtk::Image::from_icon_name(task.icon_name());
-        icon.add_css_class("dim-label");
-        row.add_prefix(&icon);
+        let failure_context = task.failure_context();
+        let show_logs = !task.log_lines.is_empty()
+            && matches!(task.status, TaskStatus::Active | TaskStatus::Error);
+        let use_expander = show_logs || failure_context.is_some();
 
         let suffix = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -643,6 +696,21 @@ impl TaskHubModel {
             suffix.append(&retry_btn);
         }
 
+        if task.failure_context().is_some() {
+            let copy_failure_btn = gtk::Button::builder()
+                .icon_name("edit-copy-symbolic")
+                .tooltip_text("Copy failure details")
+                .css_classes(vec!["flat", "circular"])
+                .build();
+
+            let task_id = task.id;
+            let sender = sender.clone();
+            copy_failure_btn.connect_clicked(move |_| {
+                sender.input(TaskHubInput::CopyFailureDetails(task_id));
+            });
+            suffix.append(&copy_failure_btn);
+        }
+
         if task.command.is_some() {
             let copy_btn = gtk::Button::builder()
                 .icon_name("edit-copy-symbolic")
@@ -658,67 +726,161 @@ impl TaskHubModel {
             suffix.append(&copy_btn);
         }
 
-        row.add_suffix(&suffix);
-
-        if matches!(task.status, TaskStatus::Active) && !task.log_lines.is_empty() {
+        let wrapper = gtk::ListBoxRow::new();
+        let title = escape_markup_text(&task.title);
+        let subtitle = escape_markup_text(&task.subtitle());
+        if use_expander {
             let expander = adw::ExpanderRow::builder()
-                .title(&task.title)
-                .subtitle(task.subtitle())
+                .title(title.as_str())
+                .subtitle(subtitle.as_str())
                 .css_classes(vec!["cmd-row"])
                 .show_enable_switch(false)
                 .build();
+            expander.set_expanded(matches!(task.status, TaskStatus::Error));
 
             let exp_icon = gtk::Image::from_icon_name(task.icon_name());
             exp_icon.add_css_class("dim-label");
             expander.add_prefix(&exp_icon);
             expander.add_suffix(&suffix);
 
-            let log_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(2)
-                .margin_start(12)
-                .margin_end(12)
-                .margin_top(4)
-                .margin_bottom(8)
-                .build();
+            if let Some((category, error_text)) = failure_context {
+                let failure_row = build_expander_detail_row(
+                    "Failure",
+                    &format!("{} ({})", category.label(), category.code()),
+                    &["caption"],
+                );
+                expander.add_row(&failure_row);
 
-            for line in &task.log_lines {
-                let log_label = gtk::Label::builder()
-                    .label(line)
-                    .xalign(0.0)
-                    .wrap(true)
-                    .css_classes(vec!["caption", "monospace", "dim-label"])
-                    .build();
-                log_box.append(&log_label);
+                let recovery_row = build_expander_detail_row(
+                    "Recovery",
+                    category.remediation_copy(),
+                    &["dim-label"],
+                );
+                expander.add_row(&recovery_row);
+
+                let next_step_row =
+                    build_expander_detail_row("Next step", category.action_hint(), &["dim-label"]);
+                expander.add_row(&next_step_row);
+
+                if !error_text.trim().is_empty() {
+                    let error_row = build_expander_detail_row(
+                        "Provider error",
+                        &error_text,
+                        &["caption", "monospace"],
+                    );
+                    expander.add_row(&error_row);
+                }
             }
 
-            let log_scrolled = gtk::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk::PolicyType::Never)
-                .min_content_height(120)
-                .max_content_height(220)
-                .child(&log_box)
-                .build();
+            if show_logs {
+                let log_row = build_log_row(task);
+                expander.add_row(&log_row);
+            }
 
-            let vadj = log_scrolled.vadjustment();
-            glib::idle_add_local_once(move || {
-                let max = (vadj.upper() - vadj.page_size()).max(vadj.lower());
-                vadj.set_value(max);
-            });
-
-            let log_row = adw::ActionRow::builder()
-                .activatable(false)
-                .selectable(false)
-                .build();
-            log_row.set_child(Some(&log_scrolled));
-            expander.add_row(&log_row);
-
-            let wrapper = gtk::ListBoxRow::new();
             wrapper.set_child(Some(&expander));
             return wrapper;
         }
 
-        let wrapper = gtk::ListBoxRow::new();
+        let row = adw::ActionRow::builder()
+            .title(title.as_str())
+            .subtitle(subtitle.as_str())
+            .css_classes(vec!["cmd-row"])
+            .build();
+
+        let icon = gtk::Image::from_icon_name(task.icon_name());
+        icon.add_css_class("dim-label");
+        row.add_prefix(&icon);
+        row.add_suffix(&suffix);
+
         wrapper.set_child(Some(&row));
         wrapper
+    }
+}
+
+fn build_expander_detail_row(title: &str, body: &str, body_css_classes: &[&str]) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .activatable(false)
+        .selectable(false)
+        .build();
+
+    let label = gtk::Label::builder()
+        .label(body)
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    for class_name in body_css_classes {
+        label.add_css_class(class_name);
+    }
+
+    row.set_child(Some(&label));
+    row
+}
+
+fn build_log_row(task: &TaskEntry) -> adw::ActionRow {
+    let log_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(4)
+        .margin_bottom(8)
+        .build();
+
+    for line in &task.log_lines {
+        let log_label = gtk::Label::builder()
+            .label(line)
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(vec!["caption", "monospace", "dim-label"])
+            .build();
+        log_box.append(&log_label);
+    }
+
+    let log_scrolled = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_height(120)
+        .max_content_height(220)
+        .child(&log_box)
+        .build();
+
+    let vadj = log_scrolled.vadjustment();
+    glib::idle_add_local_once(move || {
+        let max = (vadj.upper() - vadj.page_size()).max(vadj.lower());
+        vadj.set_value(max);
+    });
+
+    let log_row = adw::ActionRow::builder()
+        .title("Recent logs")
+        .activatable(false)
+        .selectable(false)
+        .build();
+    log_row.set_child(Some(&log_scrolled));
+    log_row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_report_includes_recovery_and_recent_logs() {
+        let task = TaskEntry {
+            id: 1,
+            title: "APT update failed".to_string(),
+            details: "network timeout while fetching package lists".to_string(),
+            timestamp: "12:34:56".to_string(),
+            status: TaskStatus::Error,
+            command: Some("apt update".to_string()),
+            retry_spec: None,
+            batch_progress: None,
+            log_lines: vec!["Hit:1 repo".to_string(), "Err:2 timeout".to_string()],
+        };
+
+        let report = task.failure_report().expect("expected failure report");
+        assert!(report.contains("Failure: Network"));
+        assert!(report.contains("Command: apt update"));
+        assert!(report.contains("Recovery:"));
+        assert!(report.contains("Recent logs:"));
     }
 }

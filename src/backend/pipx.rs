@@ -298,3 +298,25 @@ impl PackageBackend for PipxBackend {
         Ok(commands)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_newer_version_detects_increments() {
+        assert!(PipxBackend::is_newer_version("1.0.1", "1.0.0"));
+        assert!(PipxBackend::is_newer_version("2.0.0", "1.9.9"));
+        assert!(!PipxBackend::is_newer_version("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn is_newer_version_handles_suffixes_and_invalid_input() {
+        assert!(PipxBackend::is_newer_version("1.0.0-2", "1.0.0-1"));
+        assert!(!PipxBackend::is_newer_version(
+            "1.0.0+build2",
+            "1.0.0+build1"
+        ));
+        assert!(!PipxBackend::is_newer_version("abc", "1.0.0"));
+    }
+}

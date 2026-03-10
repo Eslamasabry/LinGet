@@ -44,8 +44,10 @@ if [ -f "./$APP_NAME" ] && [ -d "./data" ]; then
         "/usr/share/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg"
         
     echo "Installing desktop file..."
-    run_priv install -Dm644 "data/applications/$APP_ID.desktop" \
-        "/usr/share/applications/$APP_ID.desktop"
+    DESKTOP_TMP=$(mktemp)
+    sed "s|^Exec=.*$|Exec=/usr/local/bin/$APP_NAME|" "data/applications/$APP_ID.desktop" > "$DESKTOP_TMP"
+    run_priv install -Dm644 "$DESKTOP_TMP" "/usr/share/applications/$APP_ID.desktop"
+    rm -f "$DESKTOP_TMP"
         
     echo "Updating system caches..."
     run_priv gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true

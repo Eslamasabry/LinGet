@@ -1,4 +1,4 @@
-use crate::backend::PackageManager;
+use crate::backend::{BackendCapability, PackageManager, SourceCapabilityContext};
 use crate::models::{
     fetch_enrichment, get_package_recommendations, guess_config_paths, guess_log_command,
     parse_install_date, ChangelogSummary, Config, Package, PackageEnrichment, PackageInsights,
@@ -137,9 +137,13 @@ pub struct DetailsPanelWidgets {
     enrichment_spinner: gtk::Spinner,
     version_row: adw::ActionRow,
     version_update_icon: gtk::Image,
+    update_category_row: adw::ActionRow,
     status_row: adw::ActionRow,
     size_row: adw::ActionRow,
     source_row: adw::ActionRow,
+    homepage_row: adw::ActionRow,
+    license_row: adw::ActionRow,
+    maintainer_row: adw::ActionRow,
     insights_group: adw::PreferencesGroup,
     install_date_row: adw::ActionRow,
     deps_row: adw::ActionRow,
@@ -147,6 +151,8 @@ pub struct DetailsPanelWidgets {
     safe_remove_row: adw::ActionRow,
     safe_remove_icon: gtk::Image,
     config_row: adw::ActionRow,
+    commands_row: adw::ActionRow,
+    log_row: adw::ActionRow,
     recommendations_group: adw::PreferencesGroup,
     recommendations_box: gtk::Box,
     ignore_switch: gtk::Switch,
@@ -213,6 +219,13 @@ fn apply_changelog_formatting(buffer: &gtk::TextBuffer, log: &str) {
         }
         buffer.insert(&mut iter, "\n");
     }
+}
+
+fn package_capability_status(
+    package: &Package,
+    capability: BackendCapability,
+) -> crate::backend::CapabilityStatus {
+    SourceCapabilityContext::available(package.source).package_status(package, capability)
 }
 
 impl SimpleComponent for DetailsPanelModel {
@@ -408,6 +421,19 @@ impl SimpleComponent for DetailsPanelModel {
         version_row.add_suffix(&version_update_icon);
         details_group.add(&version_row);
 
+        let update_category_row = adw::ActionRow::builder()
+            .title("Update category")
+            .subtitle("")
+            .css_classes(vec!["property"])
+            .visible(false)
+            .build();
+        let update_icon = gtk::Image::builder()
+            .icon_name("software-update-available-symbolic")
+            .css_classes(vec!["accent"])
+            .build();
+        update_category_row.add_prefix(&update_icon);
+        details_group.add(&update_category_row);
+
         let status_row = adw::ActionRow::builder()
             .title("Status")
             .subtitle("")
@@ -428,6 +454,40 @@ impl SimpleComponent for DetailsPanelModel {
             .css_classes(vec!["property"])
             .build();
         details_group.add(&source_row);
+
+        let homepage_row = adw::ActionRow::builder()
+            .title("Homepage")
+            .subtitle("")
+            .css_classes(vec!["property"])
+            .visible(false)
+            .build();
+        let homepage_icon = gtk::Image::builder().icon_name("globe-symbolic").build();
+        homepage_row.add_prefix(&homepage_icon);
+        details_group.add(&homepage_row);
+
+        let license_row = adw::ActionRow::builder()
+            .title("License")
+            .subtitle("")
+            .css_classes(vec!["property"])
+            .visible(false)
+            .build();
+        let license_icon = gtk::Image::builder()
+            .icon_name("text-x-generic-symbolic")
+            .build();
+        license_row.add_prefix(&license_icon);
+        details_group.add(&license_row);
+
+        let maintainer_row = adw::ActionRow::builder()
+            .title("Maintainer")
+            .subtitle("")
+            .css_classes(vec!["property"])
+            .visible(false)
+            .build();
+        let maintainer_icon = gtk::Image::builder()
+            .icon_name("avatar-default-symbolic")
+            .build();
+        maintainer_row.add_prefix(&maintainer_icon);
+        details_group.add(&maintainer_row);
 
         let ignore_row = adw::ActionRow::builder()
             .title("Ignore Updates")
@@ -522,7 +582,7 @@ impl SimpleComponent for DetailsPanelModel {
         insights_group.add(&safe_remove_row);
 
         let config_row = adw::ActionRow::builder()
-            .title("Config location")
+            .title("Config paths")
             .subtitle("None detected")
             .css_classes(vec!["property"])
             .visible(false)
@@ -530,6 +590,30 @@ impl SimpleComponent for DetailsPanelModel {
         let config_icon = gtk::Image::builder().icon_name("folder-symbolic").build();
         config_row.add_prefix(&config_icon);
         insights_group.add(&config_row);
+
+        let commands_row = adw::ActionRow::builder()
+            .title("Commands")
+            .subtitle("No exposed commands detected")
+            .css_classes(vec!["property"])
+            .visible(false)
+            .build();
+        let commands_icon = gtk::Image::builder()
+            .icon_name("utilities-terminal-symbolic")
+            .build();
+        commands_row.add_prefix(&commands_icon);
+        insights_group.add(&commands_row);
+
+        let log_row = adw::ActionRow::builder()
+            .title("Logs")
+            .subtitle("No log command available")
+            .css_classes(vec!["property"])
+            .visible(false)
+            .build();
+        let log_icon = gtk::Image::builder()
+            .icon_name("document-open-recent-symbolic")
+            .build();
+        log_row.add_prefix(&log_icon);
+        insights_group.add(&log_row);
 
         content_box.append(&insights_group);
 
@@ -715,9 +799,13 @@ impl SimpleComponent for DetailsPanelModel {
             enrichment_spinner,
             version_row,
             version_update_icon,
+            update_category_row,
             status_row,
             size_row,
             source_row,
+            homepage_row,
+            license_row,
+            maintainer_row,
             insights_group,
             install_date_row,
             deps_row,
@@ -725,6 +813,8 @@ impl SimpleComponent for DetailsPanelModel {
             safe_remove_row,
             safe_remove_icon,
             config_row,
+            commands_row,
+            log_row,
             recommendations_group,
             recommendations_box,
             ignore_switch,
@@ -807,15 +897,17 @@ impl SimpleComponent for DetailsPanelModel {
                 let pm_for_insights = self.pm.clone();
                 relm4::spawn(async move {
                     let manager = pm_for_insights.lock().await;
-                    let reverse_deps =
-                        if let Some(backend) = manager.get_backend(pkg_for_insights.source) {
-                            backend
-                                .get_reverse_dependencies(&pkg_for_insights.name)
-                                .await
-                                .unwrap_or_default()
-                        } else {
-                            Vec::new()
-                        };
+                    let reverse_deps = manager
+                        .get_reverse_dependencies(&pkg_for_insights)
+                        .await
+                        .unwrap_or_default();
+                    let package_commands = manager
+                        .get_package_commands(&pkg_for_insights.name, pkg_for_insights.source)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(command, _)| command)
+                        .collect();
                     drop(manager);
 
                     let install_date = pkg_for_insights
@@ -832,6 +924,7 @@ impl SimpleComponent for DetailsPanelModel {
                         .with_dependencies(pkg_for_insights.dependencies.len(), 0)
                         .with_reverse_deps(reverse_deps)
                         .with_config_paths(config_paths)
+                        .with_package_commands(package_commands)
                         .with_log_command(log_command);
 
                     sender_insights.input(DetailsPanelInput::InsightsLoaded(insights));
@@ -950,10 +1043,21 @@ impl SimpleComponent for DetailsPanelModel {
                 if self.changelog_fetched || self.changelog_loading {
                     return;
                 }
-                self.changelog_fetched = true;
-                self.changelog_loading = true;
 
                 if let Some(pkg) = &self.package {
+                    let capability = SourceCapabilityContext::available(pkg.source)
+                        .status(BackendCapability::Changelog);
+                    if let Some(reason) = capability.reason() {
+                        self.changelog_fetched = true;
+                        self.changelog_loading = false;
+                        self.changelog_error = Some(reason.to_string());
+                        self.pending_changelog_rebuild.set(true);
+                        return;
+                    }
+
+                    self.changelog_fetched = true;
+                    self.changelog_loading = true;
+
                     let pkg = pkg.clone();
                     let pm = self.pm.clone();
                     let sender = sender.clone();
@@ -1031,6 +1135,14 @@ impl SimpleComponent for DetailsPanelModel {
                     return;
                 }
                 if let Some(pkg) = &self.package {
+                    let capability = package_capability_status(pkg, BackendCapability::Update);
+                    if let Some(reason) = capability.reason() {
+                        sender
+                            .output(DetailsPanelOutput::ShowToast(reason.to_string()))
+                            .ok();
+                        return;
+                    }
+
                     self.operation_in_progress = true;
                     self.operation_label = "Updating...".to_string();
 
@@ -1071,6 +1183,14 @@ impl SimpleComponent for DetailsPanelModel {
                     return;
                 }
                 if let Some(pkg) = &self.package {
+                    let capability = package_capability_status(pkg, BackendCapability::Remove);
+                    if let Some(reason) = capability.reason() {
+                        sender
+                            .output(DetailsPanelOutput::ShowToast(reason.to_string()))
+                            .ok();
+                        return;
+                    }
+
                     let pkg_name = pkg.name.clone();
                     let pkg_source = pkg.source;
 
@@ -1144,6 +1264,14 @@ impl SimpleComponent for DetailsPanelModel {
                     return;
                 }
                 if let Some(pkg) = &self.package {
+                    let capability = package_capability_status(pkg, BackendCapability::Downgrade);
+                    if let Some(reason) = capability.reason() {
+                        sender
+                            .output(DetailsPanelOutput::ShowToast(reason.to_string()))
+                            .ok();
+                        return;
+                    }
+
                     self.operation_in_progress = true;
                     let verb = if matches!(pkg.source, PackageSource::Snap) {
                         "Reverting"
@@ -1295,11 +1423,46 @@ impl SimpleComponent for DetailsPanelModel {
             }
         }
 
-        widgets.version_row.set_subtitle(&pkg.display_version());
+        let version_subtitle = crate::ui::escape_markup_text(&pkg.display_version());
+        widgets.version_row.set_subtitle(&version_subtitle);
         widgets.version_update_icon.set_visible(pkg.has_update());
+        if let Some(category) = pkg.update_category.filter(|_| pkg.has_update()) {
+            widgets.update_category_row.set_visible(true);
+            widgets.update_category_row.set_subtitle(category.label());
+        } else if pkg.has_update() {
+            widgets.update_category_row.set_visible(true);
+            widgets
+                .update_category_row
+                .set_subtitle(pkg.detect_update_category().label());
+        } else {
+            widgets.update_category_row.set_visible(false);
+        }
         widgets.status_row.set_subtitle(&pkg.status.to_string());
         widgets.size_row.set_subtitle(&pkg.size_display());
         widgets.source_row.set_subtitle(pkg.source.description());
+        if let Some(homepage) = pkg.homepage.as_deref() {
+            let homepage_subtitle = crate::ui::escape_markup_text(homepage);
+            widgets.homepage_row.set_visible(true);
+            widgets.homepage_row.set_subtitle(&homepage_subtitle);
+            widgets.homepage_row.set_tooltip_text(Some(homepage));
+        } else {
+            widgets.homepage_row.set_visible(false);
+            widgets.homepage_row.set_tooltip_text(None);
+        }
+        if let Some(license) = pkg.license.as_deref() {
+            let license_subtitle = crate::ui::escape_markup_text(license);
+            widgets.license_row.set_visible(true);
+            widgets.license_row.set_subtitle(&license_subtitle);
+        } else {
+            widgets.license_row.set_visible(false);
+        }
+        if let Some(maintainer) = pkg.maintainer.as_deref() {
+            let maintainer_subtitle = crate::ui::escape_markup_text(maintainer);
+            widgets.maintainer_row.set_visible(true);
+            widgets.maintainer_row.set_subtitle(&maintainer_subtitle);
+        } else {
+            widgets.maintainer_row.set_visible(false);
+        }
 
         if self.pending_insights_rebuild.get() {
             self.pending_insights_rebuild.set(false);
@@ -1308,15 +1471,19 @@ impl SimpleComponent for DetailsPanelModel {
                 widgets.insights_group.set_visible(true);
 
                 if let Some(age) = insights.install_age_display() {
-                    widgets.install_date_row.set_subtitle(&age);
+                    let age_subtitle = crate::ui::escape_markup_text(&age);
+                    widgets.install_date_row.set_subtitle(&age_subtitle);
                 } else {
                     widgets.install_date_row.set_subtitle("Unknown");
                 }
 
-                widgets.deps_row.set_subtitle(&insights.deps_display());
+                let deps_subtitle = crate::ui::escape_markup_text(&insights.deps_display());
+                widgets.deps_row.set_subtitle(&deps_subtitle);
+                let reverse_deps_subtitle =
+                    crate::ui::escape_markup_text(&insights.reverse_deps_display());
                 widgets
                     .reverse_deps_row
-                    .set_subtitle(&insights.reverse_deps_display());
+                    .set_subtitle(&reverse_deps_subtitle);
 
                 let (icon, label) = insights.safe_to_remove_display();
                 widgets.safe_remove_icon.set_icon_name(Some(icon));
@@ -1331,12 +1498,35 @@ impl SimpleComponent for DetailsPanelModel {
                 }
 
                 if !insights.config_paths.is_empty() {
+                    let config_subtitle =
+                        crate::ui::escape_markup_text(&insights.config_paths.join(", "));
                     widgets.config_row.set_visible(true);
-                    widgets
-                        .config_row
-                        .set_subtitle(&insights.config_paths.join(", "));
+                    widgets.config_row.set_subtitle(&config_subtitle);
                 } else {
                     widgets.config_row.set_visible(false);
+                }
+
+                if !insights.package_commands.is_empty() {
+                    let commands_subtitle =
+                        crate::ui::escape_markup_text(&insights.commands_display());
+                    widgets.commands_row.set_visible(true);
+                    widgets.commands_row.set_subtitle(&commands_subtitle);
+                    widgets
+                        .commands_row
+                        .set_tooltip_text(Some(&insights.package_commands.join(", ")));
+                } else {
+                    widgets.commands_row.set_visible(false);
+                    widgets.commands_row.set_tooltip_text(None);
+                }
+
+                if let Some(log_command) = insights.log_command.as_deref() {
+                    let log_command_subtitle = crate::ui::escape_markup_text(log_command);
+                    widgets.log_row.set_visible(true);
+                    widgets.log_row.set_subtitle(&log_command_subtitle);
+                    widgets.log_row.set_tooltip_text(Some(log_command));
+                } else {
+                    widgets.log_row.set_visible(false);
+                    widgets.log_row.set_tooltip_text(None);
                 }
             } else if self.insights_loading {
                 widgets.insights_group.set_visible(true);
@@ -1344,8 +1534,20 @@ impl SimpleComponent for DetailsPanelModel {
                 widgets.deps_row.set_subtitle("Loading...");
                 widgets.reverse_deps_row.set_subtitle("Loading...");
                 widgets.safe_remove_row.set_subtitle("Checking...");
+                widgets.config_row.set_visible(false);
+                widgets.commands_row.set_visible(true);
+                widgets.commands_row.set_subtitle("Loading...");
+                widgets.commands_row.set_tooltip_text(None);
+                widgets.log_row.set_visible(true);
+                widgets.log_row.set_subtitle("Loading...");
+                widgets.log_row.set_tooltip_text(None);
             } else {
                 widgets.insights_group.set_visible(false);
+                widgets.config_row.set_visible(false);
+                widgets.commands_row.set_visible(false);
+                widgets.commands_row.set_tooltip_text(None);
+                widgets.log_row.set_visible(false);
+                widgets.log_row.set_tooltip_text(None);
             }
 
             while let Some(child) = widgets.dependencies_box.first_child() {
@@ -1568,22 +1770,41 @@ impl SimpleComponent for DetailsPanelModel {
             widgets.warning_box.set_visible(false);
         }
 
-        let supports_gui = pkg.source.supports_gui_operations();
+        let update_capability = package_capability_status(pkg, BackendCapability::Update);
+        let remove_capability = package_capability_status(pkg, BackendCapability::Remove);
+        let downgrade_capability = package_capability_status(pkg, BackendCapability::Downgrade);
+        let changelog_capability =
+            SourceCapabilityContext::available(pkg.source).status(BackendCapability::Changelog);
+
+        widgets.update_btn.set_visible(pkg.has_update());
         widgets
             .update_btn
-            .set_visible(pkg.has_update() && supports_gui);
+            .set_sensitive(update_capability.is_supported());
         widgets
-            .remove_btn
-            .set_visible(pkg.status == PackageStatus::Installed && supports_gui);
+            .update_btn
+            .set_tooltip_text(update_capability.reason());
 
-        let supports_downgrade = matches!(
-            pkg.source,
-            PackageSource::Snap | PackageSource::Dnf | PackageSource::Flatpak | PackageSource::Apt
-        ) && matches!(
+        widgets.remove_btn.set_visible(matches!(
             pkg.status,
             PackageStatus::Installed | PackageStatus::UpdateAvailable
-        );
-        widgets.downgrade_btn.set_visible(supports_downgrade);
+        ));
+        widgets
+            .remove_btn
+            .set_sensitive(remove_capability.is_supported());
+        widgets
+            .remove_btn
+            .set_tooltip_text(remove_capability.reason());
+
+        widgets.downgrade_btn.set_visible(matches!(
+            pkg.status,
+            PackageStatus::Installed | PackageStatus::UpdateAvailable
+        ));
+        widgets
+            .downgrade_btn
+            .set_sensitive(downgrade_capability.is_supported());
+        widgets
+            .downgrade_btn
+            .set_tooltip_text(downgrade_capability.reason());
         let downgrade_label = match pkg.source {
             PackageSource::Snap => "Revert",
             PackageSource::Flatpak => "Rollback",
@@ -1591,7 +1812,14 @@ impl SimpleComponent for DetailsPanelModel {
         };
         widgets.downgrade_btn.set_label(downgrade_label);
 
-        let show_schedule = pkg.has_update() && supports_gui;
+        widgets
+            .changelog_expander
+            .set_visible(changelog_capability.is_supported());
+        widgets
+            .changelog_expander
+            .set_tooltip_text(changelog_capability.reason());
+
+        let show_schedule = pkg.has_update() && update_capability.is_supported();
         widgets.schedule_btn.set_visible(show_schedule);
         if show_schedule {
             let pkg_clone = pkg.clone();
@@ -1621,15 +1849,15 @@ impl SimpleComponent for DetailsPanelModel {
             widgets.update_btn.set_sensitive(false);
             widgets.remove_btn.set_sensitive(false);
             widgets.downgrade_btn.set_sensitive(false);
+            widgets.update_btn.set_tooltip_text(None);
+            widgets.remove_btn.set_tooltip_text(None);
+            widgets.downgrade_btn.set_tooltip_text(None);
             if widgets.update_btn.is_visible() {
                 widgets.update_btn.set_label(&self.operation_label);
             } else if widgets.remove_btn.is_visible() {
                 widgets.remove_btn.set_label(&self.operation_label);
             }
         } else {
-            widgets.update_btn.set_sensitive(true);
-            widgets.remove_btn.set_sensitive(true);
-            widgets.downgrade_btn.set_sensitive(true);
             widgets.update_btn.set_label("Update");
             widgets.remove_btn.set_label("Remove");
         }

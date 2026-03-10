@@ -9,6 +9,7 @@ pub struct PackageInsights {
     pub dependencies_count: usize,
     pub reverse_dependencies: Vec<String>,
     pub config_paths: Vec<String>,
+    pub package_commands: Vec<String>,
     pub log_command: Option<String>,
     pub is_safe_to_remove: bool,
     pub shared_deps_count: usize,
@@ -38,6 +39,11 @@ impl PackageInsights {
 
     pub fn with_config_paths(mut self, paths: Vec<String>) -> Self {
         self.config_paths = paths;
+        self
+    }
+
+    pub fn with_package_commands(mut self, commands: Vec<String>) -> Self {
+        self.package_commands = commands;
         self
     }
 
@@ -131,6 +137,20 @@ impl PackageInsights {
             ("emblem-ok-symbolic", "Safe to remove")
         } else {
             ("dialog-warning-symbolic", "May break other packages")
+        }
+    }
+
+    pub fn commands_display(&self) -> String {
+        match self.package_commands.len() {
+            0 => "No exposed commands detected".to_string(),
+            1 => self.package_commands[0].clone(),
+            2 => format!("{}, {}", self.package_commands[0], self.package_commands[1]),
+            count => format!(
+                "{}, {} +{} more",
+                self.package_commands[0],
+                self.package_commands[1],
+                count - 2
+            ),
         }
     }
 }

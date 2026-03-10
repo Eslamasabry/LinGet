@@ -626,9 +626,7 @@ mod tests {
 
     #[test]
     fn test_dnf_backend_creation() {
-        let backend = DnfBackend::new();
-        let _default = DnfBackend::default();
-        // Just verify the backend can be created
-        drop(backend);
+        let _backend = DnfBackend::new();
+        let _default = DnfBackend;
     }
 }

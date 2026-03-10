@@ -564,3 +564,22 @@ impl PipBackend {
         (num * multiplier as f64) as u64
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pip_size_handles_units() {
+        assert_eq!(PipBackend::parse_pip_size("1 KB"), 1024);
+        assert_eq!(PipBackend::parse_pip_size("1.5 MB"), 1_572_864);
+        assert_eq!(PipBackend::parse_pip_size("2 GiB"), 2_147_483_648);
+    }
+
+    #[test]
+    fn parse_pip_size_handles_case_and_invalid_values() {
+        assert_eq!(PipBackend::parse_pip_size("512 kib"), 524_288);
+        assert_eq!(PipBackend::parse_pip_size("999"), 999);
+        assert_eq!(PipBackend::parse_pip_size("invalid"), 0);
+    }
+}

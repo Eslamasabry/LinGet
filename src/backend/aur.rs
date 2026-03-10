@@ -214,3 +214,115 @@ impl PackageBackend for AurBackend {
         PackageSource::Aur
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::TEST_PATH_ENV_LOCK;
+    use std::env;
+    use std::ffi::OsString;
+    use std::fs::{self, File};
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct PathGuard {
+        old_path: Option<OsString>,
+    }
+
+    impl PathGuard {
+        fn new(old_path: Option<OsString>) -> Self {
+            Self { old_path }
+        }
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            if let Some(path) = self.old_path.take() {
+                env::set_var("PATH", path);
+            } else {
+                env::remove_var("PATH");
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn create_fake_aur_helper() -> (std::path::PathBuf, Option<std::ffi::OsString>) {
+        let fixture_dir = std::env::temp_dir().join(format!(
+            "linget-aur-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture_dir).expect("create fixture dir");
+
+        for helper_name in ["yay", "paru"] {
+            let script_path = fixture_dir.join(helper_name);
+            let mut script = File::create(&script_path).expect("create fake aur helper");
+            writeln!(script, "#!/usr/bin/env sh").expect("write fake aur helper");
+            writeln!(script, "if [ \"$1\" = \"-Qm\" ]; then").expect("write fake aur helper");
+            writeln!(script, "  echo 'yay 11.0.0'").expect("write fake aur helper");
+            writeln!(script, "elif [ \"$1\" = \"-Qua\" ]; then").expect("write fake aur helper");
+            writeln!(script, "  echo 'yay 11.0.0 -> 12.0.0'").expect("write fake aur helper");
+            writeln!(script, "fi").expect("write fake aur helper");
+
+            let mut perms = script.metadata().expect("metadata").permissions();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                perms.set_mode(0o755);
+            }
+            fs::set_permissions(&script_path, perms).expect("chmod fake aur helper");
+            script.flush().expect("flush fake aur helper");
+        }
+
+        let old_path = env::var_os("PATH");
+        let joined_path = match old_path.clone() {
+            Some(path) => format!(
+                "{}:{}",
+                fixture_dir.to_string_lossy(),
+                path.to_string_lossy()
+            ),
+            None => fixture_dir.to_string_lossy().into_owned(),
+        };
+        env::set_var("PATH", joined_path);
+
+        (fixture_dir, old_path)
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn list_installed_parses_helper_output() {
+        let _path_env_guard = TEST_PATH_ENV_LOCK.lock().await;
+        let (fixture_dir, old_path) = create_fake_aur_helper();
+        let _restore_path = PathGuard::new(old_path);
+
+        let packages = AurBackend::new()
+            .list_installed()
+            .await
+            .expect("list installed aur packages");
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "yay");
+        assert_eq!(packages[0].version, "11.0.0");
+        fs::remove_dir_all(fixture_dir).ok();
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn check_updates_parses_arrow_format() {
+        let _path_env_guard = TEST_PATH_ENV_LOCK.lock().await;
+        let (fixture_dir, old_path) = create_fake_aur_helper();
+        let _restore_path = PathGuard::new(old_path);
+
+        let updates = AurBackend::new()
+            .check_updates()
+            .await
+            .expect("check aur updates");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "yay");
+        assert_eq!(updates[0].version, "11.0.0");
+        assert_eq!(updates[0].available_version.as_deref(), Some("12.0.0"));
+        fs::remove_dir_all(fixture_dir).ok();
+    }
+}

@@ -169,6 +169,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: BackupAction,
     },
+
+    /// Run scheduled tasks from the CLI or background service
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -225,6 +231,12 @@ pub enum BackupAction {
         #[arg(short, long)]
         yes: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ScheduleAction {
+    /// Run every scheduled task that is due right now
+    RunDue,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -362,5 +374,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Ignore { action } => commands::ignore::run(action, &writer).await,
         Commands::Backup { action } => commands::backup::run(pm, action, &writer).await,
+        Commands::Schedule { action } => commands::schedule::run(pm, action, &writer).await,
     }
 }

@@ -34,7 +34,7 @@ impl ProvidersSection {
         let mut provider_rows = HashMap::new();
         let mut provider_counts = HashMap::new();
 
-        for source in PackageSource::ALL {
+        for &source in PackageSource::current_platform_sources() {
             let row = create_provider_row(source);
             provider_counts.insert(source, row.count_label.clone());
             providers_box.append(&row.row);
@@ -241,5 +241,8 @@ pub fn set_enabled_in_config(config: &mut Config, source: PackageSource, enabled
         PackageSource::Dart => config.enabled_sources.dart = enabled,
         PackageSource::Deb => config.enabled_sources.deb = enabled,
         PackageSource::AppImage => config.enabled_sources.appimage = enabled,
+        PackageSource::Winget => config.enabled_sources.winget = enabled,
+        PackageSource::Chocolatey => config.enabled_sources.chocolatey = enabled,
+        PackageSource::Scoop => config.enabled_sources.scoop = enabled,
     }
 }

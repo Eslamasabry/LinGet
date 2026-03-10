@@ -6,6 +6,7 @@ use crate::models::{
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use serde::Deserialize;
 use std::process::Stdio;
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -32,6 +33,167 @@ fn parse_human_size(s: &str) -> Option<u64> {
         _ => return None,
     };
     Some((num * multiplier as f64) as u64)
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct FlathubReleaseResponse {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    urls: Option<FlathubReleaseUrls>,
+    #[serde(default)]
+    releases: Vec<FlathubReleaseEntry>,
+    #[serde(rename = "releaseNotes", default)]
+    release_notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct FlathubReleaseUrls {
+    #[serde(default)]
+    homepage: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct FlathubReleaseEntry {
+    #[serde(default, alias = "tag_name")]
+    version: Option<String>,
+    #[serde(default, alias = "date", alias = "timestamp", alias = "published_at")]
+    release_date: Option<String>,
+    #[serde(
+        default,
+        alias = "notes",
+        alias = "body",
+        alias = "summary",
+        alias = "release_description"
+    )]
+    description: Option<String>,
+}
+
+fn normalize_release_body(body: &str) -> Option<String> {
+    let lines: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn normalize_release_date(raw: &str) -> String {
+    raw.split('T').next().unwrap_or(raw).trim().to_string()
+}
+
+fn render_flatpak_release_history(
+    app_id: &str,
+    payload: &FlathubReleaseResponse,
+) -> Option<String> {
+    let releases: Vec<(String, Option<String>, Option<String>)> = payload
+        .releases
+        .iter()
+        .filter_map(|release| {
+            let version = release.version.as_deref()?.trim();
+            if version.is_empty() {
+                return None;
+            }
+
+            Some((
+                version.to_string(),
+                release.release_date.as_deref().map(normalize_release_date),
+                release
+                    .description
+                    .as_deref()
+                    .and_then(normalize_release_body),
+            ))
+        })
+        .collect();
+
+    let overview = payload
+        .release_notes
+        .as_deref()
+        .and_then(normalize_release_body);
+
+    if releases.is_empty() && overview.is_none() {
+        return None;
+    }
+
+    let title = payload.name.as_deref().unwrap_or(app_id);
+    let mut changelog = format!("# {} Release History\n\n", title);
+
+    if let Some(summary) = payload.summary.as_deref().and_then(normalize_release_body) {
+        changelog.push_str(&summary);
+        changelog.push_str("\n\n");
+    }
+
+    if let Some(homepage) = payload
+        .urls
+        .as_ref()
+        .and_then(|urls| urls.homepage.as_deref())
+    {
+        if !homepage.trim().is_empty() {
+            changelog.push_str(&format!("*Homepage:* {}\n\n", homepage.trim()));
+        }
+    }
+
+    if let Some(overview) = overview {
+        changelog.push_str("## Overview\n");
+        changelog.push_str(&overview);
+        changelog.push_str("\n\n");
+    }
+
+    if !releases.is_empty() {
+        changelog.push_str("## Recent releases\n\n");
+
+        for (index, (version, release_date, description)) in releases.iter().take(15).enumerate() {
+            if index == 0 {
+                changelog.push_str(&format!("### {} (Latest)\n", version));
+            } else {
+                changelog.push_str(&format!("### {}\n", version));
+            }
+
+            if let Some(release_date) = release_date {
+                changelog.push_str(&format!("*Released: {}*\n\n", release_date));
+            }
+
+            if let Some(description) = description {
+                changelog.push_str(description);
+                changelog.push_str("\n\n");
+            }
+        }
+
+        if releases.len() > 15 {
+            changelog.push_str(&format!("*...and {} more releases*\n", releases.len() - 15));
+        }
+    }
+
+    Some(changelog)
+}
+
+fn render_flatpak_commit_history(app_id: &str, remote: &str, commits: &[String]) -> Option<String> {
+    if commits.is_empty() {
+        return None;
+    }
+
+    let mut changelog = format!("# {} Release History\n\n", app_id);
+    changelog.push_str(&format!(
+        "*Remote:* {}  \n*Source:* Flatpak commit log\n\n",
+        remote
+    ));
+    changelog.push_str("## Recent revisions\n\n");
+
+    for (index, commit) in commits.iter().take(10).enumerate() {
+        if index == 0 {
+            changelog.push_str(&format!("### {} (Current)\n\n", commit));
+        } else {
+            changelog.push_str(&format!("### {}\n\n", commit));
+        }
+    }
+
+    Some(changelog)
 }
 
 pub struct FlatpakBackend;
@@ -591,6 +753,30 @@ impl PackageBackend for FlatpakBackend {
         }
     }
 
+    async fn get_changelog(&self, name: &str) -> Result<Option<String>> {
+        let remote = match self.get_app_origin(name).await {
+            Ok(remote) => remote,
+            Err(_) => return Ok(None),
+        };
+
+        if remote.eq_ignore_ascii_case("flathub") {
+            if let Ok(Some(changelog)) = Self::fetch_flathub_release_history(name).await {
+                return Ok(Some(changelog));
+            }
+        }
+
+        let app_ref = match self.get_app_ref(name).await {
+            Ok(app_ref) => app_ref,
+            Err(_) => return Ok(None),
+        };
+        let commits = match self.get_commit_history(&remote, &app_ref).await {
+            Ok(commits) => commits,
+            Err(_) => return Ok(None),
+        };
+
+        Ok(render_flatpak_commit_history(name, &remote, &commits))
+    }
+
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
         let output = Command::new("flatpak")
             .args([
@@ -866,6 +1052,30 @@ impl FlatpakBackend {
 
         Ok(commits)
     }
+
+    async fn fetch_flathub_release_history(app_id: &str) -> Result<Option<String>> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .context("Failed to create HTTP client for Flathub changelog")?;
+
+        let response = client
+            .get(format!("https://flathub.org/api/v2/appstream/{}", app_id))
+            .send()
+            .await
+            .context("Failed to fetch Flathub release history")?;
+
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let payload = response
+            .json::<FlathubReleaseResponse>()
+            .await
+            .context("Failed to parse Flathub release history")?;
+
+        Ok(render_flatpak_release_history(app_id, &payload))
+    }
 }
 
 #[cfg(test)]
@@ -1106,5 +1316,51 @@ org.freedesktop.secrets=talk
         // This will depend on whether flatpak is installed on the test system
         // At minimum, it shouldn't panic
         let _ = FlatpakBackend::is_available();
+    }
+
+    #[test]
+    fn render_flathub_release_history_formats_recent_releases() {
+        let payload = FlathubReleaseResponse {
+            name: Some("Example App".to_string()),
+            summary: Some("A friendly desktop app".to_string()),
+            urls: Some(FlathubReleaseUrls {
+                homepage: Some("https://example.com".to_string()),
+            }),
+            releases: vec![
+                FlathubReleaseEntry {
+                    version: Some("2.0.0".to_string()),
+                    release_date: Some("2026-03-01T10:00:00Z".to_string()),
+                    description: Some("Added a better queue summary.".to_string()),
+                },
+                FlathubReleaseEntry {
+                    version: Some("1.9.0".to_string()),
+                    release_date: Some("2026-02-10".to_string()),
+                    description: Some("Improved repository health checks.".to_string()),
+                },
+            ],
+            release_notes: Some("Stable channel release notes".to_string()),
+        };
+
+        let changelog =
+            render_flatpak_release_history("com.example.App", &payload).expect("changelog");
+
+        assert!(changelog.contains("# Example App Release History"));
+        assert!(changelog.contains("## Overview"));
+        assert!(changelog.contains("### 2.0.0 (Latest)"));
+        assert!(changelog.contains("*Released: 2026-03-01*"));
+        assert!(changelog.contains("Added a better queue summary."));
+        assert!(changelog.contains("https://example.com"));
+    }
+
+    #[test]
+    fn render_flatpak_commit_history_falls_back_to_remote_log() {
+        let commits = vec!["abc123def456".to_string(), "0123456789ab".to_string()];
+        let changelog = render_flatpak_commit_history("com.example.App", "custom-remote", &commits)
+            .expect("commit history");
+
+        assert!(changelog.contains("# com.example.App Release History"));
+        assert!(changelog.contains("*Remote:* custom-remote"));
+        assert!(changelog.contains("### abc123def456 (Current)"));
+        assert!(changelog.contains("### 0123456789ab"));
     }
 }

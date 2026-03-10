@@ -248,3 +248,17 @@ impl PackageBackend for ZypperBackend {
         PackageSource::Zypper
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_rpm_package_name_handles_nevra_and_simple_names() {
+        assert_eq!(
+            extract_rpm_package_name("firefox-128.0.1-1.1.x86_64"),
+            "firefox"
+        );
+        assert_eq!(extract_rpm_package_name("zypper"), "zypper");
+    }
+}

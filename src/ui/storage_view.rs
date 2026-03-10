@@ -1,4 +1,5 @@
 use crate::models::{Package, PackageSource};
+use crate::ui::escape_markup_text;
 use gtk4::prelude::*;
 use gtk4::{self as gtk};
 use libadwaita as adw;
@@ -435,13 +436,15 @@ where
         .build();
 
     for dup_group in duplicates {
+        let expander_title = escape_markup_text(&title_case(&dup_group.normalized_name));
+        let expander_subtitle = escape_markup_text(&format!(
+            "{} versions • {}",
+            dup_group.packages.len(),
+            humansize::format_size(dup_group.total_size, humansize::BINARY)
+        ));
         let expander = adw::ExpanderRow::builder()
-            .title(title_case(&dup_group.normalized_name))
-            .subtitle(format!(
-                "{} versions • {}",
-                dup_group.packages.len(),
-                humansize::format_size(dup_group.total_size, humansize::BINARY)
-            ))
+            .title(expander_title.as_str())
+            .subtitle(expander_subtitle.as_str())
             .build();
 
         let savings_chip = gtk::Label::builder()
@@ -457,9 +460,11 @@ where
 
         for pkg in &dup_group.packages {
             let is_suggested = dup_group.suggested_keep == Some(pkg.source);
+            let pkg_title = escape_markup_text(&pkg.name);
+            let pkg_subtitle = escape_markup_text(&pkg.size_display());
             let pkg_row = adw::ActionRow::builder()
-                .title(&pkg.name)
-                .subtitle(pkg.size_display())
+                .title(pkg_title.as_str())
+                .subtitle(pkg_subtitle.as_str())
                 .build();
 
             let source_chip = gtk::Label::builder()

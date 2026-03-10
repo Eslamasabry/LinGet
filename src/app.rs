@@ -1,4 +1,4 @@
-use crate::models::{init_icon_cache, load_cache as load_enrichment_cache};
+use crate::models::{init_icon_cache, load_cache as load_enrichment_cache, Config};
 use crate::ui::TrayHandle;
 use gtk4::prelude::ObjectExt;
 use std::cell::RefCell;
@@ -59,10 +59,13 @@ pub fn init_startup() {
     init_icon_cache();
     load_enrichment_cache();
 
-    if let Some(tray) = TrayHandle::start() {
-        TRAY_HANDLE.with(|cell| {
-            *cell.borrow_mut() = Some(tray);
-        });
+    let config = Config::load();
+    if config.run_in_background || config.start_minimized {
+        if let Some(tray) = TrayHandle::start() {
+            TRAY_HANDLE.with(|cell| {
+                *cell.borrow_mut() = Some(tray);
+            });
+        }
     }
 }
 

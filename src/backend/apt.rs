@@ -903,6 +903,8 @@ mod tests {
             perms.set_mode(0o755);
         }
         fs::set_permissions(script_path.as_path(), perms).expect("chmod fake apt");
+        script.flush().expect("flush fake apt script");
+        drop(script);
 
         let old_path = std::env::var_os("PATH");
         let joined_path = match old_path.clone() {
@@ -995,9 +997,7 @@ deb http://enabled.example.com/repo stable main
     #[cfg(target_os = "linux")]
     async fn test_get_orphaned_packages_uses_dry_run_flag() {
         use std::env;
-        let _path_env_guard = crate::backend::TEST_PATH_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _path_env_guard = crate::backend::TEST_PATH_ENV_LOCK.lock().await;
 
         let (fixture_dir, log_path, old_path) = create_fake_apt_script();
         let backend = AptBackend::new();

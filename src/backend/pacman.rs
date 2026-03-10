@@ -417,3 +417,21 @@ impl PackageBackend for PacmanBackend {
         PackageSource::Pacman
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_human_size_supports_common_units() {
+        assert_eq!(parse_human_size("1 KiB"), Some(1024));
+        assert_eq!(parse_human_size("2.5 MiB"), Some(2_621_440));
+        assert_eq!(parse_human_size("1 GiB"), Some(1_073_741_824));
+    }
+
+    #[test]
+    fn parse_human_size_rejects_unknown_units() {
+        assert_eq!(parse_human_size("42"), None);
+        assert_eq!(parse_human_size("42 XB"), None);
+    }
+}

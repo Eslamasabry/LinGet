@@ -298,6 +298,115 @@ pub enum TaskQueueAction {
     Update,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FailureCategory {
+    Permissions,
+    Network,
+    NotFound,
+    Conflict,
+    Unknown,
+}
+
+impl FailureCategory {
+    pub fn classify(error_text: &str) -> Self {
+        let normalized = error_text.to_ascii_lowercase();
+        if normalized.contains("lock")
+            || normalized.contains("conflict")
+            || normalized.contains("held broken")
+            || normalized.contains("another process")
+            || normalized.contains("already running")
+            || normalized.contains("dependency problem")
+            || normalized.contains("dependency problems")
+            || normalized.contains("dpkg was interrupted")
+        {
+            Self::Conflict
+        } else if normalized.contains("permission denied")
+            || normalized.contains("not permitted")
+            || normalized.contains("operation not permitted")
+            || normalized.contains("must be root")
+            || normalized.contains("not authorized")
+            || normalized.contains("authentication")
+            || normalized.contains("authorization")
+            || normalized.contains("pkexec")
+            || normalized.contains("access denied")
+            || normalized.contains("eacces")
+            || normalized.contains("sudo")
+        {
+            Self::Permissions
+        } else if normalized.contains("timed out")
+            || normalized.contains("timeout")
+            || normalized.contains("temporary failure")
+            || normalized.contains("could not resolve")
+            || normalized.contains("name resolution")
+            || normalized.contains("network")
+            || normalized.contains("connection refused")
+            || normalized.contains("connection reset")
+            || normalized.contains("unreachable")
+            || normalized.contains("failed to fetch")
+            || normalized.contains("resolve")
+            || normalized.contains("dns")
+            || normalized.contains("offline")
+        {
+            Self::Network
+        } else if normalized.contains("not found")
+            || normalized.contains("unable to locate")
+            || normalized.contains("no package")
+            || normalized.contains("no match")
+            || normalized.contains("could not find")
+            || normalized.contains("no matching")
+            || normalized.contains("404")
+        {
+            Self::NotFound
+        } else {
+            Self::Unknown
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Permissions => "Permissions",
+            Self::Network => "Network",
+            Self::NotFound => "Not Found",
+            Self::Conflict => "Conflict",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Permissions => "E_PERMISSION",
+            Self::Network => "E_NETWORK",
+            Self::NotFound => "E_NOT_FOUND",
+            Self::Conflict => "E_CONFLICT",
+            Self::Unknown => "E_UNKNOWN",
+        }
+    }
+
+    pub fn remediation_copy(self) -> &'static str {
+        match self {
+            Self::Permissions => "Sign in again or approve privilege escalation before retrying.",
+            Self::Network => "Reconnect or refresh package metadata before retrying.",
+            Self::NotFound => "Verify the package name, version, and source before retrying.",
+            Self::Conflict => "Resolve package locks or dependency conflicts before retrying.",
+            Self::Unknown => "Review the provider error output, then retry or apply guided fixes.",
+        }
+    }
+
+    pub fn action_hint(self) -> &'static str {
+        match self {
+            Self::Permissions => "Use M to re-authenticate, then R to retry. [M] re-authenticate",
+            Self::Network => "Use M to refresh metadata, then R to retry. [M] refresh metadata",
+            Self::NotFound => {
+                "Use M to refresh sources and verify the package, then retry. [M] verify package/source"
+            }
+            Self::Conflict => {
+                "Use M to clear locks or conflicts, then R to retry. [M] resolve lock/conflict"
+            }
+            Self::Unknown => "Retry with R, then use M if you need guided recovery. [R] retry",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskQueueStatus {
     Queued,
@@ -602,4 +711,41 @@ pub fn save_operation_history(history: &OperationHistory) -> Result<()> {
 
     let content = serde_json::to_string_pretty(history).context("Failed to serialize history")?;
     fs::write(&path, content).context("Failed to write history file")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FailureCategory;
+
+    #[test]
+    fn classifies_permission_failures() {
+        assert_eq!(
+            FailureCategory::classify("permission denied while invoking pkexec"),
+            FailureCategory::Permissions
+        );
+    }
+
+    #[test]
+    fn classifies_network_failures() {
+        assert_eq!(
+            FailureCategory::classify("failed to fetch metadata: connection refused"),
+            FailureCategory::Network
+        );
+    }
+
+    #[test]
+    fn classifies_missing_package_failures() {
+        assert_eq!(
+            FailureCategory::classify("unable to locate package missing-pkg"),
+            FailureCategory::NotFound
+        );
+    }
+
+    #[test]
+    fn classifies_conflict_failures() {
+        assert_eq!(
+            FailureCategory::classify("dpkg was interrupted and another process holds the lock"),
+            FailureCategory::Conflict
+        );
+    }
 }

@@ -1,6 +1,39 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourcePlatform {
+    Linux,
+    Windows,
+    CrossPlatform,
+}
+
+impl SourcePlatform {
+    pub fn label(self) -> &'static str {
+        match self {
+            SourcePlatform::Linux => "Linux",
+            SourcePlatform::Windows => "Windows",
+            SourcePlatform::CrossPlatform => "multiple platforms",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ElevationModel {
+    None,
+    Pkexec,
+    WindowsUac,
+}
+
+impl ElevationModel {
+    pub fn privileged_probe_commands(self) -> &'static [&'static str] {
+        match self {
+            ElevationModel::None | ElevationModel::WindowsUac => &[],
+            ElevationModel::Pkexec => &["pkexec"],
+        }
+    }
+}
+
 /// Represents which package manager a package belongs to
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum PackageSource {
@@ -21,6 +54,9 @@ pub enum PackageSource {
     Dart,
     Deb,
     AppImage,
+    Winget,
+    Chocolatey,
+    Scoop,
 }
 
 impl fmt::Display for PackageSource {
@@ -43,13 +79,39 @@ impl fmt::Display for PackageSource {
             PackageSource::Dart => write!(f, "dart"),
             PackageSource::Deb => write!(f, "DEB"),
             PackageSource::AppImage => write!(f, "AppImage"),
+            PackageSource::Winget => write!(f, "WinGet"),
+            PackageSource::Chocolatey => write!(f, "Chocolatey"),
+            PackageSource::Scoop => write!(f, "Scoop"),
         }
     }
 }
 
 impl PackageSource {
     /// All available package sources in display order
-    pub const ALL: [PackageSource; 17] = [
+    pub const ALL: [PackageSource; 20] = [
+        PackageSource::Apt,
+        PackageSource::Dnf,
+        PackageSource::Pacman,
+        PackageSource::Zypper,
+        PackageSource::Flatpak,
+        PackageSource::Snap,
+        PackageSource::Npm,
+        PackageSource::Pip,
+        PackageSource::Pipx,
+        PackageSource::Cargo,
+        PackageSource::Brew,
+        PackageSource::Aur,
+        PackageSource::Conda,
+        PackageSource::Mamba,
+        PackageSource::Dart,
+        PackageSource::Deb,
+        PackageSource::AppImage,
+        PackageSource::Winget,
+        PackageSource::Chocolatey,
+        PackageSource::Scoop,
+    ];
+
+    pub const LINUX: [PackageSource; 17] = [
         PackageSource::Apt,
         PackageSource::Dnf,
         PackageSource::Pacman,
@@ -68,6 +130,86 @@ impl PackageSource {
         PackageSource::Deb,
         PackageSource::AppImage,
     ];
+
+    pub const WINDOWS: [PackageSource; 10] = [
+        PackageSource::Winget,
+        PackageSource::Chocolatey,
+        PackageSource::Scoop,
+        PackageSource::Npm,
+        PackageSource::Pip,
+        PackageSource::Pipx,
+        PackageSource::Cargo,
+        PackageSource::Conda,
+        PackageSource::Mamba,
+        PackageSource::Dart,
+    ];
+
+    pub fn current_platform_sources() -> &'static [PackageSource] {
+        let sources = if cfg!(target_os = "windows") {
+            &Self::WINDOWS[..]
+        } else {
+            &Self::LINUX[..]
+        };
+        debug_assert!(sources.iter().all(|source| Self::ALL.contains(source)));
+        sources
+    }
+
+    pub fn supported_on_current_platform(self) -> bool {
+        Self::current_platform_sources().contains(&self)
+    }
+
+    pub fn platform_family(self) -> SourcePlatform {
+        match self {
+            PackageSource::Npm
+            | PackageSource::Pip
+            | PackageSource::Pipx
+            | PackageSource::Cargo
+            | PackageSource::Conda
+            | PackageSource::Mamba
+            | PackageSource::Dart => SourcePlatform::CrossPlatform,
+            PackageSource::Winget | PackageSource::Chocolatey | PackageSource::Scoop => {
+                SourcePlatform::Windows
+            }
+            PackageSource::Apt
+            | PackageSource::Dnf
+            | PackageSource::Pacman
+            | PackageSource::Zypper
+            | PackageSource::Flatpak
+            | PackageSource::Snap
+            | PackageSource::Brew
+            | PackageSource::Aur
+            | PackageSource::Deb
+            | PackageSource::AppImage => SourcePlatform::Linux,
+        }
+    }
+
+    pub fn elevation_model(self) -> ElevationModel {
+        match self {
+            PackageSource::Apt
+            | PackageSource::Dnf
+            | PackageSource::Pacman
+            | PackageSource::Zypper
+            | PackageSource::Snap
+            | PackageSource::Deb => ElevationModel::Pkexec,
+            PackageSource::Winget | PackageSource::Chocolatey => ElevationModel::WindowsUac,
+            PackageSource::Flatpak
+            | PackageSource::Npm
+            | PackageSource::Pip
+            | PackageSource::Pipx
+            | PackageSource::Cargo
+            | PackageSource::Brew
+            | PackageSource::Aur
+            | PackageSource::Conda
+            | PackageSource::Mamba
+            | PackageSource::Dart
+            | PackageSource::AppImage
+            | PackageSource::Scoop => ElevationModel::None,
+        }
+    }
+
+    pub fn privileged_probe_commands(self) -> &'static [&'static str] {
+        self.elevation_model().privileged_probe_commands()
+    }
 
     #[allow(dead_code)]
     pub fn install_hint(&self) -> Option<&'static str> {
@@ -89,6 +231,9 @@ impl PackageSource {
             PackageSource::Dart => Some("Install Dart/Flutter SDK"),
             PackageSource::Deb => Some("Install `dpkg`/APT (Debian-based)"),
             PackageSource::AppImage => None, // AppImage doesn't need special tooling
+            PackageSource::Winget => Some("Install App Installer / `winget`"),
+            PackageSource::Chocolatey => Some("Install Chocolatey (`choco`)"),
+            PackageSource::Scoop => Some("Install Scoop (`scoop`)"),
         }
     }
 
@@ -111,8 +256,37 @@ impl PackageSource {
             PackageSource::Dart => "folder-script-symbolic",
             PackageSource::Deb => "application-x-deb-symbolic",
             PackageSource::AppImage => "application-x-executable-symbolic",
+            PackageSource::Winget => "system-software-install-symbolic",
+            PackageSource::Chocolatey => "system-software-install-symbolic",
+            PackageSource::Scoop => "system-software-install-symbolic",
         }
     }
+
+    pub fn discovery_priority(&self) -> usize {
+        match self {
+            PackageSource::Apt => 0,
+            PackageSource::Dnf => 1,
+            PackageSource::Pacman => 2,
+            PackageSource::Zypper => 3,
+            PackageSource::Flatpak => 4,
+            PackageSource::Snap => 5,
+            PackageSource::Winget => 6,
+            PackageSource::Chocolatey => 7,
+            PackageSource::Scoop => 8,
+            PackageSource::Deb => 9,
+            PackageSource::AppImage => 10,
+            PackageSource::Pipx => 11,
+            PackageSource::Cargo => 12,
+            PackageSource::Npm => 13,
+            PackageSource::Pip => 14,
+            PackageSource::Conda => 15,
+            PackageSource::Mamba => 16,
+            PackageSource::Dart => 17,
+            PackageSource::Brew => 18,
+            PackageSource::Aur => 19,
+        }
+    }
+
     pub fn color_class(&self) -> &'static str {
         match self {
             PackageSource::Apt => "source-apt",
@@ -132,6 +306,9 @@ impl PackageSource {
             PackageSource::Dart => "source-dart",
             PackageSource::Deb => "source-deb",
             PackageSource::AppImage => "source-appimage",
+            PackageSource::Winget => "source-winget",
+            PackageSource::Chocolatey => "source-chocolatey",
+            PackageSource::Scoop => "source-scoop",
         }
     }
 
@@ -154,13 +331,10 @@ impl PackageSource {
             PackageSource::Dart => "Dart/Flutter global tools (pub global)",
             PackageSource::Deb => "Local .deb packages",
             PackageSource::AppImage => "Portable AppImage applications",
+            PackageSource::Winget => "WinGet packages (Windows package manager)",
+            PackageSource::Chocolatey => "Chocolatey packages",
+            PackageSource::Scoop => "Scoop packages",
         }
-    }
-
-    /// Returns true if this source supports install/remove/update operations in the GUI
-    pub fn supports_gui_operations(&self) -> bool {
-        // All sources now support GUI operations
-        true
     }
 
     /// Returns a user-friendly warning about potential risks for certain sources
@@ -191,6 +365,9 @@ impl PackageSource {
             "dart" => Some(PackageSource::Dart),
             "deb" => Some(PackageSource::Deb),
             "appimage" => Some(PackageSource::AppImage),
+            "winget" => Some(PackageSource::Winget),
+            "chocolatey" | "choco" => Some(PackageSource::Chocolatey),
+            "scoop" => Some(PackageSource::Scoop),
             _ => None,
         }
     }
@@ -215,6 +392,9 @@ impl PackageSource {
             PackageSource::Dart => "dart",
             PackageSource::Deb => "deb",
             PackageSource::AppImage => "appimage",
+            PackageSource::Winget => "winget",
+            PackageSource::Chocolatey => "chocolatey",
+            PackageSource::Scoop => "scoop",
         }
     }
 }
@@ -453,28 +633,25 @@ pub fn detect_duplicates(packages: &[Package]) -> Vec<DuplicateGroup> {
         groups.entry(normalized).or_default().push(pkg.clone());
     }
 
-    let priority = [
-        PackageSource::Apt,
-        PackageSource::Dnf,
-        PackageSource::Pacman,
-        PackageSource::Zypper,
-        PackageSource::Flatpak,
-        PackageSource::Snap,
-    ];
-
     groups
         .into_iter()
         .filter(|(_, pkgs)| {
             pkgs.len() > 1 && pkgs.iter().map(|p| p.source).collect::<HashSet<_>>().len() > 1
         })
         .map(|(name, mut pkgs)| {
-            let suggested_keep = priority
+            let suggested_keep = pkgs
                 .iter()
-                .copied()
-                .find(|&src| pkgs.iter().any(|p| p.source == src))
+                .map(|p| p.source)
+                .min_by_key(|source| source.discovery_priority())
                 .or_else(|| pkgs.first().map(|p| p.source));
             if let Some(keep) = suggested_keep {
-                pkgs.sort_by_key(|p| if p.source == keep { 0usize } else { 1 });
+                pkgs.sort_by_key(|p| {
+                    (
+                        if p.source == keep { 0usize } else { 1usize },
+                        p.source.discovery_priority(),
+                        p.name.to_lowercase(),
+                    )
+                });
             }
             DuplicateGroup {
                 normalized_name: name,
@@ -483,4 +660,49 @@ pub fn detect_duplicates(packages: &[Package]) -> Vec<DuplicateGroup> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_sources_round_trip_from_config_keys() {
+        assert_eq!(
+            PackageSource::from_str("winget"),
+            Some(PackageSource::Winget)
+        );
+        assert_eq!(
+            PackageSource::from_str("choco"),
+            Some(PackageSource::Chocolatey)
+        );
+        assert_eq!(PackageSource::from_str("scoop"), Some(PackageSource::Scoop));
+        assert_eq!(PackageSource::Winget.as_config_str(), "winget");
+        assert_eq!(PackageSource::Chocolatey.as_config_str(), "chocolatey");
+        assert_eq!(PackageSource::Scoop.as_config_str(), "scoop");
+    }
+
+    #[test]
+    fn current_platform_sources_filter_windows_only_providers() {
+        let sources = PackageSource::current_platform_sources();
+
+        #[cfg(target_os = "windows")]
+        {
+            assert!(sources.contains(&PackageSource::Winget));
+            assert!(!sources.contains(&PackageSource::Apt));
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(sources.contains(&PackageSource::Apt));
+            assert!(!sources.contains(&PackageSource::Winget));
+        }
+    }
+
+    #[test]
+    fn elevation_probe_commands_follow_source_model() {
+        assert_eq!(PackageSource::Apt.privileged_probe_commands(), &["pkexec"]);
+        assert!(PackageSource::Scoop.privileged_probe_commands().is_empty());
+        assert!(PackageSource::Winget.privileged_probe_commands().is_empty());
+    }
 }
