@@ -2576,7 +2576,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
     lines.push(Line::from(
         "  ↑↓/jk move   g/G top/bottom   ^d/^u half-page",
     ));
-    lines.push(Line::from("  Tab switch panel   Ctrl+b toggle sidebar"));
+    lines.push(Line::from("  Tab cycle panels   Ctrl+b toggle sidebar"));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("Filters", section_header())));
     lines.push(Line::from(

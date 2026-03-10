@@ -1035,9 +1035,7 @@ impl App {
 
         Some(
             match id {
-                CommandId::CycleFocus => {
-                    "Cycle focus is unavailable in compact layout or while queue is expanded"
-                }
+                CommandId::CycleFocus => "Cycle focus is unavailable in compact layout",
                 CommandId::MoveUp
                 | CommandId::MoveDown
                 | CommandId::MoveTop
@@ -1170,7 +1168,7 @@ impl App {
     }
 
     fn can_cycle_focus_command(&self) -> bool {
-        !self.compact && !self.queue_expanded
+        !self.compact
     }
 
     fn can_move_up_command(&self) -> bool {
@@ -4729,6 +4727,9 @@ mod tests {
         assert!(!app.command_enabled(CommandId::CycleFocus));
 
         app.compact = false;
+        app.queue_expanded = true;
+        assert!(app.command_enabled(CommandId::CycleFocus));
+
         app.focus = Focus::Packages;
         app.packages = vec![make_pkg(
             "pkg",
@@ -6500,6 +6501,29 @@ Remove   1 Package
         assert!(app.queue_expanded);
         assert_eq!(app.focus, Focus::Queue);
         assert_eq!(app.task_log_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn tab_cycles_through_visible_panels_when_queue_is_expanded() {
+        let mut app = test_app();
+        let task = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![task];
+        app.queue_expanded = true;
+        app.focus = Focus::Sources;
+
+        app.handle_key(key(KeyCode::Tab)).await;
+        assert_eq!(app.focus, Focus::Packages);
+
+        app.handle_key(key(KeyCode::Tab)).await;
+        assert_eq!(app.focus, Focus::Queue);
+
+        app.handle_key(key(KeyCode::Tab)).await;
+        assert_eq!(app.focus, Focus::Sources);
     }
 
     #[tokio::test]

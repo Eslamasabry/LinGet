@@ -88,9 +88,17 @@ impl App {
             CommandId::ShowHelp => self.showing_help = true,
             CommandId::OpenPalette => self.open_palette(),
             CommandId::CycleFocus => {
-                self.focus = match self.focus {
-                    Focus::Sources => Focus::Packages,
-                    Focus::Packages | Focus::Queue => Focus::Sources,
+                self.focus = if self.queue_expanded {
+                    match self.focus {
+                        Focus::Sources => Focus::Packages,
+                        Focus::Packages => Focus::Queue,
+                        Focus::Queue => Focus::Sources,
+                    }
+                } else {
+                    match self.focus {
+                        Focus::Sources => Focus::Packages,
+                        Focus::Packages | Focus::Queue => Focus::Sources,
+                    }
                 };
             }
             CommandId::MoveUp => {
@@ -287,6 +295,10 @@ impl App {
 
         if self.queue_expanded && self.focus == Focus::Queue {
             match key.code {
+                KeyCode::Tab => {
+                    self.execute_command(CommandId::CycleFocus).await;
+                    return;
+                }
                 KeyCode::Esc | KeyCode::Char('l') => {
                     self.execute_command(CommandId::ToggleQueue).await;
                     return;
