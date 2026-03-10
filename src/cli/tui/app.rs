@@ -5703,6 +5703,24 @@ Remove   1 Package
     }
 
     #[test]
+    fn search_hint_labels_reflect_local_and_provider_states() {
+        let mut app = test_app();
+        assert_eq!(app.search_query_hint_label(), "search");
+        assert_eq!(app.search_escape_hint_label(), "clear search");
+
+        app.search = "vim".to_string();
+        assert_eq!(app.search_query_hint_label(), "edit query");
+        assert_eq!(app.search_escape_hint_label(), "clear search");
+
+        app.search_results = Some(Vec::new());
+        assert_eq!(app.search_query_hint_label(), "edit query");
+        assert_eq!(app.search_escape_hint_label(), "local filter");
+
+        app.search.clear();
+        assert_eq!(app.search_escape_hint_label(), "clear search");
+    }
+
+    #[test]
     fn provider_search_cache_keeps_recent_queries() {
         let mut app = test_app();
 

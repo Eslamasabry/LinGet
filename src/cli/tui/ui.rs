@@ -1098,30 +1098,48 @@ pub fn render_packages_or_sources(frame: &mut Frame, app: &mut App, regions: &La
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::new();
 
-    // Contextual footer hints based on focus
-    match app.focus {
-        Focus::Sources => {
-            push_hint(&mut spans, "↑↓", "move");
-            push_hint(&mut spans, "Tab", "switch panel");
-            push_hint(&mut spans, "/", "search");
-            push_hint(&mut spans, "?", "help");
-        }
-        Focus::Packages => {
-            push_hint(&mut spans, "↑↓", "move");
-            push_hint(&mut spans, "Enter", "action");
-            push_hint(&mut spans, "Space", "select");
-            push_hint(&mut spans, "w", "recommended");
-            push_hint(&mut spans, "/", "search");
-            push_hint(&mut spans, "?", "help");
-        }
-        Focus::Queue => {
-            push_hint(&mut spans, "↑↓", "move");
-            push_hint(&mut spans, "l", "close queue");
-            if app.queue_expanded {
-                push_hint(&mut spans, "R", "retry selected");
-                push_hint(&mut spans, "M", "apply fixes");
+    // Search entry has its own keymap and should override normal panel hints.
+    if app.searching {
+        push_hint(&mut spans, "Type", "filter");
+        push_hint(&mut spans, "Enter", "provider search");
+        push_hint(&mut spans, "Esc", app.search_escape_hint_label());
+        push_hint(&mut spans, "?", "help");
+    } else {
+        // Contextual footer hints based on focus
+        match app.focus {
+            Focus::Sources => {
+                push_hint(&mut spans, "↑↓", "move");
+                push_hint(&mut spans, "Tab", "switch panel");
+                push_hint(&mut spans, "/", app.search_query_hint_label());
+                if !app.search.is_empty() {
+                    push_hint(&mut spans, "Esc", app.search_escape_hint_label());
+                }
+                push_hint(&mut spans, "?", "help");
             }
-            push_hint(&mut spans, "?", "help");
+            Focus::Packages => {
+                push_hint(&mut spans, "↑↓", "move");
+                push_hint(&mut spans, "Enter", "action");
+                push_hint(&mut spans, "Space", "select");
+                push_hint(&mut spans, "w", "recommended");
+                push_hint(&mut spans, "/", app.search_query_hint_label());
+                if !app.search.is_empty() {
+                    push_hint(&mut spans, "Esc", app.search_escape_hint_label());
+                }
+                push_hint(&mut spans, "?", "help");
+            }
+            Focus::Queue => {
+                push_hint(&mut spans, "↑↓", "move");
+                push_hint(&mut spans, "l", "close queue");
+                if app.queue_expanded {
+                    push_hint(&mut spans, "R", "retry selected");
+                    push_hint(&mut spans, "M", "apply fixes");
+                }
+                if !app.search.is_empty() {
+                    push_hint(&mut spans, "/", app.search_query_hint_label());
+                    push_hint(&mut spans, "Esc", app.search_escape_hint_label());
+                }
+                push_hint(&mut spans, "?", "help");
+            }
         }
     }
 

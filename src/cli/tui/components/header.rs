@@ -109,7 +109,13 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
             accent(),
         ));
         if area.width > 110 {
-            right.push(Span::styled("Enter provider search  Esc clear ", muted()));
+            right.push(Span::styled(
+                format!(
+                    "Enter provider search  Esc {} ",
+                    app.search_escape_hint_label()
+                ),
+                muted(),
+            ));
         }
     } else if !app.search.is_empty() {
         let scope = if app.search_results.is_some() {
@@ -126,6 +132,16 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
             if let Some(summary) = app.provider_search_summary() {
                 right.push(Span::styled(format!("{} ", summary), dim()));
             }
+        }
+        if area.width > 105 {
+            right.push(Span::styled(
+                format!(
+                    "Esc {}  / {} ",
+                    app.search_escape_hint_label(),
+                    app.search_query_hint_label()
+                ),
+                dim(),
+            ));
         }
     } else if app.filter == Filter::Favorites && app.favorites_updates_only {
         right.push(Span::styled("Favorites: updates only [v] ", muted()));

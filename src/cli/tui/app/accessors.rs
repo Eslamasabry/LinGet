@@ -71,6 +71,22 @@ impl App {
         }
     }
 
+    pub fn search_query_hint_label(&self) -> &'static str {
+        if self.searching || !self.search.is_empty() {
+            "edit query"
+        } else {
+            "search"
+        }
+    }
+
+    pub fn search_escape_hint_label(&self) -> &'static str {
+        if self.search_results.is_some() && !self.search.is_empty() {
+            "local filter"
+        } else {
+            "clear search"
+        }
+    }
+
     pub fn source_count(&self) -> usize {
         self.visible_sources().len() + 1
     }
