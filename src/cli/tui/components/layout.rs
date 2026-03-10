@@ -139,6 +139,7 @@ pub fn sources_panel_content_width(app: &App) -> usize {
         app.filter_counts[2],
         app.filter_counts[3],
         app.filter_counts[4],
+        app.filter_counts[5],
     ];
     let all_label = format!("All{}", source_count_label(app.filter, all_counts));
     let mut max_width = UnicodeWidthStr::width(all_label.as_str());
@@ -148,7 +149,7 @@ pub fn sources_panel_content_width(app: &App) -> usize {
             .source_counts
             .get(&source)
             .copied()
-            .unwrap_or([0, 0, 0, 0, 0]);
+            .unwrap_or([0, 0, 0, 0, 0, 0]);
         let label = format!("{}{}", source, source_count_label(app.filter, counts));
         max_width = max_width.max(UnicodeWidthStr::width(label.as_str()));
     }
