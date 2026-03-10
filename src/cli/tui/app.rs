@@ -6996,6 +6996,31 @@ Remove   1 Package
     }
 
     #[tokio::test]
+    async fn changelog_overlay_ctrl_scroll_shortcuts_do_not_trigger_actions() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.packages = vec![make_pkg(
+            "pkg",
+            PackageSource::Apt,
+            PackageStatus::UpdateAvailable,
+        )];
+        app.apply_filters();
+
+        app.handle_key(key(KeyCode::Char('c'))).await;
+        assert!(app.showing_changelog);
+
+        app.handle_key(ctrl('d')).await;
+        assert_eq!(app.changelog_scroll, 14);
+        assert!(app.confirming.is_none());
+        assert!(app.showing_changelog);
+
+        app.handle_key(ctrl('u')).await;
+        assert_eq!(app.changelog_scroll, 0);
+        assert!(app.confirming.is_none());
+        assert!(app.showing_changelog);
+    }
+
+    #[tokio::test]
     async fn changelog_overlay_defaults_to_delta_for_updates() {
         let mut app = test_app();
         app.focus = Focus::Packages;

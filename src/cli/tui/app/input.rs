@@ -5,6 +5,16 @@ impl App {
         const CHANGELOG_PAGE: usize = 14;
 
         match key.code {
+            _ if key.code == KeyCode::Char('d')
+                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.changelog_scroll = self.changelog_scroll.saturating_add(CHANGELOG_PAGE);
+            }
+            _ if key.code == KeyCode::Char('u')
+                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.changelog_scroll = self.changelog_scroll.saturating_sub(CHANGELOG_PAGE);
+            }
             KeyCode::Esc | KeyCode::Char('c') => self.close_changelog_overlay(),
             KeyCode::Char('r') => self.refresh_changelog_overlay().await,
             KeyCode::Char('u') | KeyCode::Char('U') => {
@@ -35,16 +45,6 @@ impl App {
                 self.changelog_scroll = self.changelog_scroll.saturating_add(CHANGELOG_PAGE);
             }
             KeyCode::PageUp => {
-                self.changelog_scroll = self.changelog_scroll.saturating_sub(CHANGELOG_PAGE);
-            }
-            _ if key.code == KeyCode::Char('d')
-                && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                self.changelog_scroll = self.changelog_scroll.saturating_add(CHANGELOG_PAGE);
-            }
-            _ if key.code == KeyCode::Char('u')
-                && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
                 self.changelog_scroll = self.changelog_scroll.saturating_sub(CHANGELOG_PAGE);
             }
             KeyCode::Char('g') | KeyCode::Home => {
