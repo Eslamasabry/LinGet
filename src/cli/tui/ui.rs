@@ -1277,6 +1277,9 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
     if sections.len() == 3 {
         if let Some(task) = selected_task {
             let logs = app.task_logs.get(&task.id);
+            let log_count = logs.map(|entries| entries.len()).unwrap_or(0);
+            let log_position = queue_log_position_label(log_count, app.task_log_scroll);
+            let log_position_style = queue_log_position_style(log_count, app.task_log_scroll);
 
             // Create a distinct Recommendation Zone
             let rec_block = Block::default()
@@ -1295,7 +1298,10 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 height: sections[1].height.saturating_sub(2),
             };
 
-            let mut lines = vec![Line::from(Span::styled("Logs:", dim()))];
+            let mut lines = vec![Line::from(vec![
+                Span::styled("Logs: ", dim()),
+                Span::styled(log_position, log_position_style),
+            ])];
 
             let operation_summary = format!(
                 "{} · {} {} · {}",
@@ -1486,7 +1492,9 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("A", safe_retry_key_style),
                 Span::styled(" retry safe  ", safe_retry_label_style),
                 Span::styled("1/2/3/4/0", key_hint()),
-                Span::styled(" failure filter", footer_label()),
+                Span::styled(" failure filter  ", footer_label()),
+                Span::styled("[ ]", key_hint()),
+                Span::styled(" logs", footer_label()),
             ])),
             sections[2],
         );
@@ -1500,7 +1508,9 @@ fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("A", safe_retry_key_style),
                 Span::styled(" retry safe  ", safe_retry_label_style),
                 Span::styled("1/2/3/4/0", key_hint()),
-                Span::styled(" failure filter", footer_label()),
+                Span::styled(" failure filter  ", footer_label()),
+                Span::styled("[ ]", key_hint()),
+                Span::styled(" logs", footer_label()),
             ])),
             sections[1],
         );
@@ -1759,6 +1769,37 @@ fn queue_recommended_action_line(
         Span::styled("Recommended: ", section_header()),
         Span::styled(copy, style),
     ])
+}
+
+fn queue_log_position_label(log_count: usize, scroll: usize) -> String {
+    if log_count == 0 {
+        "no logs yet".to_string()
+    } else if scroll == 0 {
+        format!(
+            "latest · {} line{}",
+            log_count,
+            if log_count == 1 { "" } else { "s" }
+        )
+    } else {
+        let max_scroll = log_count.saturating_sub(1);
+        format!(
+            "older +{}/{} · {} line{}",
+            scroll.min(max_scroll),
+            max_scroll,
+            log_count,
+            if log_count == 1 { "" } else { "s" }
+        )
+    }
+}
+
+fn queue_log_position_style(log_count: usize, scroll: usize) -> Style {
+    if log_count == 0 {
+        dim()
+    } else if scroll > 0 {
+        warning()
+    } else {
+        muted()
+    }
 }
 
 fn preflight_touched_package_estimate(preflight: &PreflightSummary) -> usize {
@@ -2602,6 +2643,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
         lines.push(Line::from(
             "  1 permissions   2 network   3 conflict   4 other   0 all",
         ));
+        lines.push(Line::from("  [ ] scroll selected task log"));
         lines.push(Line::from("  l close queue"));
     } else {
         lines.push(Line::from(Span::styled("Packages", section_header())));
@@ -3411,6 +3453,15 @@ mod tests {
         assert_eq!(task_log_window(10, 4, 0), (6, 10, 0));
         assert_eq!(task_log_window(10, 4, 3), (3, 7, 3));
         assert_eq!(task_log_window(3, 8, 5), (0, 3, 0));
+    }
+
+    #[test]
+    fn queue_log_position_label_snapshots() {
+        assert_eq!(queue_log_position_label(0, 0), "no logs yet");
+        assert_eq!(queue_log_position_label(1, 0), "latest · 1 line");
+        assert_eq!(queue_log_position_label(4, 0), "latest · 4 lines");
+        assert_eq!(queue_log_position_label(4, 2), "older +2/3 · 4 lines");
+        assert_eq!(queue_log_position_label(4, 9), "older +3/3 · 4 lines");
     }
 
     #[test]
