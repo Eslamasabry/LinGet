@@ -34,7 +34,7 @@ make install PREFIX="$SMOKE_PREFIX"
 test -x "$BINARY"
 
 EXEC_LINE="$(grep '^Exec=' "$DESKTOP_FILE")"
-EXPECTED_EXEC="Exec=$SMOKE_PREFIX/bin/linget gui"
+EXPECTED_EXEC="Exec=$SMOKE_PREFIX/bin/linget"
 if [[ "$EXEC_LINE" != "$EXPECTED_EXEC" ]]; then
     echo "Desktop Exec mismatch: got '$EXEC_LINE', expected '$EXPECTED_EXEC'" >&2
     exit 1
@@ -76,7 +76,7 @@ launch_exit=0
 env "${launch_env[@]}" \
     "${display_prefix[@]}" \
     "${dbus_prefix[@]}" \
-    timeout 10s "$BINARY" gui >"$GUI_LOG" 2>&1 || launch_exit=$?
+    timeout 10s "$BINARY" >"$GUI_LOG" 2>&1 || launch_exit=$?
 
 cat "$GUI_LOG"
 

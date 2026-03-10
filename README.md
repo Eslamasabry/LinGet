@@ -115,7 +115,7 @@ LinGet offers three interface modes to fit your workflow:
 | Mode | Command | Description |
 |------|---------|-------------|
 | **GUI** | `linget` or `linget gui` | Graphical interface (GTK4/Libadwaita) |
-| **TUI** | `linget tui` | Interactive terminal UI (requires `--features tui`) |
+| **TUI** | `linget tui` | Interactive terminal UI |
 | **CLI** | `linget <command>` | Command-line interface for scripting |
 
 ### GUI Mode (Default)
@@ -149,8 +149,8 @@ linget gui    # Explicit GUI launch
 Launch the interactive terminal interface:
 
 ```bash
-# Build with TUI support
-cargo build --release --features tui
+# Build
+cargo build --release
 
 # Run TUI
 linget tui

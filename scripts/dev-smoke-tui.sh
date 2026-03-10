@@ -5,7 +5,7 @@ cat <<'EOF'
 TUI dev smoke checklist
 
 Build and run:
-  cargo build --release --features tui
+  cargo build --release
   ./target/release/linget tui
 
 Quick keys:
