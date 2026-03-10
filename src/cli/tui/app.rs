@@ -5166,6 +5166,35 @@ Remove   1 Package
     }
 
     #[test]
+    fn tui_mode_label_reflects_highest_priority_context() {
+        let mut app = test_app();
+        assert_eq!(app.tui_mode_label(), "Source Browse");
+
+        app.focus = Focus::Packages;
+        assert_eq!(app.tui_mode_label(), "Package Browse");
+
+        app.searching = true;
+        assert_eq!(app.tui_mode_label(), "Search Input");
+
+        app.searching = false;
+        app.search = "vim".to_string();
+        assert_eq!(app.tui_mode_label(), "Local Filter");
+
+        app.search_results = Some(Vec::new());
+        assert_eq!(app.tui_mode_label(), "Provider Results");
+
+        app.queue_expanded = true;
+        app.focus = Focus::Queue;
+        assert_eq!(app.tui_mode_label(), "Queue Focus");
+
+        app.showing_changelog = true;
+        assert_eq!(app.tui_mode_label(), "Changelog");
+
+        app.showing_palette = true;
+        assert_eq!(app.tui_mode_label(), "Palette");
+    }
+
+    #[test]
     fn package_navigation_helpers_recover_from_stale_cursor_state() {
         let mut app = test_app();
         app.packages = vec![

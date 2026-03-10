@@ -1138,11 +1138,15 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         format!("{} selected", app.selected.len())
     };
+    let mode_and_selection = format!("{} · {}", app.tui_mode_label(), selection);
 
     let right = if app.compact && !app.status.is_empty() {
-        vec![Span::styled(app.status.clone(), italic_status())]
+        vec![Span::styled(
+            format!("{} · {}", app.tui_mode_label(), app.status),
+            italic_status(),
+        )]
     } else {
-        vec![Span::styled(selection, muted())]
+        vec![Span::styled(mode_and_selection, muted())]
     };
 
     let line = compose_left_right(spans, right, area.width as usize);
@@ -2535,6 +2539,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
     };
     let mut lines = vec![
         Line::from(Span::styled("Context", section_header())),
+        Line::from(format!("  Mode: {}", app.tui_mode_label())),
         Line::from(format!("  Focus: {}", focus_label)),
         Line::from(format!("  Recommended: {}", app.recommended_action_label())),
         Line::from(format!("  {}", app.recommended_action_detail())),

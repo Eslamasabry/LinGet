@@ -1,7 +1,7 @@
 use crate::cli::tui::app::App;
 use crate::cli::tui::state::filters::Filter;
 use crate::cli::tui::theme::{
-    accent, dim, header_bar, italic_status, loading, muted, palette, tab_active,
+    accent, dim, header_bar, italic_status, loading, muted, palette, tab_active, warning,
 };
 use crate::cli::tui::ui::{compose_left_right, spans_width};
 use ratatui::{
@@ -88,6 +88,11 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut right = Vec::new();
 
+    right.push(Span::styled(
+        format!("[{}] ", app.tui_mode_label()),
+        mode_badge_style(app),
+    ));
+
     if let Some(activity) = app.catalog_activity_label() {
         right.push(Span::styled(
             format!("{} {} ", app.spinner_frame(), activity),
@@ -133,6 +138,23 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     let line = compose_left_right(left, right, area.width as usize);
     let paragraph = Paragraph::new(line).style(header_bar());
     frame.render_widget(paragraph, area);
+}
+
+fn mode_badge_style(app: &App) -> Style {
+    if app.showing_palette
+        || app.showing_changelog
+        || app.showing_help
+        || app.confirming.is_some()
+        || app.showing_import_preview
+    {
+        accent()
+    } else if app.searching || app.search_results.is_some() || !app.search.is_empty() {
+        warning()
+    } else if app.queue_expanded && app.focus == crate::cli::tui::state::filters::Focus::Queue {
+        loading()
+    } else {
+        muted()
+    }
 }
 
 fn render_filter_tab(

@@ -40,6 +40,37 @@ impl App {
         }
     }
 
+    pub fn tui_mode_label(&self) -> &'static str {
+        if self.showing_palette {
+            "Palette"
+        } else if self.showing_changelog {
+            "Changelog"
+        } else if self.showing_help {
+            "Help"
+        } else if self.confirming.is_some() {
+            "Review Action"
+        } else if self.showing_import_preview {
+            "Import Preview"
+        } else if self.queue_expanded && self.focus == Focus::Queue {
+            "Queue Focus"
+        } else if self.searching {
+            "Search Input"
+        } else if self.search_results.is_some() && !self.search.is_empty() {
+            "Provider Results"
+        } else if !self.search.is_empty() {
+            "Local Filter"
+        } else {
+            match self.view_mode {
+                ViewMode::Dashboard => "Dashboard",
+                ViewMode::Queue => "Queue Overview",
+                ViewMode::Browse => match self.focus {
+                    Focus::Sources => "Source Browse",
+                    Focus::Packages | Focus::Queue => "Package Browse",
+                },
+            }
+        }
+    }
+
     pub fn source_count(&self) -> usize {
         self.visible_sources().len() + 1
     }
