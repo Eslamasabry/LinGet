@@ -2612,28 +2612,21 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
     }
 
     if app.searching || !app.search.is_empty() {
-        let scope = if app.search_results.is_some() {
-            app.provider_search_scope_label()
-                .unwrap_or_else(|| "provider results".to_string())
-        } else {
-            "local package list".to_string()
-        };
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("Search", section_header())));
         lines.push(Line::from(format!("  Current query: {}", app.search)));
-        lines.push(Line::from(format!("  Typing filters the {}", scope)));
+        lines.push(Line::from(format!(
+            "  Current scope: {}",
+            app.search_current_scope_label()
+        )));
+        lines.push(Line::from(format!("  {}", app.search_typing_hint_text())));
         if let Some(summary) = app.provider_search_summary() {
             lines.push(Line::from(format!("  Provider mix: {}", summary)));
         }
-        if app.search_results.is_some() {
-            lines.push(Line::from(
-                "  Enter runs provider search   Esc keeps local filter",
-            ));
-        } else {
-            lines.push(Line::from(
-                "  Enter runs provider search   Esc clears search",
-            ));
-        }
+        lines.push(Line::from(format!(
+            "  Enter runs provider search   Esc {}",
+            app.search_escape_hint_label()
+        )));
     }
 
     lines.push(Line::from(""));

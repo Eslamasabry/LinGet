@@ -87,6 +87,23 @@ impl App {
         }
     }
 
+    pub fn search_current_scope_label(&self) -> String {
+        if self.search_results.is_some() {
+            self.provider_search_scope_label()
+                .unwrap_or_else(|| "provider results".to_string())
+        } else {
+            "local package list".to_string()
+        }
+    }
+
+    pub fn search_typing_hint_text(&self) -> &'static str {
+        if self.search_results.is_some() {
+            "Typing resumes filtering in the local package list"
+        } else {
+            "Typing filters the local package list"
+        }
+    }
+
     pub fn source_count(&self) -> usize {
         self.visible_sources().len() + 1
     }

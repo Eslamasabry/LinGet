@@ -5707,6 +5707,11 @@ Remove   1 Package
         let mut app = test_app();
         assert_eq!(app.search_query_hint_label(), "search");
         assert_eq!(app.search_escape_hint_label(), "clear search");
+        assert_eq!(app.search_current_scope_label(), "local package list");
+        assert_eq!(
+            app.search_typing_hint_text(),
+            "Typing filters the local package list"
+        );
 
         app.search = "vim".to_string();
         assert_eq!(app.search_query_hint_label(), "edit query");
@@ -5715,6 +5720,11 @@ Remove   1 Package
         app.search_results = Some(Vec::new());
         assert_eq!(app.search_query_hint_label(), "edit query");
         assert_eq!(app.search_escape_hint_label(), "local filter");
+        assert_eq!(app.search_current_scope_label(), "provider results");
+        assert_eq!(
+            app.search_typing_hint_text(),
+            "Typing resumes filtering in the local package list"
+        );
 
         app.search.clear();
         assert_eq!(app.search_escape_hint_label(), "clear search");
