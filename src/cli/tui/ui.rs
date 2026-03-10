@@ -2566,9 +2566,15 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
         if let Some(summary) = app.provider_search_summary() {
             lines.push(Line::from(format!("  Provider mix: {}", summary)));
         }
-        lines.push(Line::from(
-            "  Enter runs provider search   Esc clears search",
-        ));
+        if app.search_results.is_some() {
+            lines.push(Line::from(
+                "  Enter runs provider search   Esc keeps local filter",
+            ));
+        } else {
+            lines.push(Line::from(
+                "  Enter runs provider search   Esc clears search",
+            ));
+        }
     }
 
     lines.push(Line::from(""));

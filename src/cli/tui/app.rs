@@ -766,6 +766,14 @@ impl App {
         self.search_source_alternatives.clear();
     }
 
+    fn restore_local_catalog_with_current_search(&mut self) {
+        self.clear_provider_search_state();
+        self.packages = self.local_packages.clone();
+        self.cleanup_stale_selections();
+        self.apply_filters();
+        self.restore_cursor_anchor();
+    }
+
     fn apply_provider_search_catalog(&mut self, catalog: SearchCatalog, from_cache: bool) {
         let packages = catalog.packages();
         self.search_results = Some(packages.clone());
@@ -3820,11 +3828,16 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.searching = false;
-                self.search.clear();
-                self.clear_provider_search_state();
-                self.packages = self.local_packages.clone();
-                self.apply_filters();
-                self.set_status("Search cleared", true);
+                if self.search_results.is_some() {
+                    self.restore_local_catalog_with_current_search();
+                    self.set_status("Provider results hidden; local filter kept", true);
+                } else {
+                    self.search.clear();
+                    self.clear_provider_search_state();
+                    self.packages = self.local_packages.clone();
+                    self.apply_filters();
+                    self.set_status("Search cleared", true);
+                }
             }
             KeyCode::Enter => {
                 self.searching = false;
@@ -3838,10 +3851,16 @@ impl App {
                 }
             }
             KeyCode::Backspace | KeyCode::Delete => {
+                if self.search_results.is_some() {
+                    self.restore_local_catalog_with_current_search();
+                }
                 self.search.pop();
                 self.apply_filters();
             }
             KeyCode::Char(ch) if !ch.is_control() => {
+                if self.search_results.is_some() {
+                    self.restore_local_catalog_with_current_search();
+                }
                 self.search.push(ch);
                 self.apply_filters();
             }
@@ -5555,6 +5574,87 @@ Remove   1 Package
 
         app.handle_key(key(KeyCode::Esc)).await;
         assert!(app.search.is_empty());
+    }
+
+    #[tokio::test]
+    async fn esc_from_provider_results_keeps_local_filter() {
+        let mut app = test_app();
+        let firefox = make_pkg("firefox", PackageSource::Apt, PackageStatus::Installed);
+        let vim = make_pkg("vim", PackageSource::Apt, PackageStatus::Installed);
+        app.local_packages = vec![firefox.clone(), vim];
+        app.packages = app.local_packages.clone();
+        app.search = "firefox".to_string();
+
+        let catalog = SearchCatalog {
+            query: "firefox".to_string(),
+            matches: vec![crate::backend::SearchMatch {
+                package: make_pkg(
+                    "firefox-beta",
+                    PackageSource::Flatpak,
+                    PackageStatus::NotInstalled,
+                ),
+                alternative_sources: Vec::new(),
+            }],
+            providers: vec![SearchProviderSummary {
+                source: PackageSource::Flatpak,
+                result_count: 1,
+                surfaced_count: 1,
+                error: None,
+            }],
+        };
+        app.apply_provider_search_catalog(catalog, false);
+
+        app.handle_key(key(KeyCode::Esc)).await;
+
+        assert!(app.search_results.is_none());
+        assert_eq!(app.search, "firefox");
+        assert_eq!(app.filtered.len(), 1);
+        assert_eq!(
+            app.current_package().map(|pkg| pkg.name.as_str()),
+            Some("firefox")
+        );
+        assert_eq!(app.status, "Provider results hidden; local filter kept");
+    }
+
+    #[tokio::test]
+    async fn editing_search_from_provider_results_restores_local_catalog() {
+        let mut app = test_app();
+        app.local_packages = vec![
+            make_pkg("firefox", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg("firejail", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.packages = app.local_packages.clone();
+        app.search = "firefox".to_string();
+
+        let catalog = SearchCatalog {
+            query: "firefox".to_string(),
+            matches: vec![crate::backend::SearchMatch {
+                package: make_pkg(
+                    "firefox-beta",
+                    PackageSource::Flatpak,
+                    PackageStatus::NotInstalled,
+                ),
+                alternative_sources: Vec::new(),
+            }],
+            providers: vec![SearchProviderSummary {
+                source: PackageSource::Flatpak,
+                result_count: 1,
+                surfaced_count: 1,
+                error: None,
+            }],
+        };
+        app.apply_provider_search_catalog(catalog, false);
+        app.searching = true;
+
+        app.handle_key(key(KeyCode::Backspace)).await;
+
+        assert!(app.search_results.is_none());
+        assert_eq!(app.search, "firefo");
+        assert_eq!(app.filtered.len(), 1);
+        assert_eq!(
+            app.current_package().map(|pkg| pkg.name.as_str()),
+            Some("firefox")
+        );
     }
 
     #[test]

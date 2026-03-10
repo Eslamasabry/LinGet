@@ -438,6 +438,9 @@ impl App {
             KeyCode::Esc => {
                 if self.queue_expanded {
                     self.execute_command(CommandId::ToggleQueue).await;
+                } else if self.search_results.is_some() && !self.search.is_empty() {
+                    self.restore_local_catalog_with_current_search();
+                    self.set_status("Provider results hidden; local filter kept", true);
                 } else if !self.search.is_empty() {
                     self.search.clear();
                     self.apply_filters();
