@@ -35,7 +35,15 @@ import re
 import json
 
 # Import modular components
-from linget.models import Package, Task, PackageStatus, ErrorType
+from linget.models import (
+    Package,
+    Task,
+    PackageStatus,
+    ErrorType,
+    load_favorites,
+    save_favorites,
+    is_favorite,
+)
 from linget.search import search_new_packages
 from linget.history import save_task, load_task_history
 
@@ -65,6 +73,7 @@ class PackageTable(DataTable):
                 "cargo": "yellow",
                 "npm": "green",
                 "pip": "cyan",
+                "snap": "magenta",
             }.get(pkg.source, "white")
 
             source_logo = {
@@ -73,6 +82,7 @@ class PackageTable(DataTable):
                 "cargo": " Cargo",
                 "npm": " NPM",
                 "pip": " PIP",
+                "snap": "📦 Snap",
             }.get(pkg.source, pkg.source.upper())
 
             # Use composite key to avoid collisions across package managers
@@ -123,6 +133,7 @@ class InfoPanel(VerticalScroll):
             "cargo": " Cargo",
             "npm": " NPM",
             "pip": " PIP",
+            "snap": "📦 Snap",
         }.get(p.source, p.source.upper())
 
         return f"""
@@ -343,7 +354,10 @@ class LinGetApp(App):
         Binding("I", "bulk_install", "Bulk Install", show=True),
         Binding("U", "bulk_update", "Bulk Update", show=True),
         Binding("z", "undo", "Undo", show=True),
+        Binding("f", "toggle_favorite", "Favorite", show=True),
         Binding("o", "show_orphans", "Orphans", show=True),
+        Binding("X", "clean_cache", "Clean Cache", show=True),
+        Binding("v", "show_versions", "Versions", show=True),
         Binding("escape", "cancel_task", "Cancel", show=True),
         Binding("/", "focus_search", "Search", show=True),
         Binding("ctrl+r", "refresh_data", "Refresh", show=True),
@@ -358,6 +372,7 @@ class LinGetApp(App):
     _running_tasks = {}  # Maps task_id -> asyncio.subprocess.Process
     selected_packages = set()  # Step 20: Track bulk selected packages by row_key
     _last_action = None  # Step 25: Track last action for undo (package, action)
+    favorites = set()  # Step 22: Track favorited packages
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True, icon="📦")
@@ -368,8 +383,10 @@ class LinGetApp(App):
                     yield Label("Sources", classes="sidebar-title")
                     yield OptionList(
                         Option("🌍 All Sources", id="all"),
+                        Option("⭐ Favorites", id="favorites"),
                         Option(" APT Packages", id="apt"),
                         Option("󰏖 Flatpak Apps", id="flatpak"),
+                        Option("📦 Snap Packages", id="snap"),
                         Option(" Cargo Crates", id="cargo"),
                         Option(" NPM Packages", id="npm"),
                         Option(" PIP Packages", id="pip"),
@@ -419,6 +436,8 @@ class LinGetApp(App):
         self.title = "LinGet - Universal Package Manager"
         self.theme = "monokai"
         self._offline_mode = False  # Step 35: Track offline state
+        # Step 22: Load favorites from persistence
+        self.favorites = load_favorites()
         self.action_refresh_data()
 
         # Step 34: Set up background refresh every 10 minutes
@@ -603,6 +622,27 @@ class LinGetApp(App):
         except Exception as e:
             log_msg(f"PIP error: {e}")
 
+        log_msg("Fetching Snap packages...")
+        try:
+            code, out = await run_cmd(["snap", "list"])
+            if code == 0:
+                for line in out.splitlines()[1:]:  # Skip header line
+                    parts = line.split()
+                    if len(parts) >= 1:
+                        name = parts[0]
+                        version = parts[1] if len(parts) > 1 else "?"
+                        packages.append(
+                            Package(
+                                name,
+                                version,
+                                "snap",
+                                PackageStatus.INSTALLED,
+                                desc="Snap Package",
+                            )
+                        )
+        except Exception as e:
+            log_msg(f"Snap error: {e}")
+
         # Update application state (happens natively on the async event loop thread)
         self.all_packages = sorted(packages, key=lambda p: p.name.lower())
 
@@ -656,7 +696,11 @@ class LinGetApp(App):
 
         # Apply source filter
         if self.current_source != "all":
-            filtered = [p for p in filtered if p.source == self.current_source]
+            if self.current_source == "favorites":
+                # Step 22: Filter to show only favorited packages
+                filtered = [p for p in filtered if p.row_key in self.favorites]
+            else:
+                filtered = [p for p in filtered if p.source == self.current_source]
 
         if self.search_query:
             q = self.search_query.lower()
@@ -665,7 +709,7 @@ class LinGetApp(App):
             ]
 
         table = self.query_one("#package-table", PackageTable)
-        table.populate(filtered)
+        table.populate(filtered, self.favorites)
 
         if filtered:
             table.move_cursor(row=0)
@@ -684,9 +728,17 @@ class LinGetApp(App):
                     "Use 'Search for New' tab to find installable packages",
                     severity="information",
                 )
+            elif self.current_source == "favorites":
+                self.notify("No favorite packages found", severity="information")
 
     def update_info_panel(self, package):
-        self.query_one("#info-panel", InfoPanel).package = package
+        info_panel = self.query_one("#info-panel", InfoPanel)
+        info_panel.package = package
+        # Step 22: Re-render to show favorite status
+        if package:
+            for child in list(info_panel.children):
+                child.remove()
+            info_panel.mount(Markdown(info_panel.render_info(self.favorites)))
 
     # --- Event Handlers ---
 
@@ -721,7 +773,17 @@ class LinGetApp(App):
                 self.apply_filters()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        if event.option.id in ("all", "apt", "flatpak", "cargo", "npm", "pip"):
+        # Step 22: Add favorites to the list of valid sources
+        if event.option.id in (
+            "all",
+            "apt",
+            "flatpak",
+            "snap",
+            "cargo",
+            "npm",
+            "pip",
+            "favorites",
+        ):
             self.current_source = event.option.id
             self.apply_filters()
 
@@ -1108,6 +1170,28 @@ class LinGetApp(App):
         # Clear last action since we've undone it
         self._last_action = None
 
+    def action_toggle_favorite(self):
+        """Step 22: Toggle favorite status for the currently selected package."""
+        info_panel = self.query_one("#info-panel", InfoPanel)
+        pkg = info_panel.package
+        if not pkg:
+            self.notify("No package selected!", severity="warning")
+            return
+
+        row_key = pkg.row_key
+        if row_key in self.favorites:
+            self.favorites.remove(row_key)
+            self.notify(f"Removed {pkg.name} from favorites", severity="information")
+        else:
+            self.favorites.add(row_key)
+            self.notify(f"Added {pkg.name} to favorites", severity="information")
+
+        # Persist favorites
+        save_favorites(self.favorites)
+
+        # Refresh the UI to show the star
+        self.apply_filters()
+
     async def action_show_orphans(self):
         """Step 28: Show orphan packages that can be auto-removed."""
         self.notify("Checking for orphan packages...", severity="information")
@@ -1159,6 +1243,205 @@ class LinGetApp(App):
 
         except Exception as e:
             self.notify(f"Error checking orphans: {e}", severity="error")
+
+    async def action_clean_cache(self):
+        """Clean package manager cache for the current source."""
+        if self.current_source == "all":
+            self.notify("Select a specific source to clean cache", severity="warning")
+            return
+
+        cache_configs = {
+            "apt": [["pkexec", "apt-get", "clean"], ["pkexec", "apt-get", "autoclean"]],
+            "flatpak": [["pkexec", "flatpak", "uninstall", "--unused", "-y"]],
+            "cargo": [["cargo", "cache", "--autoclean"]],
+            "npm": [["npm", "cache", "clean", "--force"]],
+            "pip": [["pip", "cache", "purge"]],
+        }
+
+        if self.current_source not in cache_configs:
+            self.notify(
+                f"Cache cleaning not supported for {self.current_source}",
+                severity="warning",
+            )
+            return
+
+        # Show confirmation notification (press X twice pattern)
+        if (
+            hasattr(self, "_pending_clean_cache")
+            and self._pending_clean_cache == self.current_source
+        ):
+            self._pending_clean_cache = None
+        else:
+            self.notify(
+                f"Press 'X' again to confirm cleaning {self.current_source} cache",
+                severity="warning",
+                timeout=3.0,
+            )
+            self._pending_clean_cache = self.current_source
+            return
+
+        log = self.query_one("#term-log", RichLog)
+        log.write_line(f"[cyan]Cleaning {self.current_source} cache...[/]")
+
+        # For apt, show before/after cache size
+        before_size = None
+        if self.current_source == "apt":
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "du",
+                    "-sh",
+                    "/var/cache/apt/archives",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await proc.communicate()
+                if proc.returncode == 0:
+                    before_size = stdout.decode().strip().split()[0]
+                    log.write_line(f"[dim]Cache size before: {before_size}[/]")
+            except Exception:
+                pass
+
+        commands = cache_configs[self.current_source]
+        for cmd in commands:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                stdout, _ = await proc.communicate()
+                if proc.returncode == 0:
+                    output = stdout.decode().strip()
+                    if output:
+                        for line in output.splitlines()[:20]:
+                            log.write_line(f"  {line}")
+                else:
+                    log.write_line(f"[red]Command failed: {' '.join(cmd)}[/]")
+            except Exception as e:
+                log.write_line(f"[red]Error running {' '.join(cmd)}: {e}[/]")
+
+        # For apt, show after cache size and calculate freed space
+        if self.current_source == "apt" and before_size:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "du",
+                    "-sh",
+                    "/var/cache/apt/archives",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await proc.communicate()
+                if proc.returncode == 0:
+                    after_size = stdout.decode().strip().split()[0]
+                    log.write_line(f"[dim]Cache size after: {after_size}[/]")
+                    self.notify(
+                        f"APT cache cleaned (was: {before_size}, now: {after_size})",
+                        severity="information",
+                        timeout=5.0,
+                    )
+                    return
+            except Exception:
+                pass
+
+        self.notify(f"{self.current_source} cache cleaned", severity="information")
+
+    async def action_show_versions(self):
+        """Step 30: Show package version history using apt-cache policy."""
+        log = self.query_one("#term-log", Log)
+
+        try:
+            info_panel = self.query_one("#info-panel", InfoPanel)
+            package = info_panel.package
+
+            if not package:
+                self.notify("No package selected", severity="warning")
+                return
+
+            if package.source != "apt":
+                self.notify(
+                    "Version history only available for apt packages",
+                    severity="warning",
+                )
+                return
+
+            log.write_line(f"[cyan]Fetching version history for {package.name}...[/]")
+
+            process = await asyncio.create_subprocess_exec(
+                "apt-cache",
+                "policy",
+                package.name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                output = stdout.decode("utf-8", errors="replace")
+                lines = output.strip().split("\n")
+
+                log.write_line(f"[bold green]Version history for {package.name}:[/]")
+
+                installed = None
+                candidate = None
+                available = []
+
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith("Installed:"):
+                        installed = line.split(":", 1)[1].strip()
+                    elif line.startswith("Candidate:"):
+                        candidate = line.split(":", 1)[1].strip()
+                    elif line.startswith("***"):
+                        # Installed version marker
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            version = parts[1]
+                            repo = " ".join(parts[3:]) if len(parts) > 3 else ""
+                            available.append((version, repo, True))
+                    elif line.startswith(" ") and not line.startswith("   "):
+                        # Other available versions
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            version = parts[0]
+                            repo = " ".join(parts[2:]) if len(parts) > 2 else ""
+                            available.append((version, repo, False))
+
+                if installed and installed != "(none)":
+                    log.write_line(f"  Installed: {installed}")
+                else:
+                    log.write_line(f"  Installed: (none)")
+
+                if candidate and candidate != "(none)":
+                    log.write_line(f"  Candidate: {candidate}")
+                else:
+                    log.write_line(f"  Candidate: (none)")
+
+                if available:
+                    log.write_line(f"  Available:")
+                    for version, repo, is_installed in available:
+                        if is_installed:
+                            log.write_line(f"    • {version} (installed)")
+                        else:
+                            display_repo = repo.strip("()") if repo else "unknown"
+                            log.write_line(f"    • {version} ({display_repo})")
+                else:
+                    log.write_line(f"  No versions available in repositories")
+
+                self.notify(
+                    f"Version history for {package.name} displayed",
+                    severity="information",
+                )
+            else:
+                error_msg = stderr.decode("utf-8", errors="replace").strip()
+                log.write_line(f"[red]Failed to fetch versions: {error_msg}[/]")
+                self.notify(
+                    f"Version history unavailable for {package.name}",
+                    severity="warning",
+                )
+
+        except Exception as e:
+            log.write_line(f"[red]Error fetching versions: {e}[/]")
+            self.notify(f"Error fetching versions: {e}", severity="error")
 
     # --- Real Task Execution ---
 
@@ -1228,6 +1511,13 @@ class LinGetApp(App):
                 cmd = ["pip", "install", "--upgrade", name]
             elif action == "remove":
                 cmd = ["pip", "uninstall", "-y", name]
+        elif source == "snap":
+            if action == "install":
+                cmd = ["pkexec", "snap", "install", name]
+            elif action == "remove":
+                cmd = ["pkexec", "snap", "remove", name]
+            elif action == "update":
+                cmd = ["pkexec", "snap", "refresh", name]
 
         if not cmd:
             log_msg(f"[red]Error:[/] Unsupported action/source combination.")

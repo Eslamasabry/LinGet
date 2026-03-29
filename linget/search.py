@@ -89,6 +89,50 @@ async def search_flatpak_remotes(
     return found
 
 
+async def search_snap_store(
+    query: str, installed_packages: List[Package]
+) -> List[Package]:
+    """Search Snap store for packages matching query."""
+    found = []
+
+    async def run_cmd(cmd):
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        return proc.returncode, stdout.decode(errors="ignore")
+
+    try:
+        code, out = await run_cmd(["snap", "find", query])
+        if code == 0:
+            for line in out.splitlines()[1:]:  # Skip header line
+                parts = line.split()
+                if len(parts) >= 1:
+                    name = parts[0]
+                    version = parts[1] if len(parts) > 1 else "?"
+                    publisher = parts[2] if len(parts) > 2 else "?"
+                    desc = " ".join(parts[3:]) if len(parts) > 3 else ""
+
+                    already_installed = any(
+                        p.name == name and p.source == "snap"
+                        for p in installed_packages
+                    )
+                    if not already_installed:
+                        found.append(
+                            Package(
+                                name=name,
+                                version=version,
+                                source="snap",
+                                status=PackageStatus.NOT_INSTALLED,
+                                desc=f"{desc} (by {publisher})",
+                            )
+                        )
+    except Exception as e:
+        print(f"Snap search error: {e}", flush=True)
+
+    return found
+
+
 async def search_new_packages(
     query: str, installed_packages: List[Package], source_filter: str = "all"
 ) -> List[Package]:
@@ -113,5 +157,10 @@ async def search_new_packages(
     if source_filter in ("all", "flatpak"):
         flatpak_packages = await search_flatpak_remotes(query, installed_packages)
         found_packages.extend(flatpak_packages)
+
+    # Search Snap store
+    if source_filter in ("all", "snap"):
+        snap_packages = await search_snap_store(query, installed_packages)
+        found_packages.extend(snap_packages)
 
     return found_packages
