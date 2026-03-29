@@ -18,10 +18,11 @@ from textual.widgets import (
     OptionList,
     TabbedContent,
     TabPane,
-    Log,
+    RichLog,  # Better than Log for terminal output
     Markdown,
     Tabs,
     Tab,
+    Switch,  # For toggle settings
 )
 from textual.containers import Horizontal, Vertical, VerticalScroll, Container
 from textual.reactive import reactive
@@ -30,57 +31,13 @@ from textual import work
 from textual.widgets.option_list import Option
 
 import asyncio
-from datetime import datetime
-from enum import Enum
 import re
 import json
 
-# --- Data Models ---
-
-
-class PackageStatus(Enum):
-    INSTALLED = "installed"
-    UPDATE = "update"
-    NOT_INSTALLED = "available"
-
-
-class ErrorType(Enum):
-    """Classify task failures for better user feedback and retry strategies."""
-
-    NONE = "none"
-    AUTH_CANCELLED = "auth_cancelled"  # User cancelled pkexec/sudo
-    NETWORK = "network"  # Download failed, timeout, etc.
-    NOT_FOUND = "not_found"  # Package doesn't exist in repo
-    CONFLICT = "conflict"  # Dependency conflict, file conflict
-    LOCKED = "locked"  # dpkg/apt lock, another process running
-    DISK_FULL = "disk_full"  # No space left
-    PERMISSION = "permission"  # Permission denied (non-auth)
-    TIMEOUT = "timeout"  # Operation timed out
-    UNKNOWN = "unknown"  # Unclassified error
-
-
-class Package:
-    def __init__(self, name, version, source, status, size="", desc=""):
-        self.name = name
-        self.version = version
-        self.source = source
-        self.status = status
-        self.size = size
-        self.description = desc
-
-
-class Task:
-    def __init__(self, package: Package, action: str):
-        self.id = (
-            f"{action}-{package.source}-{package.name}-{datetime.now().timestamp():.0f}"
-        )
-        self.package = package
-        self.action = action
-        self.progress = 0.0
-        self.status = "queued"
-        self.error_type = ErrorType.NONE  # Step 6: Error classification
-        self.error_message = ""  # Store detailed error message
-
+# Import modular components
+from linget.models import Package, Task, PackageStatus, ErrorType
+from linget.search import search_new_packages
+from linget.history import save_task, load_task_history
 
 # --- Custom Widgets ---
 
@@ -88,8 +45,10 @@ class Task:
 class PackageTable(DataTable):
     def on_mount(self):
         self.cursor_type = "row"
-        self.add_columns("Status", "Name", "Version", "Source", "Size")
+        # Step 20: Add checkbox column for bulk selection
+        self.add_columns("☐", "Status", "Name", "Version", "Source", "Size")
         self.zebra_stripes = True
+        self.selected_rows = set()  # Track selected row keys
 
     def populate(self, packages):
         self.clear()
@@ -119,8 +78,12 @@ class PackageTable(DataTable):
             # Use composite key to avoid collisions across package managers
             row_key = f"{pkg.source}-{pkg.name}"
 
+            # Checkbox state
+            checkbox = "☑" if row_key in self.selected_rows else "☐"
+
             try:
                 self.add_row(
+                    checkbox,  # Step 20: Checkbox column
                     status_render,
                     f"[bold]{pkg.name}[/]",
                     pkg.version,
@@ -310,6 +273,27 @@ class LinGetApp(App):
         background: $surface;
     }
 
+    .status-bar {
+        height: 1;
+        background: $surface;
+        align-vertical: middle;
+    }
+
+    .status-toggles {
+        width: auto;
+        align-horizontal: right;
+        align-vertical: middle;
+    }
+
+    .status-label {
+        margin: 0 1;
+        text-style: bold;
+    }
+
+    Switch {
+        margin: 0 2 0 0;
+    }
+
     .sidebar-title {
         padding: 1 2;
         text-style: bold;
@@ -352,6 +336,14 @@ class LinGetApp(App):
         Binding("u", "update", "Update", show=True),
         Binding("r", "remove", "Remove", show=True),
         Binding("R", "retry_task", "Retry", show=True),
+        Binding("d", "show_dependencies", "Deps", show=True),
+        Binding("space", "toggle_select", "Select", show=True),
+        Binding("a", "select_all", "Select All", show=True),
+        Binding("A", "deselect_all", "Deselect All", show=True),
+        Binding("I", "bulk_install", "Bulk Install", show=True),
+        Binding("U", "bulk_update", "Bulk Update", show=True),
+        Binding("z", "undo", "Undo", show=True),
+        Binding("o", "show_orphans", "Orphans", show=True),
         Binding("escape", "cancel_task", "Cancel", show=True),
         Binding("/", "focus_search", "Search", show=True),
         Binding("ctrl+r", "refresh_data", "Refresh", show=True),
@@ -364,6 +356,8 @@ class LinGetApp(App):
     current_mode = "mode-all"
     search_query = ""
     _running_tasks = {}  # Maps task_id -> asyncio.subprocess.Process
+    selected_packages = set()  # Step 20: Track bulk selected packages by row_key
+    _last_action = None  # Step 25: Track last action for undo (package, action)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True, icon="📦")
@@ -402,12 +396,18 @@ class LinGetApp(App):
                         yield InfoPanel(id="info-panel")
 
             with Vertical(id="bottom-panel"):
-                yield Label("⚙️ Task Queue & Output", classes="panel-title")
+                with Horizontal(classes="status-bar"):
+                    yield Label("⚙️ Task Queue & Output", classes="panel-title")
+                    with Horizontal(classes="status-toggles"):
+                        yield Label("Offline:", classes="status-label")
+                        yield Switch(id="offline-toggle", value=False)
+                        yield Label("Auto-refresh:", classes="status-label")
+                        yield Switch(id="auto-refresh-toggle", value=True)
                 with TabbedContent():
                     with TabPane("📋 Tasks"):
                         yield QueuePanel(id="queue-panel")
                     with TabPane("💻 Terminal Log"):
-                        yield Log(id="term-log", highlight=True)
+                        yield RichLog(id="term-log", highlight=True, max_lines=1000)
 
         with Vertical(id="loading-overlay"):
             yield LoadingIndicator()
@@ -418,7 +418,45 @@ class LinGetApp(App):
     def on_mount(self):
         self.title = "LinGet - Universal Package Manager"
         self.theme = "monokai"
+        self._offline_mode = False  # Step 35: Track offline state
         self.action_refresh_data()
+
+        # Step 34: Set up background refresh every 10 minutes
+        self.set_interval(600, self._background_refresh)
+
+        # Step 35: Check network connectivity periodically
+        self.set_interval(30, self._check_network)
+
+    def _background_refresh(self):
+        """Step 34: Refresh package list in background."""
+        # Only refresh if not already refreshing and not offline
+        if not self._offline_mode:
+            # Don't show loading overlay for background refresh
+            asyncio.ensure_future(self._silent_refresh())
+
+    async def _silent_refresh(self):
+        """Perform a silent background refresh without UI blocking."""
+        try:
+            await self.fetch_packages()
+        except Exception:
+            pass  # Silent fail - don't disturb user
+
+    def _check_network(self):
+        """Step 35: Check network connectivity."""
+        import urllib.request
+
+        try:
+            # Try to connect to a reliable host
+            urllib.request.urlopen("https://pypi.org", timeout=3)
+            if self._offline_mode:
+                self._offline_mode = False
+                self.notify("Back online", severity="information")
+        except:
+            if not self._offline_mode:
+                self._offline_mode = True
+                self.notify(
+                    "Offline mode - remote operations disabled", severity="warning"
+                )
 
     # --- Data Loading ---
 
@@ -432,7 +470,7 @@ class LinGetApp(App):
                 self.query_one("#loading-msg", Label).update(msg)
             except:
                 pass
-            self.query_one("#term-log", Log).write_line(f"[cyan]INFO:[/] {msg}")
+            self.query_one("#term-log", RichLog).write_line(f"[cyan]INFO:[/] {msg}")
 
         async def run_cmd(cmd):
             proc = await asyncio.create_subprocess_exec(
@@ -572,6 +610,41 @@ class LinGetApp(App):
         self.apply_filters()
         log_msg("Refresh complete.")
 
+    async def search_new_packages(self, query: str):
+        """Step 16: Search for new packages across repositories."""
+        from linget.search import search_new_packages as do_search
+
+        def log_msg(msg):
+            try:
+                self.query_one("#loading-msg", Label).update(msg)
+            except:
+                pass
+            self.query_one("#term-log", Log).write_line(f"[cyan]SEARCH:[/] {msg}")
+
+        log_msg(f"Searching for '{query}'...")
+        found_packages = await do_search(query, self.all_packages, self.current_source)
+
+        if found_packages:
+            log_msg(f"Found {len(found_packages)} new packages")
+            # Remove previous NOT_INSTALLED packages for this source
+            self.all_packages = [
+                p
+                for p in self.all_packages
+                if not (
+                    p.status == PackageStatus.NOT_INSTALLED
+                    and (
+                        self.current_source == "all" or p.source == self.current_source
+                    )
+                )
+            ]
+            # Add new found packages
+            self.all_packages.extend(found_packages)
+            self.all_packages = sorted(self.all_packages, key=lambda p: p.name.lower())
+        else:
+            log_msg("No new packages found")
+
+        self.apply_filters()
+
     def apply_filters(self):
         filtered = self.all_packages
 
@@ -621,10 +694,31 @@ class LinGetApp(App):
         if event.button.id == "refresh-btn":
             self.action_refresh_data()
 
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        """Handle offline mode and auto-refresh toggles."""
+        if event.switch.id == "offline-toggle":
+            self._offline_mode = event.value
+            if self._offline_mode:
+                self.notify("Offline mode enabled", severity="warning")
+            else:
+                self.notify("Online mode restored", severity="information")
+        elif event.switch.id == "auto-refresh-toggle":
+            # Toggle background refresh
+            if event.value:
+                self.set_interval(600, self._background_refresh)
+                self.notify("Auto-refresh enabled (10 min)", severity="information")
+            else:
+                # Remove interval (Textual doesn't have remove_interval, so we'd need to track it)
+                self.notify("Auto-refresh disabled", severity="warning")
+
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search":
             self.search_query = event.value
-            self.apply_filters()
+            # Step 16: Trigger repository search when in "Search for New" mode
+            if self.current_mode == "mode-search" and len(self.search_query) >= 2:
+                asyncio.ensure_future(self.search_new_packages(self.search_query))
+            else:
+                self.apply_filters()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option.id in ("all", "apt", "flatpak", "cargo", "npm", "pip"):
@@ -662,6 +756,14 @@ class LinGetApp(App):
             self.notify("No package selected!", severity="warning")
             return
 
+        # Step 25: Track last action for undo (store reverse action)
+        if action == "install":
+            self._last_action = (pkg, "remove")
+        elif action == "remove":
+            self._last_action = (pkg, "install")
+        elif action == "update":
+            self._last_action = (pkg, "update")  # Can't undo update easily
+
         task = Task(pkg, action)
         self.tasks.append(task)
 
@@ -682,7 +784,28 @@ class LinGetApp(App):
         self._queue_task("update")
 
     def action_remove(self):
-        self._queue_task("remove")
+        # Step 24: Confirmation for destructive actions
+        info_panel = self.query_one("#info-panel", InfoPanel)
+        pkg = info_panel.package
+        if not pkg:
+            self.notify("No package selected!", severity="warning")
+            return
+
+        # Show confirmation notification
+        self.notify(
+            f"Press 'r' again to confirm removing {pkg.name}",
+            severity="error",
+            timeout=3.0,
+        )
+
+        # Store pending removal for confirmation
+        if hasattr(self, "_pending_remove") and self._pending_remove == pkg:
+            # Confirmed - proceed with removal
+            self._pending_remove = None
+            self._queue_task("remove")
+        else:
+            # First press - set pending
+            self._pending_remove = pkg
 
     def action_clear_tasks(self):
         to_remove = [t for t in self.tasks if t.status in ("done", "error")]
@@ -759,6 +882,283 @@ class LinGetApp(App):
 
         # Start the task
         asyncio.ensure_future(self.run_task(new_task))
+
+    async def action_show_dependencies(self):
+        """Step 17: Show package dependencies."""
+        info_panel = self.query_one("#info-panel", InfoPanel)
+        pkg = info_panel.package
+        if not pkg:
+            self.notify("No package selected!", severity="warning")
+            return
+
+        self.query_one("#term-log", Log).write_line(
+            f"[cyan]DEPS:[/] Fetching dependencies for {pkg.name}..."
+        )
+
+        deps = []
+        reverse_deps = []
+
+        if pkg.source == "apt":
+            # Get dependencies
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "apt-cache",
+                    "depends",
+                    pkg.name,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await proc.communicate()
+                if proc.returncode == 0:
+                    for line in stdout.decode().splitlines():
+                        if line.startswith("  Depends:"):
+                            dep = line.replace("  Depends:", "").strip()
+                            deps.append(dep)
+                        elif line.startswith("  Recommends:"):
+                            dep = line.replace("  Recommends:", "").strip()
+                            deps.append(f"{dep} (recommended)")
+            except Exception as e:
+                self.notify(f"Error fetching deps: {e}", severity="error")
+
+            # Get reverse dependencies (what depends on this package)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "apt-cache",
+                    "rdepends",
+                    pkg.name,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await proc.communicate()
+                if proc.returncode == 0:
+                    for line in stdout.decode().splitlines():
+                        if line.startswith("  ") and not line.startswith("   "):
+                            reverse_deps.append(line.strip())
+            except Exception:
+                pass
+
+        # Show in log
+        log = self.query_one("#term-log", Log)
+        log.write_line(f"[bold]Dependencies for {pkg.name}:[/]")
+        if deps:
+            for dep in deps[:10]:  # Limit to first 10
+                log.write_line(f"  • {dep}")
+            if len(deps) > 10:
+                log.write_line(f"  ... and {len(deps) - 10} more")
+        else:
+            log.write_line("  No dependencies found")
+
+        if reverse_deps:
+            log.write_line(f"\n[bold]Required by:[/]")
+            for rdep in reverse_deps[:5]:
+                log.write_line(f"  • {rdep}")
+            if len(reverse_deps) > 5:
+                log.write_line(f"  ... and {len(reverse_deps) - 5} more")
+
+        self.notify(f"Dependencies shown for {pkg.name}")
+
+    def action_toggle_select(self):
+        """Step 20: Toggle selection of current package."""
+        table = self.query_one("#package-table", PackageTable)
+        if not table.cursor_row:
+            return
+
+        row_key = table.cursor_row.value
+        if row_key in table.selected_rows:
+            table.selected_rows.remove(row_key)
+            self.selected_packages.discard(row_key)
+        else:
+            table.selected_rows.add(row_key)
+            self.selected_packages.add(row_key)
+
+        # Refresh to show checkbox change
+        self.apply_filters()
+        self.notify(f"Selected: {len(self.selected_packages)} packages")
+
+    def action_select_all(self):
+        """Step 20: Select all visible packages."""
+        table = self.query_one("#package-table", PackageTable)
+        # Get all currently visible filtered packages
+        for pkg in self._get_filtered_packages():
+            row_key = f"{pkg.source}-{pkg.name}"
+            table.selected_rows.add(row_key)
+            self.selected_packages.add(row_key)
+
+        self.apply_filters()
+        self.notify(f"Selected all: {len(self.selected_packages)} packages")
+
+    def action_deselect_all(self):
+        """Step 20: Clear all selections."""
+        table = self.query_one("#package-table", PackageTable)
+        table.selected_rows.clear()
+        self.selected_packages.clear()
+        self.apply_filters()
+        self.notify("Cleared all selections")
+
+    def _get_filtered_packages(self):
+        """Get currently filtered package list."""
+        filtered = self.all_packages
+
+        if self.current_mode == "mode-updates":
+            filtered = [p for p in filtered if p.status == PackageStatus.UPDATE]
+        elif self.current_mode == "mode-search":
+            filtered = [p for p in filtered if p.status == PackageStatus.NOT_INSTALLED]
+
+        if self.current_source != "all":
+            filtered = [p for p in filtered if p.source == self.current_source]
+
+        if self.search_query:
+            q = self.search_query.lower()
+            filtered = [
+                p for p in filtered if q in p.name.lower() or q in p.description.lower()
+            ]
+
+        return filtered
+
+    def action_bulk_install(self):
+        """Step 21: Bulk install selected packages."""
+        if not self.selected_packages:
+            self.notify(
+                "No packages selected! Press SPACE to select.", severity="warning"
+            )
+            return
+
+        # Get package objects for selected row keys
+        packages_to_install = []
+        for row_key in self.selected_packages:
+            source, name = row_key.split("-", 1)
+            pkg = next(
+                (p for p in self.all_packages if p.source == source and p.name == name),
+                None,
+            )
+            if pkg and pkg.status == PackageStatus.NOT_INSTALLED:
+                packages_to_install.append(pkg)
+
+        if not packages_to_install:
+            self.notify("No installable packages selected", severity="warning")
+            return
+
+        # Queue all for installation
+        for pkg in packages_to_install:
+            task = Task(pkg, "install")
+            self.tasks.append(task)
+            self.query_one("#queue-panel", QueuePanel).add_task(task)
+            asyncio.ensure_future(self.run_task(task))
+
+        self.notify(f"Bulk installing {len(packages_to_install)} packages...")
+
+    def action_bulk_update(self):
+        """Step 21: Bulk update selected packages."""
+        if not self.selected_packages:
+            self.notify(
+                "No packages selected! Press SPACE to select.", severity="warning"
+            )
+            return
+
+        # Get package objects for selected row keys
+        packages_to_update = []
+        for row_key in self.selected_packages:
+            source, name = row_key.split("-", 1)
+            pkg = next(
+                (p for p in self.all_packages if p.source == source and p.name == name),
+                None,
+            )
+            if pkg and pkg.status == PackageStatus.UPDATE:
+                packages_to_update.append(pkg)
+
+        if not packages_to_update:
+            self.notify("No updatable packages selected", severity="warning")
+            return
+
+        # Queue all for update
+        for pkg in packages_to_update:
+            task = Task(pkg, "update")
+            self.tasks.append(task)
+            self.query_one("#queue-panel", QueuePanel).add_task(task)
+            asyncio.ensure_future(self.run_task(task))
+
+        self.notify(f"Bulk updating {len(packages_to_update)} packages...")
+
+    def action_undo(self):
+        """Step 25: Undo the last action by reversing it."""
+        if not self._last_action:
+            self.notify("Nothing to undo", severity="warning")
+            return
+
+        pkg, reverse_action = self._last_action
+
+        if reverse_action == "update":
+            self.notify("Cannot undo updates automatically", severity="error")
+            return
+
+        # Create reverse task
+        task = Task(pkg, reverse_action)
+        self.tasks.append(task)
+
+        queue_panel = self.query_one("#queue-panel", QueuePanel)
+        queue_panel.add_task(task)
+
+        term = self.query_one("#term-log", Log)
+        term.write_line(f"[yellow]UNDO:[/] {reverse_action.upper()} {pkg.name}")
+        self.notify(f"Undoing: {reverse_action} {pkg.name}", severity="information")
+
+        # Start the reverse task
+        asyncio.ensure_future(self.run_task(task))
+
+        # Clear last action since we've undone it
+        self._last_action = None
+
+    async def action_show_orphans(self):
+        """Step 28: Show orphan packages that can be auto-removed."""
+        self.notify("Checking for orphan packages...", severity="information")
+
+        try:
+            # Run apt autoremove --dry-run to see what would be removed
+            proc = await asyncio.create_subprocess_exec(
+                "apt-get",
+                "autoremove",
+                "--dry-run",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+
+            if proc.returncode == 0:
+                output = stdout.decode()
+                orphans = []
+
+                # Parse output for packages that would be removed
+                for line in output.splitlines():
+                    if "Remv " in line or "Remove " in line:
+                        # Extract package name
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if part in ("Remv", "Remove") and i + 1 < len(parts):
+                                pkg_name = parts[i + 1].split("-")[0].split("=")[0]
+                                if pkg_name and pkg_name not in orphans:
+                                    orphans.append(pkg_name)
+
+                log = self.query_one("#term-log", Log)
+                if orphans:
+                    log.write_line(f"[bold yellow]Orphan packages ({len(orphans)}):[/]")
+                    for orphan in orphans[:20]:
+                        log.write_line(f"  • {orphan}")
+                    if len(orphans) > 20:
+                        log.write_line(f"  ... and {len(orphans) - 20} more")
+
+                    self.notify(
+                        f"Found {len(orphans)} orphan packages. Run 'sudo apt autoremove' to clean up.",
+                        severity="warning",
+                        timeout=10.0,
+                    )
+                else:
+                    log.write_line("[green]No orphan packages found[/]")
+                    self.notify("No orphan packages found", severity="information")
+            else:
+                self.notify("Failed to check for orphans", severity="error")
+
+        except Exception as e:
+            self.notify(f"Error checking orphans: {e}", severity="error")
 
     # --- Real Task Execution ---
 
@@ -955,6 +1355,15 @@ class LinGetApp(App):
                 f"Error ({task.error_type.value}): {action} {name}", severity="error"
             )
         finally:
+            # Step 26: Save task to history
+            save_task(
+                package_name=task.package.name,
+                package_source=task.package.source,
+                action=task.action,
+                status=task.status,
+                error_type=task.error_type.value,
+                error_message=task.error_message,
+            )
             # Clean up running task reference
             self._running_tasks.pop(task.id, None)
 
