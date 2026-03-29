@@ -97,7 +97,17 @@ class PackageTable(DataTable):
         self.clear()
         favorites = favorites or set()
 
+        # Track added keys to prevent duplicates
+        added_keys: Set[str] = set()
+
         for pkg in packages:
+            row_key = f"{pkg.source}-{pkg.name}"
+
+            # Skip duplicates
+            if row_key in added_keys:
+                continue
+            added_keys.add(row_key)
+
             status_render = {
                 PackageStatus.INSTALLED: "[bold green]✅[/] Installed",
                 PackageStatus.UPDATE: "[bold yellow]🔄[/] Update",
@@ -128,7 +138,6 @@ class PackageTable(DataTable):
                 "brew": "🍺 Brew",
             }.get(pkg.source, pkg.source.upper())
 
-            row_key = f"{pkg.source}-{pkg.name}"
             checkbox = "☑" if row_key in self.selected_rows else "☐"
 
             try:
