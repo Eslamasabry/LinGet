@@ -85,7 +85,9 @@ class PackageTable(DataTable):
         self.zebra_stripes = True
         self.selected_rows: Set[str] = set()
 
-    def populate(self, packages: List[Package], favorites: Optional[Set[str]] = None) -> None:
+    def populate(
+        self, packages: List[Package], favorites: Optional[Set[str]] = None
+    ) -> None:
         """Populate the table with package data.
 
         Args:
@@ -839,7 +841,8 @@ class LinGetApp(App):
             for error in self._plugin_registry.load_errors:
                 term_log.write_line(f"[yellow]Plugin warning:[/] {error}")
 
-        self.call_after_init(self._apply_settings_to_ui)
+        # Apply settings after UI is ready
+        self.call_later(self._apply_settings_to_ui)
 
         if self._settings.get("auto_refresh", True):
             self.set_interval(
@@ -964,6 +967,7 @@ class LinGetApp(App):
         """Check network connectivity."""
         try:
             import urllib.request
+
             urllib.request.urlopen("https://pypi.org", timeout=3)
             if self._offline_mode:
                 self._offline_mode = False
@@ -1023,7 +1027,11 @@ class LinGetApp(App):
                         name = parts[0].split("/")[0]
                         ver = parts[1] if len(parts) > 1 else "?"
                         existing = next(
-                            (p for p in packages if p.name == name and p.source == "apt"),
+                            (
+                                p
+                                for p in packages
+                                if p.name == name and p.source == "apt"
+                            ),
                             None,
                         )
                         if existing:
@@ -1203,7 +1211,9 @@ class LinGetApp(App):
                 code, out = await run_cmd(["dnf", "list", "installed"])
                 if code == 0:
                     for line in out.splitlines():
-                        if line.startswith("Last metadata") or line.startswith("Installed"):
+                        if line.startswith("Last metadata") or line.startswith(
+                            "Installed"
+                        ):
                             continue
                         parts = line.split()
                         if len(parts) >= 2 and "." in parts[0]:
@@ -1222,19 +1232,29 @@ class LinGetApp(App):
                 code, out = await run_cmd(["dnf", "check-update"])
                 if code == 0 or code == 100:
                     for line in out.splitlines():
-                        if not line or line.startswith(" ") or line.startswith("Last metadata"):
+                        if (
+                            not line
+                            or line.startswith(" ")
+                            or line.startswith("Last metadata")
+                        ):
                             continue
                         parts = line.split()
                         if len(parts) >= 2 and "." in parts[0]:
                             name = parts[0].rsplit(".", 1)[0]
                             new_version = parts[1]
                             existing = next(
-                                (p for p in packages if p.name == name and p.source == "dnf"),
+                                (
+                                    p
+                                    for p in packages
+                                    if p.name == name and p.source == "dnf"
+                                ),
                                 None,
                             )
                             if existing:
                                 existing.status = PackageStatus.UPDATE
-                                existing.version = f"{existing.version} -> {new_version}"
+                                existing.version = (
+                                    f"{existing.version} -> {new_version}"
+                                )
         except (OSError, asyncio.TimeoutError, ValueError) as e:
             logger.log_exception(f"DNF error: {e}")
             log_msg(f"DNF error: {e}")
@@ -1278,7 +1298,9 @@ class LinGetApp(App):
 
                 code, out = await run_cmd(["brew", "outdated", "--quiet"])
                 if code == 0:
-                    outdated_names = set(line.split()[0] for line in out.splitlines() if line.strip())
+                    outdated_names = set(
+                        line.split()[0] for line in out.splitlines() if line.strip()
+                    )
                     for pkg in packages:
                         if pkg.source == "brew" and pkg.name in outdated_names:
                             pkg.status = PackageStatus.UPDATE
@@ -1325,14 +1347,19 @@ class LinGetApp(App):
             except Exception:
                 pass
             try:
-                self.query_one("#term-log", RichLog).write_line(f"[cyan]SEARCH:[/] {msg}")
+                self.query_one("#term-log", RichLog).write_line(
+                    f"[cyan]SEARCH:[/] {msg}"
+                )
             except Exception:
                 pass
 
         log_msg(f"Searching for '{query}'...")
         found_packages = await do_search(query, self.all_packages, self.current_source)
 
-        if self._plugin_registry and (self.current_source == "all" or self._plugin_registry.get(self.current_source)):
+        if self._plugin_registry and (
+            self.current_source == "all"
+            or self._plugin_registry.get(self.current_source)
+        ):
             log_msg("Searching plugins...")
             try:
                 plugin_results = self._plugin_registry.search_all(query)
@@ -1345,8 +1372,14 @@ class LinGetApp(App):
         if found_packages:
             log_msg(f"Found {len(found_packages)} new packages")
             self.all_packages = [
-                p for p in self.all_packages
-                if not (p.status == PackageStatus.NOT_INSTALLED and (self.current_source == "all" or p.source == self.current_source))
+                p
+                for p in self.all_packages
+                if not (
+                    p.status == PackageStatus.NOT_INSTALLED
+                    and (
+                        self.current_source == "all" or p.source == self.current_source
+                    )
+                )
             ]
             self.all_packages.extend(found_packages)
             self.all_packages = sorted(self.all_packages, key=lambda p: p.name.lower())
@@ -1372,7 +1405,9 @@ class LinGetApp(App):
 
         if self.search_query:
             q = self.search_query.lower()
-            filtered = [p for p in filtered if q in p.name.lower() or q in p.description.lower()]
+            filtered = [
+                p for p in filtered if q in p.name.lower() or q in p.description.lower()
+            ]
 
         table = self.query_one("#package-table", PackageTable)
         table.populate(filtered, self.favorites)
@@ -1383,11 +1418,16 @@ class LinGetApp(App):
         else:
             self.query_one("#info-panel", InfoPanel).package = None
             if self.search_query:
-                self.notify(f"No packages match '{self.search_query}'", severity="warning")
+                self.notify(
+                    f"No packages match '{self.search_query}'", severity="warning"
+                )
             elif self.current_mode == "mode-updates":
                 self.notify("No updates available", severity="information")
             elif self.current_mode == "mode-search":
-                self.notify("Use 'Search for New' tab to find installable packages", severity="information")
+                self.notify(
+                    "Use 'Search for New' tab to find installable packages",
+                    severity="information",
+                )
             elif self.current_source == "favorites":
                 self.notify("No favorite packages found", severity="information")
 
@@ -1455,7 +1495,19 @@ class LinGetApp(App):
         Args:
             event: Option selected event
         """
-        valid_sources = {"all", "apt", "flatpak", "snap", "cargo", "npm", "pip", "favorites", "aur", "dnf", "brew"}
+        valid_sources = {
+            "all",
+            "apt",
+            "flatpak",
+            "snap",
+            "cargo",
+            "npm",
+            "pip",
+            "favorites",
+            "aur",
+            "dnf",
+            "brew",
+        }
         if event.option.id in valid_sources:
             self.current_source = event.option.id
             self._settings["default_source"] = event.option.id
@@ -1479,7 +1531,9 @@ class LinGetApp(App):
             event: Row highlighted event
         """
         row_key = event.row_key.value
-        pkg = next((p for p in self.all_packages if f"{p.source}-{p.name}" == row_key), None)
+        pkg = next(
+            (p for p in self.all_packages if f"{p.source}-{p.name}" == row_key), None
+        )
         if pkg:
             self.update_info_panel(pkg)
 
@@ -1584,8 +1638,12 @@ class LinGetApp(App):
 
         queue_panel = self.query_one("#queue-panel", QueuePanel)
         existing = queue_panel.query("#empty-queue")
-        if not existing and not [t for t in self.tasks if t.status not in ("done", "error")]:
-            queue_panel.mount(Label("No active tasks.", id="empty-queue", classes="dim"))
+        if not existing and not [
+            t for t in self.tasks if t.status not in ("done", "error")
+        ]:
+            queue_panel.mount(
+                Label("No active tasks.", id="empty-queue", classes="dim")
+            )
 
         self.notify("Cleared completed tasks")
 
@@ -1785,13 +1843,18 @@ class LinGetApp(App):
     def action_bulk_install(self):
         """Bulk install selected packages."""
         if not self.selected_packages:
-            self.notify("No packages selected! Press SPACE to select.", severity="warning")
+            self.notify(
+                "No packages selected! Press SPACE to select.", severity="warning"
+            )
             return
 
         packages_to_install: List[Package] = []
         for row_key in self.selected_packages:
             source, name = row_key.split("-", 1)
-            pkg = next((p for p in self.all_packages if p.source == source and p.name == name), None)
+            pkg = next(
+                (p for p in self.all_packages if p.source == source and p.name == name),
+                None,
+            )
             if pkg and pkg.status == PackageStatus.NOT_INSTALLED:
                 packages_to_install.append(pkg)
 
@@ -1813,13 +1876,18 @@ class LinGetApp(App):
     def action_bulk_update(self):
         """Bulk update selected packages."""
         if not self.selected_packages:
-            self.notify("No packages selected! Press SPACE to select.", severity="warning")
+            self.notify(
+                "No packages selected! Press SPACE to select.", severity="warning"
+            )
             return
 
         packages_to_update: List[Package] = []
         for row_key in self.selected_packages:
             source, name = row_key.split("-", 1)
-            pkg = next((p for p in self.all_packages if p.source == source and p.name == name), None)
+            pkg = next(
+                (p for p in self.all_packages if p.source == source and p.name == name),
+                None,
+            )
             if pkg and pkg.status == PackageStatus.UPDATE:
                 packages_to_update.append(pkg)
 
@@ -1915,7 +1983,9 @@ class LinGetApp(App):
                 try:
                     log = self.query_one("#term-log", RichLog)
                     if orphans:
-                        log.write_line(f"[bold yellow]Orphan packages ({len(orphans)}):[/]")
+                        log.write_line(
+                            f"[bold yellow]Orphan packages ({len(orphans)}):[/]"
+                        )
                         for orphan in orphans[:20]:
                             log.write_line(f"  • {orphan}")
                         if len(orphans) > 20:
@@ -1955,10 +2025,16 @@ class LinGetApp(App):
         }
 
         if self.current_source not in cache_configs:
-            self.notify(f"Cache cleaning not supported for {self.current_source}", severity="warning")
+            self.notify(
+                f"Cache cleaning not supported for {self.current_source}",
+                severity="warning",
+            )
             return
 
-        if hasattr(self, "_pending_clean_cache") and self._pending_clean_cache == self.current_source:
+        if (
+            hasattr(self, "_pending_clean_cache")
+            and self._pending_clean_cache == self.current_source
+        ):
             self._pending_clean_cache = None
         else:
             self.notify(
@@ -2066,7 +2142,10 @@ class LinGetApp(App):
                 return
 
             if package.source != "apt":
-                self.notify("Version history only available for apt packages", severity="warning")
+                self.notify(
+                    "Version history only available for apt packages",
+                    severity="warning",
+                )
                 return
 
             log.write_line(f"[cyan]Fetching version history for {package.name}...[/]")
@@ -2130,11 +2209,17 @@ class LinGetApp(App):
                 else:
                     log.write_line("  No versions available in repositories")
 
-                self.notify(f"Version history for {package.name} displayed", severity="information")
+                self.notify(
+                    f"Version history for {package.name} displayed",
+                    severity="information",
+                )
             else:
                 error_msg = stderr.decode("utf-8", errors="replace").strip()
                 log.write_line(f"[red]Failed to fetch versions: {error_msg}[/]")
-                self.notify(f"Version history unavailable for {package.name}", severity="warning")
+                self.notify(
+                    f"Version history unavailable for {package.name}",
+                    severity="warning",
+                )
 
         except Exception as e:
             logger.log_exception(f"Error fetching versions: {e}")
@@ -2151,7 +2236,9 @@ class LinGetApp(App):
 
         def log_msg(msg: str):
             try:
-                self.query_one("#term-log", RichLog).write_line(f"[{task.package.source}] {msg}")
+                self.query_one("#term-log", RichLog).write_line(
+                    f"[{task.package.source}] {msg}"
+                )
             except Exception:
                 pass
 
@@ -2298,7 +2385,9 @@ class LinGetApp(App):
             else:
                 if return_code == 126 or return_code == 127:
                     task.error_type = ErrorType.NOT_FOUND
-                    task.error_message = f"Command not found or not executable (exit {return_code})"
+                    task.error_message = (
+                        f"Command not found or not executable (exit {return_code})"
+                    )
                 elif return_code == 1 and source == "apt":
                     task.error_type = ErrorType.CONFLICT
                     task.error_message = "Package conflict or dependency issue"
@@ -2310,8 +2399,13 @@ class LinGetApp(App):
                     task.error_message = f"Failed with exit code {return_code}"
 
                 update_status("error")
-                log_msg(f"[red]Failed [{task.error_type.value}]:[/] {task.error_message}")
-                self.notify(f"Failed ({task.error_type.value}): {action} {name}", severity="error")
+                log_msg(
+                    f"[red]Failed [{task.error_type.value}]:[/] {task.error_message}"
+                )
+                self.notify(
+                    f"Failed ({task.error_type.value}): {action} {name}",
+                    severity="error",
+                )
 
         except asyncio.TimeoutError:
             task.error_type = ErrorType.TIMEOUT
@@ -2335,7 +2429,11 @@ class LinGetApp(App):
             elif "lock" in error_str or ("dpkg" in error_str and "lock" in error_str):
                 task.error_type = ErrorType.LOCKED
                 task.error_message = "Package manager is locked by another process"
-            elif "network" in error_str or "timeout" in error_str or "connection" in error_str:
+            elif (
+                "network" in error_str
+                or "timeout" in error_str
+                or "connection" in error_str
+            ):
                 task.error_type = ErrorType.NETWORK
                 task.error_message = "Network error or timeout"
             elif "not found" in error_str or "no package" in error_str:
@@ -2356,7 +2454,9 @@ class LinGetApp(App):
 
             update_status("error")
             log_msg(f"[red]Error [{task.error_type.value}]:[/] {task.error_message}")
-            self.notify(f"Error ({task.error_type.value}): {action} {name}", severity="error")
+            self.notify(
+                f"Error ({task.error_type.value}): {action} {name}", severity="error"
+            )
         finally:
             save_task(
                 package_name=task.package.name,
@@ -2390,7 +2490,9 @@ class LinGetApp(App):
                     if "=" in line:
                         k, v = line.strip().split("=", 1)
                         os_info[k] = v.strip('"')
-            system_name = f"{os_info.get('NAME', 'Unknown')} {os_info.get('VERSION_ID', '')}"
+            system_name = (
+                f"{os_info.get('NAME', 'Unknown')} {os_info.get('VERSION_ID', '')}"
+            )
         except (OSError, IOError):
             system_name = "Unknown Linux"
 
@@ -2398,7 +2500,9 @@ class LinGetApp(App):
         for pkg in self.all_packages:
             if pkg.source not in packages_by_source:
                 packages_by_source[pkg.source] = []
-            packages_by_source[pkg.source].append({"name": pkg.name, "version": pkg.version})
+            packages_by_source[pkg.source].append(
+                {"name": pkg.name, "version": pkg.version}
+            )
 
         total_count = len(self.all_packages)
         export_data = {
@@ -2420,7 +2524,10 @@ class LinGetApp(App):
         try:
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(export_data, f, indent=2, ensure_ascii=False)
-            self.notify(f"Exported {total_count} packages to {json_path}", severity="information")
+            self.notify(
+                f"Exported {total_count} packages to {json_path}",
+                severity="information",
+            )
         except (OSError, IOError) as e:
             self.notify(f"Failed to export JSON: {e}", severity="error")
             return
@@ -2507,7 +2614,9 @@ class LinGetApp(App):
                 continue
 
         if not import_data or not selected_file:
-            self.notify("No valid package backup files found", severity="error", timeout=5.0)
+            self.notify(
+                "No valid package backup files found", severity="error", timeout=5.0
+            )
             return
 
         source_counts: Dict[str, int] = {}
@@ -2530,7 +2639,9 @@ class LinGetApp(App):
         try:
             log = self.query_one("#term-log", RichLog)
             log.write_line(f"[cyan]IMPORT:[/] Found backup: {selected_file}")
-            log.write_line(f"[cyan]IMPORT:[/] {', '.join(f'{count} {source.upper()}' for source, count in sorted(source_counts.items()))}")
+            log.write_line(
+                f"[cyan]IMPORT:[/] {', '.join(f'{count} {source.upper()}' for source, count in sorted(source_counts.items()))}"
+            )
         except Exception:
             pass
 
@@ -2559,7 +2670,10 @@ class LinGetApp(App):
             pass
 
         if not to_install:
-            self.notify(f"All {len(already_installed)} packages already installed", severity="information")
+            self.notify(
+                f"All {len(already_installed)} packages already installed",
+                severity="information",
+            )
             return
 
         if hasattr(self, "_pending_import") and self._pending_import == selected_file:
@@ -2589,10 +2703,14 @@ class LinGetApp(App):
             asyncio.ensure_future(self.run_task(task))
             queued_count += 1
 
-        self.notify(f"Importing {queued_count} packages from backup...", severity="information")
+        self.notify(
+            f"Importing {queued_count} packages from backup...", severity="information"
+        )
         try:
             log = self.query_one("#term-log", RichLog)
-            log.write_line(f"[green]Import queued:[/] {queued_count} packages ready for installation")
+            log.write_line(
+                f"[green]Import queued:[/] {queued_count} packages ready for installation"
+            )
         except Exception:
             pass
 
