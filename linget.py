@@ -47,6 +47,7 @@ from linget.models import (
 )
 from linget.search import search_new_packages
 from linget.history import save_task, load_task_history
+from linget.settings import load_settings, save_settings
 
 # --- Custom Widgets ---
 
@@ -229,6 +230,275 @@ class QueuePanel(VerticalScroll):
         return row
 
 
+# --- Command Palette ---
+
+
+class LingetCommandPalette(CommandPalette):
+    """Custom command palette for LinGet with all app actions."""
+
+    def on_mount(self):
+        """Register all LinGet commands when palette mounts."""
+        # Package Actions
+        self.add_command(
+            "Install selected package",
+            self.action_install,
+            tooltip="Install the currently selected package (i)",
+        )
+        self.add_command(
+            "Update selected package",
+            self.action_update,
+            tooltip="Update the currently selected package (u)",
+        )
+        self.add_command(
+            "Remove selected package",
+            self.action_remove,
+            tooltip="Remove the currently selected package (r)",
+        )
+        self.add_command(
+            "Toggle select package",
+            self.action_toggle_select,
+            tooltip="Toggle selection for bulk operations (Space)",
+        )
+        self.add_command(
+            "Select all packages",
+            self.action_select_all,
+            tooltip="Select all visible packages (a)",
+        )
+        self.add_command(
+            "Deselect all packages",
+            self.action_deselect_all,
+            tooltip="Clear all selections (A)",
+        )
+        self.add_command(
+            "Bulk install selected",
+            self.action_bulk_install,
+            tooltip="Install all selected packages (I)",
+        )
+        self.add_command(
+            "Bulk update selected",
+            self.action_bulk_update,
+            tooltip="Update all selected packages (U)",
+        )
+
+        # Navigation
+        self.add_command(
+            "Focus search",
+            self.action_focus_search,
+            tooltip="Focus the search input (/)",
+        )
+        self.add_command(
+            "Change to All Sources",
+            self._set_source_all,
+            tooltip="View all package sources",
+        )
+        self.add_command(
+            "Change to Favorites",
+            self._set_source_favorites,
+            tooltip="View favorite packages",
+        )
+        self.add_command(
+            "Change to APT",
+            self._set_source_apt,
+            tooltip="View APT packages",
+        )
+        self.add_command(
+            "Change to Flatpak",
+            self._set_source_flatpak,
+            tooltip="View Flatpak applications",
+        )
+        self.add_command(
+            "View All Packages mode",
+            self._set_mode_all,
+            tooltip="Show all packages",
+        )
+        self.add_command(
+            "View Updates mode",
+            self._set_mode_updates,
+            tooltip="Show only packages with updates",
+        )
+        self.add_command(
+            "Search for New mode",
+            self._set_mode_search,
+            tooltip="Search for new packages to install",
+        )
+
+        # Information & Utilities
+        self.add_command(
+            "Show dependencies",
+            self.action_show_dependencies,
+            tooltip="Show package dependencies (d)",
+        )
+        self.add_command(
+            "Show version history",
+            self.action_show_versions,
+            tooltip="Show available versions for package (v)",
+        )
+        self.add_command(
+            "Show orphan packages",
+            self.action_show_orphans,
+            tooltip="Find orphaned packages that can be removed (o)",
+        )
+        self.add_command(
+            "Toggle favorite",
+            self.action_toggle_favorite,
+            tooltip="Add/remove current package from favorites (f)",
+        )
+        self.add_command(
+            "Clean cache",
+            self.action_clean_cache,
+            tooltip="Clean package manager cache (X)",
+        )
+
+        # Task Management
+        self.add_command(
+            "Refresh package list",
+            self.action_refresh_data,
+            tooltip="Refresh all package data (Ctrl+r)",
+        )
+        self.add_command(
+            "Clear completed tasks",
+            self.action_clear_tasks,
+            tooltip="Remove finished tasks from queue (c)",
+        )
+        self.add_command(
+            "Cancel running task",
+            self.action_cancel_task,
+            tooltip="Cancel the currently running task (Escape)",
+        )
+        self.add_command(
+            "Retry failed task",
+            self.action_retry_task,
+            tooltip="Retry the last failed task (R)",
+        )
+        self.add_command(
+            "Undo last action",
+            self.action_undo,
+            tooltip="Undo the last package operation (z)",
+        )
+
+        # Exit
+        self.add_command(
+            "Quit LinGet",
+            self.action_quit,
+            tooltip="Exit the application (q)",
+        )
+
+    # Source navigation helpers
+    def _set_source_all(self):
+        self._set_source("all")
+
+    def _set_source_favorites(self):
+        self._set_source("favorites")
+
+    def _set_source_apt(self):
+        self._set_source("apt")
+
+    def _set_source_flatpak(self):
+        self._set_source("flatpak")
+
+    def _set_source(self, source_id: str):
+        app = self.app
+        app.current_source = source_id
+        app.apply_filters()
+        self.dismiss()
+
+    # Mode navigation helpers
+    def _set_mode_all(self):
+        self._set_mode("mode-all")
+
+    def _set_mode_updates(self):
+        self._set_mode("mode-updates")
+
+    def _set_mode_search(self):
+        self._set_mode("mode-search")
+
+    def _set_mode(self, mode_id: str):
+        app = self.app
+        app.current_mode = mode_id
+        app.apply_filters()
+        self.dismiss()
+
+    # Action wrappers that dismiss palette and trigger app actions
+    def action_install(self):
+        self.app.action_install()
+        self.dismiss()
+
+    def action_update(self):
+        self.app.action_update()
+        self.dismiss()
+
+    def action_remove(self):
+        self.app.action_remove()
+        self.dismiss()
+
+    def action_toggle_select(self):
+        self.app.action_toggle_select()
+        self.dismiss()
+
+    def action_select_all(self):
+        self.app.action_select_all()
+        self.dismiss()
+
+    def action_deselect_all(self):
+        self.app.action_deselect_all()
+        self.dismiss()
+
+    def action_bulk_install(self):
+        self.app.action_bulk_install()
+        self.dismiss()
+
+    def action_bulk_update(self):
+        self.app.action_bulk_update()
+        self.dismiss()
+
+    def action_focus_search(self):
+        self.app.action_focus_search()
+        self.dismiss()
+
+    def action_show_dependencies(self):
+        asyncio.ensure_future(self.app.action_show_dependencies())
+        self.dismiss()
+
+    def action_show_versions(self):
+        asyncio.ensure_future(self.app.action_show_versions())
+        self.dismiss()
+
+    def action_show_orphans(self):
+        asyncio.ensure_future(self.app.action_show_orphans())
+        self.dismiss()
+
+    def action_toggle_favorite(self):
+        self.app.action_toggle_favorite()
+        self.dismiss()
+
+    def action_clean_cache(self):
+        asyncio.ensure_future(self.app.action_clean_cache())
+        self.dismiss()
+
+    def action_refresh_data(self):
+        self.app.action_refresh_data()
+        self.dismiss()
+
+    def action_clear_tasks(self):
+        self.app.action_clear_tasks()
+        self.dismiss()
+
+    def action_cancel_task(self):
+        self.app.action_cancel_task()
+        self.dismiss()
+
+    def action_retry_task(self):
+        self.app.action_retry_task()
+        self.dismiss()
+
+    def action_undo(self):
+        self.app.action_undo()
+        self.dismiss()
+
+    def action_quit(self):
+        self.app.action_quit()
+
+
 # --- Main Application ---
 
 
@@ -371,7 +641,9 @@ class LinGetApp(App):
         Binding("escape", "cancel_task", "Cancel", show=True),
         Binding("/", "focus_search", "Search", show=True),
         Binding("ctrl+r", "refresh_data", "Refresh", show=True),
+        Binding("ctrl+e", "export_packages", "Export", show=True),
         Binding("c", "clear_tasks", "Clear Queue", show=True),
+        Binding("ctrl+i", "import_packages", "Import", show=True),
     ]
 
     all_packages = []
@@ -383,6 +655,7 @@ class LinGetApp(App):
     selected_packages = set()  # Step 20: Track bulk selected packages by row_key
     _last_action = None  # Step 25: Track last action for undo (package, action)
     favorites = set()  # Step 22: Track favorited packages
+    _settings = {}  # Step 71: User settings persistence
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True, icon="📦")
@@ -448,8 +721,15 @@ class LinGetApp(App):
 
     def on_mount(self):
         self.title = "LinGet - Universal Package Manager"
-        self.theme = "monokai"
-        self._offline_mode = False  # Step 35: Track offline state
+
+        # Step 71: Load settings from persistence
+        self._settings = load_settings()
+
+        # Apply loaded settings
+        self.theme = self._settings.get("theme", "monokai")
+        self._offline_mode = self._settings.get("offline_mode", False)
+        self.current_source = self._settings.get("default_source", "all")
+
         # Step 43: Check for macOS and Homebrew
         self._is_macos = sys.platform == "darwin"
         self._has_brew = False
@@ -457,15 +737,66 @@ class LinGetApp(App):
             import shutil
 
             self._has_brew = shutil.which("brew") is not None
+
         # Step 22: Load favorites from persistence
         self.favorites = load_favorites()
+
+        # Apply UI state from settings (must happen after compose)
+        self.call_after_init(self._apply_settings_to_ui)
+
         self.action_refresh_data()
 
-        # Step 34: Set up background refresh every 10 minutes
-        self.set_interval(600, self._background_refresh)
+        # Step 34: Set up background refresh if enabled
+        if self._settings.get("auto_refresh", True):
+            self.set_interval(
+                self._settings.get("refresh_interval", 600), self._background_refresh
+            )
 
         # Step 35: Check network connectivity periodically
         self.set_interval(30, self._check_network)
+
+    def _apply_settings_to_ui(self):
+        """Step 71: Apply loaded settings to UI widgets."""
+        try:
+            # Set offline toggle
+            offline_switch = self.query_one("#offline-toggle", Switch)
+            offline_switch.value = self._offline_mode
+        except Exception:
+            pass
+
+        try:
+            # Set auto-refresh toggle
+            auto_refresh_switch = self.query_one("#auto-refresh-toggle", Switch)
+            auto_refresh_switch.value = self._settings.get("auto_refresh", True)
+        except Exception:
+            pass
+
+        try:
+            # Set source list selection
+            source_list = self.query_one("#source-list", OptionList)
+            source_list.highlighted = self._get_source_index(self.current_source)
+        except Exception:
+            pass
+
+    def _get_source_index(self, source_id: str) -> int:
+        """Step 71: Convert source ID to OptionList index."""
+        source_order = [
+            "all",
+            "favorites",
+            "apt",
+            "flatpak",
+            "snap",
+            "aur",
+            "dnf",
+            "brew",
+            "cargo",
+            "npm",
+            "pip",
+        ]
+        try:
+            return source_order.index(source_id)
+        except ValueError:
+            return 0  # Default to "all"
 
     def _background_refresh(self):
         """Step 34: Refresh package list in background."""
@@ -491,7 +822,7 @@ class LinGetApp(App):
             if self._offline_mode:
                 self._offline_mode = False
                 self.notify("Back online", severity="information")
-        except:
+        except Exception:
             if not self._offline_mode:
                 self._offline_mode = True
                 self.notify(
@@ -508,7 +839,7 @@ class LinGetApp(App):
             # Step 10: Update loading message dynamically
             try:
                 self.query_one("#loading-msg", Label).update(msg)
-            except:
+            except Exception:
                 pass
             self.query_one("#term-log", RichLog).write_line(f"[cyan]INFO:[/] {msg}")
 
@@ -847,7 +1178,7 @@ class LinGetApp(App):
         def log_msg(msg):
             try:
                 self.query_one("#loading-msg", Label).update(msg)
-            except:
+            except Exception:
                 pass
             self.query_one("#term-log", Log).write_line(f"[cyan]SEARCH:[/] {msg}")
 
@@ -940,12 +1271,16 @@ class LinGetApp(App):
         """Handle offline mode and auto-refresh toggles."""
         if event.switch.id == "offline-toggle":
             self._offline_mode = event.value
+            self._settings["offline_mode"] = event.value
+            save_settings(self._settings)
             if self._offline_mode:
                 self.notify("Offline mode enabled", severity="warning")
             else:
                 self.notify("Online mode restored", severity="information")
         elif event.switch.id == "auto-refresh-toggle":
             # Toggle background refresh
+            self._settings["auto_refresh"] = event.value
+            save_settings(self._settings)
             if event.value:
                 self.set_interval(600, self._background_refresh)
                 self.notify("Auto-refresh enabled (10 min)", severity="information")
@@ -978,6 +1313,9 @@ class LinGetApp(App):
             "brew",
         ):
             self.current_source = event.option.id
+            # Step 71: Save source setting
+            self._settings["default_source"] = event.option.id
+            save_settings(self._settings)
             self.apply_filters()
 
     def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
@@ -999,6 +1337,10 @@ class LinGetApp(App):
         search = self.query_one("#search", Input)
         search.focus()
         search.cursor_position = len(search.value)
+
+    def action_command_palette(self):
+        """Show the command palette (Step 55)."""
+        self.push_screen(LingetCommandPalette())
 
     def action_refresh_data(self):
         self.query_one("#loading-overlay").display = True
@@ -1726,7 +2068,7 @@ class LinGetApp(App):
                 await proc.communicate()
                 if proc.returncode != 0:
                     aur_helper = "paru"
-            except:
+            except Exception:
                 aur_helper = "paru"
 
             if action in ("install", "update"):
@@ -1833,7 +2175,7 @@ class LinGetApp(App):
             if task.id in self._running_tasks:
                 try:
                     self._running_tasks[task.id].kill()
-                except:
+                except Exception:
                     pass
 
         except Exception as e:
@@ -1887,6 +2229,280 @@ class LinGetApp(App):
             )
             # Clean up running task reference
             self._running_tasks.pop(task.id, None)
+
+    async def action_export_packages(self):
+        """Step 74: Export installed packages to JSON/CSV for backup."""
+        import csv
+        import socket
+        from datetime import datetime
+        from pathlib import Path
+
+        if not self.all_packages:
+            self.notify("No packages available to export", severity="warning")
+            return
+
+        # Get system info
+        timestamp = datetime.now()
+        date_str = timestamp.strftime("%Y-%m-%d")
+        datetime_iso = timestamp.isoformat()
+        hostname = socket.gethostname()
+
+        # Determine OS info
+        try:
+            with open("/etc/os-release") as f:
+                os_info = {}
+                for line in f:
+                    if "=" in line:
+                        k, v = line.strip().split("=", 1)
+                        os_info[k] = v.strip('"')
+            system_name = (
+                f"{os_info.get('NAME', 'Unknown')} {os_info.get('VERSION_ID', '')}"
+            )
+        except Exception:
+            system_name = "Unknown Linux"
+
+        # Group packages by source
+        packages_by_source = {}
+        for pkg in self.all_packages:
+            if pkg.source not in packages_by_source:
+                packages_by_source[pkg.source] = []
+            packages_by_source[pkg.source].append(
+                {
+                    "name": pkg.name,
+                    "version": pkg.version,
+                }
+            )
+
+        # Prepare export data
+        total_count = len(self.all_packages)
+        export_data = {
+            "export_date": datetime_iso,
+            "system": system_name,
+            "hostname": hostname,
+            "total_packages": total_count,
+            "packages": packages_by_source,
+        }
+
+        # Determine output directory (prefer Downloads, fallback to Documents)
+        home = Path.home()
+        downloads_dir = home / "Downloads"
+        docs_dir = home / "Documents"
+        output_dir = downloads_dir if downloads_dir.exists() else docs_dir
+
+        # Export to JSON
+        json_filename = f"linget-backup-{date_str}.json"
+        json_path = output_dir / json_filename
+
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
+            self.notify(
+                f"Exported {total_count} packages to {json_path}",
+                severity="information",
+            )
+        except Exception as e:
+            self.notify(f"Failed to export JSON: {e}", severity="error")
+            return
+
+        # Also export to CSV
+        csv_filename = f"linget-backup-{date_str}.csv"
+        csv_path = output_dir / csv_filename
+
+        try:
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["source", "name", "version", "export_date"])
+                for pkg in self.all_packages:
+                    writer.writerow([pkg.source, pkg.name, pkg.version, datetime_iso])
+        except Exception as e:
+            self.notify(f"Failed to export CSV: {e}", severity="error")
+            return
+
+        # Log to terminal
+        log = self.query_one("#term-log", RichLog)
+        log.write_line(f"[green]Exported {total_count} packages:[/]")
+        log.write_line(f"  JSON: {json_path}")
+        log.write_line(f"  CSV: {csv_path}")
+        for source, pkgs in sorted(packages_by_source.items()):
+            log.write_line(f"  {source}: {len(pkgs)} packages")
+
+    async def action_import_packages(self):
+        """Step 75: Import packages from backup JSON file."""
+        from pathlib import Path
+        import json
+        import os
+
+        # Look for backup files in common locations
+        search_paths = [
+            Path.home() / "Downloads",
+            Path.home() / "Documents",
+            Path.home() / ".config" / "linget",
+            Path.home(),
+        ]
+
+        # Find all potential backup files
+        backup_files = []
+        for search_path in search_paths:
+            if search_path.exists():
+                for ext in ["*.json", "*.backup", "*.linget"]:
+                    backup_files.extend(search_path.glob(ext))
+
+        # Also check for specific filenames
+        specific_names = [
+            "linget-backup.json",
+            "packages.json",
+            "favorites.json",
+            "task_history.json",
+        ]
+        for search_path in search_paths:
+            for name in specific_names:
+                file_path = search_path / name
+                if file_path.exists() and file_path not in backup_files:
+                    backup_files.append(file_path)
+
+        if not backup_files:
+            self.notify(
+                "No backup files found in Downloads, Documents, or ~/.config/linget/",
+                severity="warning",
+                timeout=5.0,
+            )
+            return
+
+        # Show file picker using a simple approach - take the most recent backup
+        backup_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        # Try to parse each backup file until we find a valid one
+        import_data = None
+        selected_file = None
+
+        for backup_file in backup_files[:5]:  # Check top 5 most recent
+            try:
+                with open(backup_file, "r") as f:
+                    data = json.load(f)
+
+                # Validate format - can be either:
+                # 1. List of packages: [{"source": "apt", "name": "git"}, ...]
+                # 2. Object with packages key: {"packages": [...]}
+                packages = None
+                if isinstance(data, list):
+                    packages = data
+                elif isinstance(data, dict) and "packages" in data:
+                    packages = data["packages"]
+
+                if packages and len(packages) > 0:
+                    import_data = packages
+                    selected_file = backup_file
+                    break
+            except (json.JSONDecodeError, IOError, KeyError):
+                continue
+
+        if not import_data or not selected_file:
+            self.notify(
+                "No valid package backup files found",
+                severity="error",
+                timeout=5.0,
+            )
+            return
+
+        # Count packages by source
+        source_counts = {}
+        valid_packages = []
+
+        for item in import_data:
+            if not isinstance(item, dict):
+                continue
+            source = item.get("source", "")
+            name = item.get("name", "")
+
+            if source and name:
+                valid_packages.append(item)
+                source_counts[source] = source_counts.get(source, 0) + 1
+
+        if not valid_packages:
+            self.notify(
+                "No valid packages found in backup file",
+                severity="error",
+            )
+            return
+
+        # Build preview message
+        count_msg = ", ".join(
+            f"{count} {source.upper()}"
+            for source, count in sorted(source_counts.items())
+        )
+
+        log = self.query_one("#term-log", RichLog)
+        log.write_line(f"[cyan]IMPORT:[/] Found backup: {selected_file}")
+        log.write_line(f"[cyan]IMPORT:[/] {count_msg}")
+
+        # Check which packages are already installed
+        installed_set = {f"{p.source}-{p.name}" for p in self.all_packages}
+
+        to_install = []
+        already_installed = []
+
+        for item in valid_packages:
+            row_key = f"{item['source']}-{item['name']}"
+            if row_key in installed_set:
+                already_installed.append(item)
+            else:
+                to_install.append(item)
+
+        # Show preview dialog in log
+        log.write_line(f"[bold]Import Preview:[/]")
+        log.write_line(f"  Total packages in backup: {len(valid_packages)}")
+        log.write_line(f"  Already installed: {len(already_installed)}")
+        log.write_line(f"  Ready to install: {len(to_install)}")
+
+        if to_install:
+            for source, count in sorted(source_counts.items()):
+                log.write_line(f"    - {source.upper()}: {count}")
+
+        if not to_install:
+            self.notify(
+                f"All {len(already_installed)} packages already installed",
+                severity="information",
+            )
+            return
+
+        # Store pending import for confirmation (press Ctrl+I twice pattern)
+        if hasattr(self, "_pending_import") and self._pending_import == selected_file:
+            # Confirmed - proceed with import
+            self._pending_import = None
+        else:
+            # First press - set pending and ask for confirmation
+            self._pending_import = selected_file
+            self.notify(
+                f"Import {len(to_install)} packages? Press Ctrl+I again to confirm",
+                severity="information",
+                timeout=5.0,
+            )
+            return
+
+        # Queue all packages for installation
+        queued_count = 0
+        for item in to_install:
+            pkg = Package(
+                name=item["name"],
+                version=item.get("version", "?"),
+                source=item["source"],
+                status=PackageStatus.NOT_INSTALLED,
+                desc=item.get("description", f"Imported from backup"),
+            )
+
+            task = Task(pkg, "install")
+            self.tasks.append(task)
+            self.query_one("#queue-panel", QueuePanel).add_task(task)
+            asyncio.ensure_future(self.run_task(task))
+            queued_count += 1
+
+        self.notify(
+            f"Importing {queued_count} packages from backup...",
+            severity="information",
+        )
+        log.write_line(
+            f"[green]Import queued:[/] {queued_count} packages ready for installation"
+        )
 
 
 if __name__ == "__main__":
