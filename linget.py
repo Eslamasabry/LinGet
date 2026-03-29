@@ -33,6 +33,7 @@ from textual.widgets.option_list import Option
 import asyncio
 import re
 import json
+import sys
 
 # Import modular components
 from linget.models import (
@@ -74,6 +75,9 @@ class PackageTable(DataTable):
                 "npm": "green",
                 "pip": "cyan",
                 "snap": "magenta",
+                "aur": "cyan",
+                "dnf": "blue",
+                "brew": "orange",
             }.get(pkg.source, "white")
 
             source_logo = {
@@ -83,6 +87,9 @@ class PackageTable(DataTable):
                 "npm": " NPM",
                 "pip": " PIP",
                 "snap": "📦 Snap",
+                "aur": "🗼 AUR",
+                "dnf": "🎩 DNF",
+                "brew": "🍺 Brew",
             }.get(pkg.source, pkg.source.upper())
 
             # Use composite key to avoid collisions across package managers
@@ -134,6 +141,9 @@ class InfoPanel(VerticalScroll):
             "npm": " NPM",
             "pip": " PIP",
             "snap": "📦 Snap",
+            "aur": "🗼 AUR",
+            "dnf": "🎩 DNF",
+            "brew": "🍺 Brew",
         }.get(p.source, p.source.upper())
 
         return f"""
@@ -381,17 +391,21 @@ class LinGetApp(App):
             with Horizontal(id="content-row"):
                 with Vertical(id="sidebar"):
                     yield Label("Sources", classes="sidebar-title")
-                    yield OptionList(
+                    source_list = OptionList(
                         Option("🌍 All Sources", id="all"),
                         Option("⭐ Favorites", id="favorites"),
                         Option(" APT Packages", id="apt"),
                         Option("󰏖 Flatpak Apps", id="flatpak"),
                         Option("📦 Snap Packages", id="snap"),
+                        Option("🗼 AUR Packages", id="aur"),
+                        Option("🎩 DNF Packages", id="dnf"),
+                        Option("🍺 Homebrew", id="brew"),
                         Option(" Cargo Crates", id="cargo"),
                         Option(" NPM Packages", id="npm"),
                         Option(" PIP Packages", id="pip"),
                         id="source-list",
                     )
+                    yield source_list
 
                 with Vertical(id="content-area"):
                     yield Tabs(
@@ -436,6 +450,13 @@ class LinGetApp(App):
         self.title = "LinGet - Universal Package Manager"
         self.theme = "monokai"
         self._offline_mode = False  # Step 35: Track offline state
+        # Step 43: Check for macOS and Homebrew
+        self._is_macos = sys.platform == "darwin"
+        self._has_brew = False
+        if self._is_macos:
+            import shutil
+
+            self._has_brew = shutil.which("brew") is not None
         # Step 22: Load favorites from persistence
         self.favorites = load_favorites()
         self.action_refresh_data()
@@ -643,6 +664,175 @@ class LinGetApp(App):
         except Exception as e:
             log_msg(f"Snap error: {e}")
 
+        log_msg("Fetching AUR packages...")
+        try:
+            # Check for yay first, fallback to paru
+            aur_helper = None
+            for helper in ["yay", "paru"]:
+                proc = await asyncio.create_subprocess_exec(
+                    "which",
+                    helper,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+                if proc.returncode == 0:
+                    aur_helper = helper
+                    break
+
+            if aur_helper:
+                # Get all installed packages from yay/paru
+                code, out = await run_cmd([aur_helper, "-Q"])
+                if code == 0:
+                    # Get official packages to filter out AUR-only packages
+                    code_official, out_official = await run_cmd(["pacman", "-Qn"])
+                    official_packages = set()
+                    if code_official == 0:
+                        for line in out_official.splitlines():
+                            parts = line.split()
+                            if len(parts) >= 1:
+                                official_packages.add(parts[0])
+
+                    for line in out.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            name = parts[0]
+                            version = parts[1]
+                            # Only include if not in official repos (AUR package)
+                            if name not in official_packages:
+                                packages.append(
+                                    Package(
+                                        name,
+                                        version,
+                                        "aur",
+                                        PackageStatus.INSTALLED,
+                                        desc="AUR Package",
+                                    )
+                                )
+            else:
+                log_msg("No AUR helper found (yay/paru)")
+        except Exception as e:
+            log_msg(f"AUR error: {e}")
+
+        log_msg("Fetching DNF packages...")
+        try:
+            # Check if dnf is available
+            proc = await asyncio.create_subprocess_exec(
+                "which",
+                "dnf",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            if proc.returncode == 0:
+                code, out = await run_cmd(["dnf", "list", "installed"])
+                if code == 0:
+                    for line in out.splitlines():
+                        # Skip header lines
+                        if line.startswith("Last metadata") or line.startswith(
+                            "Installed"
+                        ):
+                            continue
+                        # Parse format: name version release arch
+                        parts = line.split()
+                        if len(parts) >= 2 and "." in parts[0]:
+                            # Extract name from "name.arch" format
+                            name = parts[0].rsplit(".", 1)[0]
+                            version = parts[1]
+                            packages.append(
+                                Package(
+                                    name,
+                                    version,
+                                    "dnf",
+                                    PackageStatus.INSTALLED,
+                                    desc="DNF Package",
+                                )
+                            )
+
+                # Check for updates using dnf check-update
+                code, out = await run_cmd(["dnf", "check-update"])
+                if code == 0 or code == 100:  # 100 means updates available
+                    for line in out.splitlines():
+                        # Skip empty lines and headers
+                        if (
+                            not line
+                            or line.startswith(" ")
+                            or line.startswith("Last metadata")
+                        ):
+                            continue
+                        parts = line.split()
+                        if len(parts) >= 2 and "." in parts[0]:
+                            name = parts[0].rsplit(".", 1)[0]
+                            new_version = parts[1]
+                            existing = next(
+                                (
+                                    p
+                                    for p in packages
+                                    if p.name == name and p.source == "dnf"
+                                ),
+                                None,
+                            )
+                            if existing:
+                                existing.status = PackageStatus.UPDATE
+                                existing.version = (
+                                    f"{existing.version} -> {new_version}"
+                                )
+        except Exception as e:
+            log_msg(f"DNF error: {e}")
+
+        # Step 43: Homebrew Support (macOS only)
+        if self._is_macos and self._has_brew:
+            log_msg("Fetching Homebrew packages...")
+            try:
+                # Get installed formulae with versions
+                code, out = await run_cmd(["brew", "list", "--versions", "--formula"])
+                if code == 0:
+                    for line in out.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            name = parts[0]
+                            # Multiple versions can be installed; show first
+                            version = parts[1]
+                            packages.append(
+                                Package(
+                                    name,
+                                    version,
+                                    "brew",
+                                    PackageStatus.INSTALLED,
+                                    desc="Homebrew Formula",
+                                )
+                            )
+
+                # Get installed casks with versions
+                code, out = await run_cmd(["brew", "list", "--versions", "--cask"])
+                if code == 0:
+                    for line in out.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            name = parts[0]
+                            version = parts[1]
+                            packages.append(
+                                Package(
+                                    name,
+                                    version,
+                                    "brew",
+                                    PackageStatus.INSTALLED,
+                                    desc="Homebrew Cask",
+                                )
+                            )
+
+                # Check for outdated packages
+                code, out = await run_cmd(["brew", "outdated", "--quiet"])
+                if code == 0:
+                    outdated_names = set(
+                        line.split()[0] for line in out.splitlines() if line.strip()
+                    )
+                    for pkg in packages:
+                        if pkg.source == "brew" and pkg.name in outdated_names:
+                            pkg.status = PackageStatus.UPDATE
+            except Exception as e:
+                log_msg(f"Homebrew error: {e}")
+
         # Update application state (happens natively on the async event loop thread)
         self.all_packages = sorted(packages, key=lambda p: p.name.lower())
 
@@ -783,6 +973,9 @@ class LinGetApp(App):
             "npm",
             "pip",
             "favorites",
+            "aur",
+            "dnf",
+            "brew",
         ):
             self.current_source = event.option.id
             self.apply_filters()
@@ -1256,6 +1449,8 @@ class LinGetApp(App):
             "cargo": [["cargo", "cache", "--autoclean"]],
             "npm": [["npm", "cache", "clean", "--force"]],
             "pip": [["pip", "cache", "purge"]],
+            "aur": [["yay", "-Sc", "--noconfirm"]],
+            "dnf": [["pkexec", "dnf", "clean", "all"]],
         }
 
         if self.current_source not in cache_configs:
@@ -1518,6 +1713,42 @@ class LinGetApp(App):
                 cmd = ["pkexec", "snap", "remove", name]
             elif action == "update":
                 cmd = ["pkexec", "snap", "refresh", name]
+        elif source == "aur":
+            # Check for yay first, fallback to paru
+            aur_helper = "yay"
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "which",
+                    "yay",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+                if proc.returncode != 0:
+                    aur_helper = "paru"
+            except:
+                aur_helper = "paru"
+
+            if action in ("install", "update"):
+                cmd = [aur_helper, "-S", "--noconfirm", name]
+            elif action == "remove":
+                cmd = [aur_helper, "-R", "--noconfirm", name]
+        elif source == "dnf":
+            base = ["pkexec", "dnf", "-y"]
+            if action == "install":
+                cmd = base + ["install", name]
+            elif action == "remove":
+                cmd = base + ["remove", name]
+            elif action == "update":
+                cmd = base + ["upgrade", name]
+        elif source == "brew":
+            # Step 43: Homebrew commands
+            if action == "install":
+                cmd = ["brew", "install", name]
+            elif action == "remove":
+                cmd = ["brew", "uninstall", name]
+            elif action == "update":
+                cmd = ["brew", "upgrade", name]
 
         if not cmd:
             log_msg(f"[red]Error:[/] Unsupported action/source combination.")
