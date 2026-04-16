@@ -2,7 +2,7 @@ use super::app::{
     action_label, App, ChangelogState, PendingAction, PreflightCertainty, PreflightRiskLevel,
     PreflightSummary, MIN_HEIGHT, MIN_WIDTH,
 };
-use super::format::{truncate_middle_to_width, truncate_to_width};
+use super::format::truncate_to_width;
 use super::theme::*;
 use super::update_center;
 use crate::cli::tui::components::dashboard::draw_dashboard;
@@ -14,20 +14,16 @@ pub use crate::cli::tui::components::layout::LayoutRegions;
 use crate::cli::tui::components::packages::draw_packages_panel;
 use crate::cli::tui::components::sources::draw_sources_panel;
 use crate::cli::tui::state::filters::{Filter, Focus, ViewMode};
-use crate::cli::tui::state::queue::{
-    FailureCategory, QueueClinicActionability, QueueFailureFilter, QueueJourneyLane,
-};
-#[cfg(test)]
-use crate::models::history::TaskQueueAction;
-use crate::models::history::{TaskQueueEntry, TaskQueueStatus};
+use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
 use crate::models::{Package, PackageSource, PackageStatus};
 use chrono::Local;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+        Block, Borders, Clear, Gauge, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Wrap,
     },
     Frame,
 };
@@ -228,7 +224,6 @@ fn append_decision_card(
     max_width: usize,
     card: DecisionCardContent,
 ) {
-    lines.push(Line::from(Span::styled("Decision Card", section_header())));
     push_decision_field(lines, "What", &card.what_happens, muted(), max_width);
     push_decision_field(
         lines,
@@ -245,10 +240,10 @@ fn append_decision_card(
         card.privileges_style,
         max_width,
     );
-    push_decision_field(lines, "If Blocked", &card.if_blocked, muted(), max_width);
+    push_decision_field(lines, "If blocked", &card.if_blocked, muted(), max_width);
     push_decision_field(
         lines,
-        "Primary",
+        "Action",
         &card.primary_action,
         card.primary_style,
         max_width,
@@ -314,15 +309,20 @@ fn draw_full_content(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         0
     };
+    let gap: u16 = if source_width > 0 { 1 } else { 0 };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(source_width), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(source_width),
+            Constraint::Length(gap),
+            Constraint::Min(1),
+        ])
         .split(area);
 
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(columns[1]);
+        .split(columns[2]);
 
     if app.queue_expanded {
         draw_sources_panel(frame, app, columns[0]);
@@ -579,9 +579,9 @@ fn inline_progress_bar(ratio: f64, width: usize) -> String {
     let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
     let filled = filled.min(width);
     format!(
-        "[{}{}]",
-        "#".repeat(filled),
-        "-".repeat(width.saturating_sub(filled))
+        " {}{} ",
+        "█".repeat(filled),
+        "░".repeat(width.saturating_sub(filled))
     )
 }
 
@@ -632,66 +632,6 @@ impl RunningTaskPhase {
     }
 }
 
-const TASK_TIMELINE_PHASES: [TaskTimelinePhase; 5] = [
-    TaskTimelinePhase::Queued,
-    TaskTimelinePhase::Resolve,
-    TaskTimelinePhase::Download,
-    TaskTimelinePhase::Apply,
-    TaskTimelinePhase::Finalize,
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TaskTimelinePhase {
-    Queued,
-    Resolve,
-    Download,
-    Apply,
-    Finalize,
-}
-
-impl TaskTimelinePhase {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Resolve => "resolve",
-            Self::Download => "download",
-            Self::Apply => "apply",
-            Self::Finalize => "finalize",
-        }
-    }
-
-    fn short_label(self) -> &'static str {
-        match self {
-            Self::Queued => "q",
-            Self::Resolve => "r",
-            Self::Download => "d",
-            Self::Apply => "a",
-            Self::Finalize => "f",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TaskTimelineState {
-    Done,
-    Active,
-    Pending,
-    Failed,
-    Cancelled,
-}
-
-impl TaskTimelineState {
-    fn symbol(self) -> &'static str {
-        match self {
-            Self::Done => "✓",
-            Self::Active => "▶",
-            Self::Pending => "○",
-            Self::Failed => "✗",
-            Self::Cancelled => "⊘",
-        }
-    }
-}
-
 struct RunningQueueLabelArgs<'a> {
     spinner: char,
     phase_label: &'a str,
@@ -722,9 +662,7 @@ fn build_running_queue_label(args: RunningQueueLabelArgs<'_>) -> String {
         parts.push(format!("{} left", args.remaining));
     }
 
-    let mut text_value = parts.join(" · ");
-    text_value.push_str("  [l]");
-    text_value
+    parts.join(" · ")
 }
 
 fn build_idle_queue_label(
@@ -743,29 +681,26 @@ fn build_idle_queue_label(
             format!("◻ {} queued", queued)
         };
         if let Some(hint) = performance_hint {
-            text_value.push_str(" • ");
+            text_value.push_str(" · ");
             text_value.push_str(hint);
         }
-        text_value.push_str("  [l expand]");
         return (text_value, QueueBarState::Queued);
     }
 
     if failed > 0 {
         let mut text_value = format!("⚠ {} done, {} failed", completed + cancelled, failed);
         if let Some(hint) = performance_hint {
-            text_value.push_str(" • ");
+            text_value.push_str(" · ");
             text_value.push_str(hint);
         }
-        text_value.push_str("  [l details]");
         return (text_value, QueueBarState::Failed);
     }
 
     let mut text_value = format!("✓ {}/{} complete", done, total);
     if let Some(hint) = performance_hint {
-        text_value.push_str(" • ");
+        text_value.push_str(" · ");
         text_value.push_str(hint);
     }
-    text_value.push_str("  [l details]");
     (text_value, QueueBarState::Complete)
 }
 
@@ -891,72 +826,6 @@ fn line_suggests_apply_phase(line: &str) -> bool {
     ]
     .iter()
     .any(|keyword| line.contains(keyword))
-}
-
-fn running_phase_timeline_index(phase: RunningTaskPhase) -> usize {
-    match phase {
-        RunningTaskPhase::Resolve => 1,
-        RunningTaskPhase::Download => 2,
-        RunningTaskPhase::Apply => 3,
-    }
-}
-
-fn task_terminal_phase_index(app: &App, task: &TaskQueueEntry) -> usize {
-    if task.started_at.is_none() {
-        return 0;
-    }
-    running_phase_timeline_index(running_task_phase(app, task))
-}
-
-fn task_timeline_states(app: &App, task: &TaskQueueEntry) -> [TaskTimelineState; 5] {
-    let mut states = [TaskTimelineState::Pending; TASK_TIMELINE_PHASES.len()];
-    match task.status {
-        TaskQueueStatus::Queued => {
-            states[0] = TaskTimelineState::Active;
-        }
-        TaskQueueStatus::Running => {
-            let active_index = running_phase_timeline_index(running_task_phase(app, task));
-            for state in states.iter_mut().take(active_index) {
-                *state = TaskTimelineState::Done;
-            }
-            states[active_index] = TaskTimelineState::Active;
-        }
-        TaskQueueStatus::Completed => {
-            states.fill(TaskTimelineState::Done);
-        }
-        TaskQueueStatus::Failed => {
-            let failed_index = task_terminal_phase_index(app, task);
-            for state in states.iter_mut().take(failed_index) {
-                *state = TaskTimelineState::Done;
-            }
-            states[failed_index] = TaskTimelineState::Failed;
-        }
-        TaskQueueStatus::Cancelled => {
-            let cancelled_index = task_terminal_phase_index(app, task);
-            for state in states.iter_mut().take(cancelled_index) {
-                *state = TaskTimelineState::Done;
-            }
-            states[cancelled_index] = TaskTimelineState::Cancelled;
-        }
-    }
-    states
-}
-
-fn task_timeline_text(app: &App, task: &TaskQueueEntry, compact: bool) -> String {
-    let states = task_timeline_states(app, task);
-    TASK_TIMELINE_PHASES
-        .iter()
-        .enumerate()
-        .map(|(index, phase)| {
-            let label = if compact {
-                phase.short_label()
-            } else {
-                phase.label()
-            };
-            format!("{} {}", states[index].symbol(), label)
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
 }
 
 fn short_task_id(task_id: &str) -> String {
@@ -1109,7 +978,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         match app.focus {
             Focus::Sources => {
                 push_hint(&mut spans, "↑↓", "move");
-                push_hint(&mut spans, "Tab", "switch panel");
+                push_hint(&mut spans, "Tab", "panels");
                 push_hint(&mut spans, "/", app.search_query_hint_label());
                 if !app.search.is_empty() {
                     push_hint(&mut spans, "Esc", app.search_escape_hint_label());
@@ -1120,7 +989,6 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
                 push_hint(&mut spans, "↑↓", "move");
                 push_hint(&mut spans, "Enter", "action");
                 push_hint(&mut spans, "Space", "select");
-                push_hint(&mut spans, "w", "recommended");
                 push_hint(&mut spans, "/", app.search_query_hint_label());
                 if !app.search.is_empty() {
                     push_hint(&mut spans, "Esc", app.search_escape_hint_label());
@@ -1129,13 +997,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             }
             Focus::Queue => {
                 push_hint(&mut spans, "↑↓", "move");
-                push_hint(&mut spans, "l", "close queue");
+                push_hint(&mut spans, "l", "close");
                 if app.queue_expanded {
-                    push_hint(&mut spans, "R", "retry selected");
-                    push_hint(&mut spans, "M", "apply fixes");
+                    push_hint(&mut spans, "R", "retry");
+                    push_hint(&mut spans, "M", "fix");
                 }
                 if !app.search.is_empty() {
-                    push_hint(&mut spans, "/", app.search_query_hint_label());
                     push_hint(&mut spans, "Esc", app.search_escape_hint_label());
                 }
                 push_hint(&mut spans, "?", "help");
@@ -1168,7 +1035,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let line = compose_left_right(spans, right, area.width as usize);
-    frame.render_widget(Paragraph::new(line), area);
+
+    // Use a Block to fill the entire footer area with background
+    let footer_block = Block::default().style(footer_bg());
+    let inner = footer_block.inner(area);
+    frame.render_widget(footer_block, area);
+    frame.render_widget(Paragraph::new(line), inner);
 }
 
 fn push_hint(spans: &mut Vec<Span<'static>>, key: &'static str, label: &'static str) {
@@ -1182,642 +1054,349 @@ fn push_hint(spans: &mut Vec<Span<'static>>, key: &'static str, label: &'static 
 
 fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::Queue;
-    let block = panel_block(
-        format!(
-            " Task Queue ({}) [failures: {}] [l close] ",
-            app.tasks.len(),
-            app.queue_failure_filter_label()
-        ),
-        focused,
-        app.compact,
-    );
+    let (now, next, attention, done) = app.queue_lane_counts();
+
+    // Clean title with lane counts
+    let title = format!(" ◉ {}  ◎ {}  ⚠ {}  ✓ {} ", now, next, attention, done);
+    let block = panel_block(title, focused, app.compact);
 
     if app.tasks.is_empty() {
-        frame.render_widget(Paragraph::new("No tasks").block(block).style(dim()), area);
+        let empty_area = block.inner(area);
+        let empty = Paragraph::new("No tasks queued")
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(dim());
+        frame.render_widget(block, area);
+        frame.render_widget(empty, empty_area);
         return;
     }
 
     let inner = block.inner(area);
-    let sections = if inner.height >= 8 {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(55),
-                Constraint::Percentage(35),
-                Constraint::Length(1),
-            ])
-            .split(inner)
+
+    // VERTICAL layout: task list (top 50%) + detail card (bottom 50%)
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(50), // Task cards list
+            Constraint::Percentage(50), // Detail panel
+        ])
+        .split(inner);
+
+    // TOP: Card-based task list
+    draw_queue_task_cards(frame, app, sections[0]);
+
+    // BOTTOM: Detail card for selected task
+    if let Some(task) = app.tasks.get(app.task_cursor) {
+        draw_queue_detail_panel(frame, app, task, sections[1]);
     } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(inner)
-    };
-
-    let visible_task_indices = app.queue_visible_task_indices();
-    let selected_visible_position = app.queue_visible_cursor_position(&visible_task_indices);
-    let visible = sections[0].height as usize;
-    let rows_for_tasks = visible.max(1).saturating_sub(2);
-    let start = window_start(
-        visible_task_indices.len(),
-        rows_for_tasks.max(1),
-        selected_visible_position,
-    );
-    let end = (start + rows_for_tasks.max(1)).min(visible_task_indices.len());
-    let task_width = sections[0].width.saturating_sub(2) as usize;
-    let (now, next, attention, done) = app.queue_lane_counts();
-    let blocked = queue_blocked_category_counts(app);
-    let clinic_actionability = app.queue_clinic_actionability();
-    let failure_tabs_line = queue_failure_filter_tabs(app.queue_failure_filter, blocked);
-
-    let mut task_lines = vec![
-        Line::from(Span::styled(
-            truncate_to_width(
-                &format!(
-                    "{} {} · {} {} · {} {} · {} {} · showing {}",
-                    QueueJourneyLane::Now.label(),
-                    now,
-                    QueueJourneyLane::Next.label(),
-                    next,
-                    QueueJourneyLane::NeedsAttention.label(),
-                    attention,
-                    QueueJourneyLane::Done.label(),
-                    done,
-                    visible_task_indices.len()
-                ),
-                task_width,
-            ),
-            dim(),
-        )),
-        failure_tabs_line,
-    ];
-    if visible_task_indices.is_empty() {
-        task_lines.push(Line::from(Span::styled(
-            truncate_to_width(
-                "No tasks match failure filter. Press 0 for all queue tasks.",
-                task_width,
-            ),
-            warning(),
-        )));
-    } else if rows_for_tasks > 0 {
-        for &task_index in visible_task_indices.iter().take(end).skip(start) {
-            let task = &app.tasks[task_index];
-            let selected = task_index == app.task_cursor;
-            task_lines.push(render_task_line(app, task, selected, task_width));
-        }
-    }
-    frame.render_widget(Paragraph::new(task_lines), sections[0]);
-
-    let selected_task = if visible_task_indices.is_empty() {
-        None
-    } else {
-        app.tasks.get(app.task_cursor)
-    };
-    let safe_retry_enabled = clinic_actionability.safe_retry_count > 0;
-    let remediate_enabled = clinic_actionability.remediation_actionable_count() > 0;
-    let safe_retry_key_style = if safe_retry_enabled {
-        key_hint()
-    } else {
-        dim()
-    };
-    let safe_retry_label_style = if safe_retry_enabled {
-        footer_label()
-    } else {
-        dim()
-    };
-    let remediate_key_style = if remediate_enabled { key_hint() } else { dim() };
-    let remediate_label_style = if remediate_enabled {
-        footer_label()
-    } else {
-        dim()
-    };
-    let recommendation_line = queue_recommended_action_line(app, clinic_actionability);
-    if sections.len() == 3 {
-        if let Some(task) = selected_task {
-            let logs = app.task_logs.get(&task.id);
-            let log_count = logs.map(|entries| entries.len()).unwrap_or(0);
-            let log_position = queue_log_position_label(log_count, app.task_log_scroll);
-            let log_position_style = queue_log_position_style(log_count, app.task_log_scroll);
-
-            // Create a distinct Recommendation Zone
-            let rec_block = Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(border_unfocused());
-            frame.render_widget(
-                Paragraph::new(recommendation_line.clone()).block(rec_block),
-                sections[1],
-            );
-
-            // Adjust the layout to account for the recommendation zone
-            let log_area = Rect {
-                x: sections[1].x,
-                y: sections[1].y + 2, // Space for recommendation + border
-                width: sections[1].width,
-                height: sections[1].height.saturating_sub(2),
-            };
-
-            let mut lines = vec![Line::from(vec![
-                Span::styled("Logs: ", dim()),
-                Span::styled(log_position, log_position_style),
-            ])];
-
-            let operation_summary = format!(
-                "{} · {} {} · {}",
-                short_task_id(&task.id),
-                action_label(task.action),
-                task.package_name,
-                task.package_source
-            );
-            lines.push(Line::from(vec![
-                Span::styled("Operation: ", dim()),
-                Span::styled(
-                    truncate_to_width(
-                        &operation_summary,
-                        log_area.width.saturating_sub(12) as usize,
-                    ),
-                    muted(),
-                ),
-            ]));
-
-            let compact_timeline = log_area.width < 54;
-            lines.push(Line::from(vec![
-                Span::styled("Plan: ", dim()),
-                Span::styled(
-                    truncate_to_width(
-                        &task_timeline_text(app, task, compact_timeline),
-                        log_area.width.saturating_sub(7) as usize,
-                    ),
-                    muted(),
-                ),
-            ]));
-
-            if let Some(runtime_hint) = task_runtime_hint(task) {
-                lines.push(Line::from(vec![
-                    Span::styled("Timing: ", dim()),
-                    Span::styled(runtime_hint, muted()),
-                ]));
-            }
-
-            lines.push(Line::from(""));
-
-            if let Some(parent) = app.retry_parent_for_task(&task.id) {
-                let attempt = app.retry_attempt_for_task(&task.id).unwrap_or(1);
-                lines.push(Line::from(vec![
-                    Span::styled("Retry lineage: ", dim()),
-                    Span::styled(
-                        format!(
-                            "#{} of {} ({})",
-                            attempt,
-                            parent.package_name,
-                            queue_status_label(parent.status)
-                        ),
-                        muted(),
-                    ),
-                ]));
-                lines.push(Line::from(""));
-            }
-
-            if task.status == TaskQueueStatus::Running {
-                if let Some(eta_hint) = running_task_eta_hint(task, &app.tasks) {
-                    lines.push(Line::from(vec![
-                        Span::styled("Progress: ", dim()),
-                        Span::styled(eta_hint, muted()),
-                    ]));
-                }
-                if let Some(signal_hint) = running_task_signal_hint(app, task) {
-                    lines.push(Line::from(vec![
-                        Span::styled("Signal: ", dim()),
-                        Span::styled(signal_hint, warning()),
-                    ]));
-                }
-                lines.push(Line::from(""));
-            }
-
-            if task.status == TaskQueueStatus::Failed {
-                if let Some(category) = app.failure_category_for_task(task) {
-                    append_decision_card(
-                        &mut lines,
-                        log_area.width.saturating_sub(2) as usize,
-                        DecisionCardContent {
-                            what_happens: format!(
-                                "{} for {} failed.",
-                                action_label(task.action),
-                                task.package_name
-                            ),
-                            certainty: "Verified from provider error output and queue state."
-                                .to_string(),
-                            certainty_style: success(),
-                            risk: format!("{} [{}]", category.label(), category.code()),
-                            risk_style: warning(),
-                            privileges: if matches!(category, FailureCategory::Permissions) {
-                                "Privilege/auth issue likely."
-                            } else {
-                                "No additional privilege signal."
-                            }
-                            .to_string(),
-                            privileges_style: if matches!(category, FailureCategory::Permissions) {
-                                warning()
-                            } else {
-                                muted()
-                            },
-                            if_blocked: category.remediation_copy().to_string(),
-                            primary_action: match category {
-                                FailureCategory::Unknown => {
-                                    "Press R to retry selected task".to_string()
-                                }
-                                _ => "Press M to run filtered fix bundle".to_string(),
-                            },
-                            primary_style: primary_action_button(),
-                        },
-                    );
-                    lines.push(Line::from(Span::styled(
-                        truncate_to_width(
-                            &format!("Playbook: {}", category.action_hint()),
-                            log_area.width.saturating_sub(2) as usize,
-                        ),
-                        muted(),
-                    )));
-                }
-                if let Some(state) = app.recovery_state_for_task(&task.id) {
-                    let outcome = match state.last_outcome {
-                        Some(TaskQueueStatus::Completed) => "last retry: succeeded",
-                        Some(TaskQueueStatus::Failed) => "last retry: failed",
-                        _ => "last retry: n/a",
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("Recovery attempts: {} ({})", state.attempts, outcome),
-                        muted(),
-                    )));
-                }
-                let retryable = clinic_actionability.safe_retry_count;
-                if retryable > 0 {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "Optional: Press A to retry safe failures for {} task{}",
-                            retryable,
-                            if retryable == 1 { "" } else { "s" }
-                        ),
-                        warning(),
-                    )));
-                }
-                lines.push(Line::from(""));
-            }
-
-            if let Some(logs) = logs {
-                let reserved = lines.len().saturating_sub(1);
-                let max = log_area
-                    .height
-                    .saturating_sub(1)
-                    .saturating_sub(reserved as u16) as usize;
-                let (start, end, _scroll) =
-                    task_log_window(logs.len(), max.max(1), app.task_log_scroll);
-                for line in logs.iter().skip(start).take(end.saturating_sub(start)) {
-                    lines.push(Line::from(Span::styled(
-                        truncate_to_width(line, log_area.width as usize),
-                        muted(),
-                    )));
-                }
-            } else {
-                lines.push(Line::from(Span::styled("No logs yet", dim())));
-            }
-            frame.render_widget(Paragraph::new(lines), log_area);
-        } else {
-            frame.render_widget(
-                Paragraph::new(vec![
-                    recommendation_line,
-                    Line::from(""),
-                    Line::from(Span::styled("Logs:", dim())),
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        "No visible task in failure filter.",
-                        warning(),
-                    )),
-                    Line::from(Span::styled(
-                        "Use 1 permissions, 2 network, 3 conflict, 4 other, 0 all.",
-                        muted(),
-                    )),
-                ]),
-                sections[1],
-            );
-        }
-
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("R", key_hint()),
-                Span::styled(" retry selected  ", footer_label()),
-                Span::styled("M", remediate_key_style),
-                Span::styled(" apply filtered fixes  ", remediate_label_style),
-                Span::styled("A", safe_retry_key_style),
-                Span::styled(" retry safe  ", safe_retry_label_style),
-                Span::styled("1/2/3/4/0", key_hint()),
-                Span::styled(" failure filter  ", footer_label()),
-                Span::styled("[ ]", key_hint()),
-                Span::styled(" logs", footer_label()),
-            ])),
-            sections[2],
-        );
-    } else {
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("R", key_hint()),
-                Span::styled(" retry selected  ", footer_label()),
-                Span::styled("M", remediate_key_style),
-                Span::styled(" apply filtered fixes  ", remediate_label_style),
-                Span::styled("A", safe_retry_key_style),
-                Span::styled(" retry safe  ", safe_retry_label_style),
-                Span::styled("1/2/3/4/0", key_hint()),
-                Span::styled(" failure filter  ", footer_label()),
-                Span::styled("[ ]", key_hint()),
-                Span::styled(" logs", footer_label()),
-            ])),
-            sections[1],
-        );
+        let empty = Paragraph::new("Select a task to view details")
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(dim());
+        frame.render_widget(empty, sections[1]);
     }
 
     frame.render_widget(block, area);
 }
 
-fn render_task_line(
+/// Draw task list as proper cards with borders
+fn draw_queue_task_cards(frame: &mut Frame, app: &App, area: Rect) {
+    let visible_indices = app.queue_visible_task_indices();
+    let item_height = 4u16; // Each card takes 4 lines (border + content + border + gap)
+    let visible_count = (area.height / item_height).max(1) as usize;
+    let selected_pos = app.queue_visible_cursor_position(&visible_indices);
+
+    let start = window_start(visible_indices.len(), visible_count, selected_pos);
+    let end = (start + visible_count).min(visible_indices.len());
+
+    let items: Vec<Constraint> = visible_indices
+        .iter()
+        .skip(start)
+        .take(end - start)
+        .map(|_| Constraint::Length(item_height))
+        .collect();
+
+    if items.is_empty() {
+        let empty = Paragraph::new("No matching tasks")
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(dim());
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(items)
+        .split(area);
+
+    for (idx, &task_idx) in visible_indices
+        .iter()
+        .skip(start)
+        .take(end - start)
+        .enumerate()
+    {
+        if let Some(task) = app.tasks.get(task_idx) {
+            let selected = task_idx == app.task_cursor;
+            draw_queue_task_card(frame, app, task, selected, rows[idx]);
+        }
+    }
+}
+
+/// Draw a single task card with border and gauge
+fn draw_queue_task_card(
+    frame: &mut Frame,
     app: &App,
     task: &TaskQueueEntry,
     selected: bool,
-    max_width: usize,
-) -> Line<'static> {
-    let recovered = task.status == TaskQueueStatus::Failed
-        && app
-            .recovery_state_for_task(&task.id)
-            .is_some_and(|state| state.last_outcome == Some(TaskQueueStatus::Completed));
-    let (symbol, style, status_text) = if recovered {
-        ("↺", success(), "recovered")
+    area: Rect,
+) {
+    // Card border style based on selection
+    let border_style = if selected {
+        Style::default().fg(palette::CYAN())
     } else {
-        match task.status {
-            TaskQueueStatus::Queued => ("◻", warning(), "queued"),
-            TaskQueueStatus::Running => ("▶", loading(), "running"),
-            TaskQueueStatus::Completed => ("✓", success(), "completed"),
-            TaskQueueStatus::Failed => ("✗", error(), "failed"),
-            TaskQueueStatus::Cancelled => ("-", dim(), "cancelled"),
-        }
+        Style::default().fg(palette::INACTIVE_BORDER())
     };
 
-    let mut text_value = format!(
-        "{} {}  {}  {}",
-        symbol,
-        task.package_name,
-        action_label(task.action).to_lowercase(),
-        status_text
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 2 || inner.width < 20 {
+        return;
+    }
+
+    // Status color
+    let status_color = match task.status {
+        TaskQueueStatus::Running => palette::CYAN(),
+        TaskQueueStatus::Queued => palette::YELLOW(),
+        TaskQueueStatus::Completed => palette::GREEN(),
+        TaskQueueStatus::Failed => palette::RED(),
+        TaskQueueStatus::Cancelled => palette::DARK_GRAY(),
+    };
+
+    // Layout: left (icon + name) | right (gauge/progress)
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(3),  // Icon
+            Constraint::Min(15),    // Name and action
+            Constraint::Length(12), // Progress/gauge
+        ])
+        .split(inner);
+
+    // Status icon
+    let icon = match task.status {
+        TaskQueueStatus::Running => "▶",
+        TaskQueueStatus::Queued => "◻",
+        TaskQueueStatus::Completed => "✓",
+        TaskQueueStatus::Failed => "✗",
+        TaskQueueStatus::Cancelled => "⊘",
+    };
+    frame.render_widget(
+        Paragraph::new(icon)
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        layout[0],
     );
+
+    // Package name and action
+    let action_line = action_label(task.action).to_lowercase();
+    let name_text = format!(
+        "{}\n{}",
+        truncate_to_width(&task.package_name, layout[1].width as usize),
+        action_line
+    );
+    frame.render_widget(
+        Paragraph::new(name_text).style(if selected { text() } else { muted() }),
+        layout[1],
+    );
+
+    // Progress display - gauge for running, status for others
+    if task.status == TaskQueueStatus::Running {
+        let phase = running_task_phase(app, task);
+        let ratio = phase.progress_weight();
+        let gauge = Gauge::default()
+            .ratio(ratio.clamp(0.0, 1.0))
+            .label(format!("{}%", (ratio * 100.0).round() as usize))
+            .gauge_style(Style::default().fg(status_color).bg(palette::HEADER_BG()));
+        frame.render_widget(gauge, layout[2]);
+    } else {
+        let status_text = match task.status {
+            TaskQueueStatus::Completed => "Done",
+            TaskQueueStatus::Failed => "Failed",
+            TaskQueueStatus::Queued => "Queued",
+            TaskQueueStatus::Cancelled => "Cancelled",
+            _ => "",
+        };
+        let style = match task.status {
+            TaskQueueStatus::Completed => success(),
+            TaskQueueStatus::Failed => error(),
+            TaskQueueStatus::Queued => warning(),
+            TaskQueueStatus::Cancelled => dim(),
+            _ => muted(),
+        };
+        frame.render_widget(
+            Paragraph::new(status_text)
+                .alignment(ratatui::layout::Alignment::Right)
+                .style(style),
+            layout[2],
+        );
+    }
+}
+
+/// Draw detail panel with proper hierarchy
+fn draw_queue_detail_panel(frame: &mut Frame, app: &App, task: &TaskQueueEntry, area: Rect) {
+    // Panel with border
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette::INACTIVE_BORDER()))
+        .title(" Task Details ")
+        .title_alignment(ratatui::layout::Alignment::Center);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 6 {
+        return;
+    }
+
+    // Tight vertical layout - no wasted space
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Header
+            Constraint::Length(1), // Gauge
+            Constraint::Length(1), // Metadata
+            Constraint::Min(2),    // Logs (at least 2 lines)
+            Constraint::Length(1), // Actions
+        ])
+        .margin(1) // Inner padding for all content
+        .split(inner);
+
+    // HEADER: Action verb + package name
+    let header = format!(
+        "{} {}  [{}]",
+        action_verb(task.action),
+        task.package_name,
+        task.package_source
+    );
+    frame.render_widget(
+        Paragraph::new(header).style(accent().add_modifier(Modifier::BOLD)),
+        sections[0],
+    );
+
+    // MAIN GAUGE: Large progress bar
+    let (ratio, label) = match task.status {
+        TaskQueueStatus::Running => {
+            let phase = running_task_phase(app, task);
+            (phase.progress_weight(), phase.label())
+        }
+        TaskQueueStatus::Completed => (1.0, "Complete"),
+        TaskQueueStatus::Failed => (0.0, "Failed"),
+        TaskQueueStatus::Queued => (0.0, "Waiting..."),
+        TaskQueueStatus::Cancelled => (0.0, "Cancelled"),
+    };
+
+    let gauge_style = match task.status {
+        TaskQueueStatus::Running => accent(),
+        TaskQueueStatus::Completed => success(),
+        TaskQueueStatus::Failed => error(),
+        _ => dim(),
+    };
+
+    let gauge = Gauge::default()
+        .ratio(ratio.clamp(0.0, 1.0))
+        .label(format!("{} · {}%", label, (ratio * 100.0).round() as usize))
+        .gauge_style(gauge_style);
+    frame.render_widget(gauge, sections[1]);
+
+    // METADATA: Single line with left padding
+    let mut meta = vec![
+        Span::styled("  ", dim()), // Left padding
+        Span::styled(short_task_id(&task.id), dim()),
+    ];
+
+    if let Some(runtime) = task_runtime_hint(task) {
+        meta.push(Span::styled(" · ", dim()));
+        meta.push(Span::styled(runtime, muted()));
+    }
+
     if let Some(parent) = app.retry_parent_for_task(&task.id) {
         let attempt = app.retry_attempt_for_task(&task.id).unwrap_or(1);
-        text_value.push_str(&format!(" · retry #{} of {}", attempt, parent.package_name));
+        meta.push(Span::styled(
+            format!(" · Retry #{} of {}", attempt, parent.package_name),
+            warning(),
+        ));
     }
+
     if task.status == TaskQueueStatus::Running {
-        text_value.push_str(&format!(" · {}", running_task_phase(app, task).label()));
-        if let Some(eta_hint) = running_task_eta_hint(task, &app.tasks) {
-            text_value.push_str(&format!(" · {}", eta_hint));
-        }
-        if let Some(signal_hint) = running_task_signal_hint(app, task) {
-            text_value.push_str(&format!(" · {}", signal_hint));
+        if let Some(eta) = running_task_eta_hint(task, &app.tasks) {
+            meta.push(Span::styled(" · ", dim()));
+            meta.push(Span::styled(eta, loading()));
         }
     }
-    let mut badges: Vec<(String, Style)> = Vec::new();
-    if task.status == TaskQueueStatus::Failed && !recovered {
-        if let Some(category) = app.failure_category_for_task(task) {
-            if category != FailureCategory::Unknown {
-                badges.push((
-                    format!(" [{}]", blocked_reason_badge(category)),
-                    blocked_reason_badge_style(category, selected),
-                ));
-            }
-        }
-        if let Some(error_text) = &task.error {
-            // Strip the common redundant "Failed to <verb> <mgr> package <name>: <detail>"
-            // prefix — the status/action/name are already shown in the row.
-            let detail = if error_text.starts_with("Failed to ") {
-                error_text
-                    .split_once(": ")
-                    .map(|(_, rest)| rest.trim())
-                    .unwrap_or("")
+
+    frame.render_widget(Paragraph::new(Line::from(meta)), sections[2]);
+
+    // LOGS: Scrollable area - compact
+    let logs = app.task_logs.get(&task.id);
+    let log_area = sections[3];
+
+    let log_widget = if logs.map(|l| !l.is_empty()).unwrap_or(false) {
+        let logs = logs.unwrap();
+        let visible = log_area.height as usize;
+        let total = logs.len();
+        let scroll = app.task_log_scroll.min(total.saturating_sub(visible));
+        let end = (scroll + visible).min(total);
+
+        let log_lines: Vec<Line> = logs
+            .iter()
+            .skip(scroll)
+            .take(end.saturating_sub(scroll))
+            .map(|line| {
+                Line::from(Span::styled(
+                    truncate_to_width(line, log_area.width.saturating_sub(2) as usize),
+                    muted(),
+                ))
+            })
+            .collect();
+        Paragraph::new(log_lines)
+    } else {
+        Paragraph::new(Span::styled("  No logs available", dim()))
+    };
+    frame.render_widget(log_widget, log_area);
+
+    // ACTIONS: Keyboard hints
+    let actions = match task.status {
+        TaskQueueStatus::Failed => {
+            if app.failure_category_for_task(task).is_some() {
+                "  [R]etry  [M]fix-bundle  [A]safe-retry"
             } else {
-                error_text.trim()
-            };
-            if !detail.is_empty() {
-                text_value.push_str(&format!(": {}", detail));
+                "  [R]etry"
             }
         }
-    }
+        TaskQueueStatus::Running => "  [Ctrl+C]ancel",
+        _ => "  [↑↓] Navigate  [logs] Scroll",
+    };
+    frame.render_widget(Paragraph::new(actions).style(key_hint()), sections[4]);
+}
 
-    let badge_budget = max_width.saturating_sub(8);
-    let mut kept_badges: Vec<(String, Style)> = Vec::new();
-    let mut badges_width = 0usize;
-    for (badge, style) in badges {
-        let width = UnicodeWidthStr::width(badge.as_str());
-        if badges_width + width > badge_budget {
-            continue;
-        }
-        kept_badges.push((badge, style));
-        badges_width += width;
+/// Helper: action verb for cleaner display
+fn action_verb(action: TaskQueueAction) -> &'static str {
+    match action {
+        TaskQueueAction::Update => "Update",
+        TaskQueueAction::Install => "Install",
+        TaskQueueAction::Remove => "Remove",
     }
-
-    let text_value = truncate_middle_to_width(&text_value, max_width.saturating_sub(badges_width));
-    let base_style = if selected { row_cursor() } else { style };
-    let mut spans = vec![
-        Span::styled(if selected { "▸ " } else { "  " }, row_selected()),
-        Span::styled(text_value, base_style),
-    ];
-    for (badge, style) in kept_badges {
-        spans.push(Span::styled(badge, style));
-    }
-
-    Line::from(spans)
 }
 
 pub fn preflight_overlay_rect(area: Rect) -> Rect {
     centered_rect(area, 76, 76, 62, 16)
-}
-
-fn queue_status_label(status: TaskQueueStatus) -> &'static str {
-    match status {
-        TaskQueueStatus::Queued => "queued",
-        TaskQueueStatus::Running => "running",
-        TaskQueueStatus::Completed => "completed",
-        TaskQueueStatus::Failed => "failed",
-        TaskQueueStatus::Cancelled => "cancelled",
-    }
-}
-
-fn blocked_reason_badge(category: FailureCategory) -> &'static str {
-    match category {
-        FailureCategory::Permissions => "permission",
-        FailureCategory::Network => "network",
-        FailureCategory::NotFound => "not found",
-        FailureCategory::Conflict => "conflict",
-        FailureCategory::Unknown => "unknown",
-    }
-}
-
-fn blocked_reason_badge_style(category: FailureCategory, selected: bool) -> Style {
-    if selected {
-        return row_cursor();
-    }
-
-    match category {
-        FailureCategory::Permissions => error(),
-        FailureCategory::Network => warning(),
-        FailureCategory::NotFound => muted(),
-        FailureCategory::Conflict => warning(),
-        FailureCategory::Unknown => dim(),
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct QueueBlockedCategoryCounts {
-    permissions: usize,
-    network: usize,
-    conflict: usize,
-    other: usize,
-}
-
-fn queue_blocked_category_counts(app: &App) -> QueueBlockedCategoryCounts {
-    let mut counts = QueueBlockedCategoryCounts::default();
-
-    for task in &app.tasks {
-        if app.queue_lane_for_task(task) != QueueJourneyLane::NeedsAttention {
-            continue;
-        }
-        let Some(category) = app.failure_category_for_task(task) else {
-            continue;
-        };
-        match category {
-            FailureCategory::Permissions => counts.permissions += 1,
-            FailureCategory::Network => counts.network += 1,
-            FailureCategory::Conflict => counts.conflict += 1,
-            FailureCategory::NotFound | FailureCategory::Unknown => counts.other += 1,
-        }
-    }
-
-    counts
-}
-
-fn queue_failure_filter_tabs(
-    active_filter: QueueFailureFilter,
-    blocked: QueueBlockedCategoryCounts,
-) -> Line<'static> {
-    let all = blocked.permissions + blocked.network + blocked.conflict + blocked.other;
-    let tabs = [
-        (QueueFailureFilter::All, "0", "All", all),
-        (
-            QueueFailureFilter::Permissions,
-            "1",
-            "Permissions",
-            blocked.permissions,
-        ),
-        (QueueFailureFilter::Network, "2", "Network", blocked.network),
-        (
-            QueueFailureFilter::Conflict,
-            "3",
-            "Conflict",
-            blocked.conflict,
-        ),
-        (QueueFailureFilter::Other, "4", "Other", blocked.other),
-    ];
-
-    let mut spans = vec![Span::styled("Failure Filter: ", dim())];
-    for (index, (filter, key, label, count)) in tabs.iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::raw("  "));
-        }
-        if *filter == active_filter {
-            spans.push(Span::styled(
-                format!("[{}] {} {}", key, label, count),
-                tab_active(),
-            ));
-        } else {
-            spans.push(Span::styled(format!("[{}]", key), key_hint()));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(format!("{} {}", label, count), muted()));
-        }
-    }
-
-    Line::from(spans)
-}
-
-fn queue_recommended_action_line(
-    app: &App,
-    actionability: QueueClinicActionability,
-) -> Line<'static> {
-    let unresolved = app.unresolved_failure_count();
-    let (copy, style) = if actionability.safe_retry_count > 0 {
-        (
-            format!(
-                "Press A to retry {} safe failure{} now — fastest path forward.",
-                actionability.safe_retry_count,
-                if actionability.safe_retry_count == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ),
-            warning(),
-        )
-    } else if actionability.remediation_actionable_count() > 0 {
-        let total = actionability.remediation_actionable_count();
-        (
-            format!(
-                "Press M to apply fixes for {} filtered failure{} now.",
-                total,
-                if total == 1 { "" } else { "s" }
-            ),
-            warning(),
-        )
-    } else if app.queue_failure_filter != QueueFailureFilter::All && unresolved > 0 {
-        ("Press 0 to view all failures.".to_string(), muted())
-    } else if unresolved > 0 {
-        (
-            "Select a failed task, then press R to retry.".to_string(),
-            muted(),
-        )
-    } else {
-        (
-            "No action needed. Monitor queue progress.".to_string(),
-            muted(),
-        )
-    };
-
-    Line::from(vec![
-        Span::styled("Recommended: ", section_header()),
-        Span::styled(copy, style),
-    ])
-}
-
-fn queue_log_position_label(log_count: usize, scroll: usize) -> String {
-    if log_count == 0 {
-        "no logs yet".to_string()
-    } else if scroll == 0 {
-        format!(
-            "latest · {} line{}",
-            log_count,
-            if log_count == 1 { "" } else { "s" }
-        )
-    } else {
-        let max_scroll = log_count.saturating_sub(1);
-        format!(
-            "older +{}/{} · {} line{}",
-            scroll.min(max_scroll),
-            max_scroll,
-            log_count,
-            if log_count == 1 { "" } else { "s" }
-        )
-    }
-}
-
-fn queue_log_position_style(log_count: usize, scroll: usize) -> Style {
-    if log_count == 0 {
-        dim()
-    } else if scroll > 0 {
-        warning()
-    } else {
-        muted()
-    }
 }
 
 fn preflight_touched_package_estimate(preflight: &PreflightSummary) -> usize {
@@ -1961,13 +1540,13 @@ fn draw_preflight_overlay(frame: &mut Frame, _app: &App, confirming: &PendingAct
     let action_name = action_label(confirming.preflight.action).to_string();
     let executable = confirming.preflight.executable_count;
     let targets = confirming.preflight.target_count;
-    let skipped = confirming.preflight.skipped_count;
+    let _skipped = confirming.preflight.skipped_count;
     let package_word = if executable == 1 {
         "package"
     } else {
         "packages"
     };
-    let mode_label = if confirming.preflight.selection_mode {
+    let _mode_label = if confirming.preflight.selection_mode {
         "selection"
     } else {
         "current filter"
@@ -1989,8 +1568,8 @@ fn draw_preflight_overlay(frame: &mut Frame, _app: &App, confirming: &PendingAct
         sections[0].width.saturating_sub(2) as usize,
         DecisionCardContent {
             what_happens: format!(
-                "{} {} {} ({}, {} skipped, mode: {}).",
-                action_name, executable, package_word, targets, skipped, mode_label
+                "{} {} {} from {} targets",
+                action_name, executable, package_word, targets
             ),
             certainty: format!(
                 "{}; dependency impact {}. {}",
@@ -2008,18 +1587,16 @@ fn draw_preflight_overlay(frame: &mut Frame, _app: &App, confirming: &PendingAct
             risk: confirming.preflight.risk_level.label().to_string(),
             risk_style,
             privileges: if confirming.preflight.elevated_privileges_likely {
-                "Likely elevated privileges prompt.".to_string()
+                "May prompt for elevated privileges.".to_string()
             } else {
-                "No elevated privileges expected.".to_string()
+                "No elevated privileges needed.".to_string()
             },
             privileges_style: if confirming.preflight.elevated_privileges_likely {
                 warning()
             } else {
                 muted()
             },
-            if_blocked:
-                "Execution failures surface as E_* codes with playbook steps in queue failures."
-                    .to_string(),
+            if_blocked: "Failures surface in the queue with recovery steps.".to_string(),
             primary_action,
             primary_style: if confirming.preflight.risk_level == PreflightRiskLevel::High
                 && !confirming.risk_acknowledged
@@ -2554,14 +2131,10 @@ fn draw_changelog_overlay(frame: &mut Frame, app: &App) {
     let left = vec![
         Span::styled("j/k", key_hint()),
         Span::styled(" scroll  ", footer_label()),
-        Span::styled("g/G", key_hint()),
-        Span::styled(" top/btm  ", footer_label()),
         Span::styled("u/i/x", key_hint()),
         Span::styled(" actions  ", footer_label()),
         Span::styled("v", key_hint()),
         Span::styled(" mode  ", footer_label()),
-        Span::styled("r", key_hint()),
-        Span::styled(" refresh  ", footer_label()),
         Span::styled("c/Esc", key_hint()),
         Span::styled(" close", footer_label()),
     ];
@@ -2673,7 +2246,11 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
     lines.push(Line::from(
         "  : or Ctrl+P command palette   / search   r refresh",
     ));
-    lines.push(Line::from("  ? help   q quit"));
+    lines.push(Line::from("  ? help   q quit   T cycle theme"));
+    lines.push(Line::from(format!(
+        "  Theme: {}   (env: LINGET_THEME, NO_COLOR)",
+        crate::cli::tui::theme::current_theme_name()
+    )));
     lines.push(Line::from(
         "  Changelog: u update   i install   d/x remove   v mode   c/Esc close",
     ));
@@ -2705,7 +2282,7 @@ fn draw_import_preview_overlay(frame: &mut Frame, app: &App, area: Rect) {
         .take(list_height)
         .map(|ep| {
             Line::from(vec![
-                Span::raw("  📦 "),
+                Span::raw("  • "),
                 Span::styled(ep.name.clone(), accent()),
                 Span::styled(format!("  ({})  ", ep.source), muted()),
                 Span::styled(ep.version.clone(), dim()),
@@ -2718,10 +2295,10 @@ fn draw_import_preview_overlay(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     lines.push(Line::from(vec![
-        Span::styled("  Enter", accent()),
-        Span::styled(" — install all    ", muted()),
-        Span::styled("Esc", accent()),
-        Span::styled(" — cancel ", muted()),
+        Span::styled("  Enter", key_hint()),
+        Span::styled(" install all   ", footer_label()),
+        Span::styled("Esc", key_hint()),
+        Span::styled(" cancel", footer_label()),
     ]));
 
     let sections = Layout::default()
@@ -2777,22 +2354,6 @@ pub fn window_start(total: usize, visible: usize, selected: usize) -> usize {
         start = total - visible;
     }
     start
-}
-
-fn task_log_window(
-    total_lines: usize,
-    visible_lines: usize,
-    scroll: usize,
-) -> (usize, usize, usize) {
-    if visible_lines == 0 || total_lines == 0 {
-        return (0, 0, 0);
-    }
-
-    let max_scroll = total_lines.saturating_sub(visible_lines);
-    let scroll = scroll.min(max_scroll);
-    let end = total_lines.saturating_sub(scroll);
-    let start = end.saturating_sub(visible_lines);
-    (start, end, scroll)
 }
 
 fn push_wrapped_styled_line(
@@ -3362,6 +2923,7 @@ pub fn wrap_text(text_value: &str, max_width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::super::app::App;
+    use super::super::format::truncate_middle_to_width;
     use super::*;
     use crate::backend::PackageManager;
     use crate::models::PackageSource;
@@ -3423,13 +2985,12 @@ mod tests {
         );
         let rendered: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
 
-        assert!(rendered.iter().any(|line| line.contains("Decision Card")));
         assert!(rendered.iter().any(|line| line.contains("What:")));
         assert!(rendered.iter().any(|line| line.contains("Certainty:")));
         assert!(rendered.iter().any(|line| line.contains("Risk:")));
         assert!(rendered.iter().any(|line| line.contains("Privileges:")));
-        assert!(rendered.iter().any(|line| line.contains("If Blocked:")));
-        assert!(rendered.iter().any(|line| line.contains("Primary:")));
+        assert!(rendered.iter().any(|line| line.contains("If blocked:")));
+        assert!(rendered.iter().any(|line| line.contains("Action:")));
     }
 
     #[test]
@@ -3457,22 +3018,6 @@ mod tests {
 
         assert!(card.primary_action.contains("[c]/Esc"));
         assert!(card.if_blocked.contains("unsupported"));
-    }
-
-    #[test]
-    fn task_log_window_clamps_scroll_and_ranges() {
-        assert_eq!(task_log_window(10, 4, 0), (6, 10, 0));
-        assert_eq!(task_log_window(10, 4, 3), (3, 7, 3));
-        assert_eq!(task_log_window(3, 8, 5), (0, 3, 0));
-    }
-
-    #[test]
-    fn queue_log_position_label_snapshots() {
-        assert_eq!(queue_log_position_label(0, 0), "no logs yet");
-        assert_eq!(queue_log_position_label(1, 0), "latest · 1 line");
-        assert_eq!(queue_log_position_label(4, 0), "latest · 4 lines");
-        assert_eq!(queue_log_position_label(4, 2), "older +2/3 · 4 lines");
-        assert_eq!(queue_log_position_label(4, 9), "older +3/3 · 4 lines");
     }
 
     #[test]
@@ -3563,36 +3108,30 @@ mod tests {
         });
         assert_eq!(
             line,
-            "◐ download · Update vim · 2/8 done · 4 queued · 1 failed · 5 left  [l]"
+            "◐ download · Update vim · 2/8 done · 4 queued · 1 failed · 5 left"
         );
     }
 
     #[test]
     fn queue_idle_label_snapshots() {
         let (queued_line, queued_state) =
-            build_idle_queue_label(4, 0, 0, 0, 0, 4, Some("2.0 t/m • ETA 2m00s"));
+            build_idle_queue_label(4, 0, 0, 0, 0, 4, Some("2.0 t/m · ETA 2m00s"));
         assert_eq!(queued_state, QueueBarState::Queued);
-        assert_eq!(queued_line, "◻ 4 queued • 2.0 t/m • ETA 2m00s  [l expand]");
+        assert_eq!(queued_line, "◻ 4 queued · 2.0 t/m · ETA 2m00s");
 
         let (failed_line, failed_state) =
-            build_idle_queue_label(0, 2, 1, 1, 4, 5, Some("1.0 t/m • ETA 1m00s"));
+            build_idle_queue_label(0, 2, 1, 1, 4, 5, Some("1.0 t/m · ETA 1m00s"));
         assert_eq!(failed_state, QueueBarState::Failed);
-        assert_eq!(
-            failed_line,
-            "⚠ 3 done, 1 failed • 1.0 t/m • ETA 1m00s  [l details]"
-        );
+        assert_eq!(failed_line, "⚠ 3 done, 1 failed · 1.0 t/m · ETA 1m00s");
 
         let (done_line, done_state) = build_idle_queue_label(0, 3, 0, 0, 3, 3, None);
         assert_eq!(done_state, QueueBarState::Complete);
-        assert_eq!(done_line, "✓ 3/3 complete  [l details]");
+        assert_eq!(done_line, "✓ 3/3 complete");
 
         let (mixed_line, mixed_state) =
-            build_idle_queue_label(2, 2, 0, 0, 2, 4, Some("2.0 t/m • ETA 1m00s"));
+            build_idle_queue_label(2, 2, 0, 0, 2, 4, Some("2.0 t/m · ETA 1m00s"));
         assert_eq!(mixed_state, QueueBarState::Queued);
-        assert_eq!(
-            mixed_line,
-            "◻ 2 queued · 2/4 done • 2.0 t/m • ETA 1m00s  [l expand]"
-        );
+        assert_eq!(mixed_line, "◻ 2 queued · 2/4 done · 2.0 t/m · ETA 1m00s");
     }
 
     #[test]
@@ -3731,223 +3270,6 @@ mod tests {
             ]),
         );
         assert_eq!(running_task_phase(&app, &running), RunningTaskPhase::Apply);
-    }
-
-    #[test]
-    fn task_timeline_states_capture_running_and_terminal_outcomes() {
-        let now = Local::now();
-        let mut app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
-            Arc::new(Mutex::new(None)),
-            None,
-            None,
-        );
-
-        let running = TaskQueueEntry {
-            id: "run".to_string(),
-            action: TaskQueueAction::Update,
-            package_id: "APT:run".to_string(),
-            package_name: "run".to_string(),
-            package_source: PackageSource::Apt,
-            status: TaskQueueStatus::Running,
-            queued_at: now - Duration::seconds(60),
-            started_at: Some(now - Duration::seconds(55)),
-            completed_at: None,
-            error: None,
-        };
-        app.task_logs.insert(
-            running.id.clone(),
-            VecDeque::from(vec![
-                "[OUT] Reading package lists...".to_string(),
-                "[OUT] Get:1 http://mirror/pool pkg 2.3 MB".to_string(),
-            ]),
-        );
-        let running_states = task_timeline_states(&app, &running);
-        assert_eq!(
-            running_states,
-            [
-                TaskTimelineState::Done,
-                TaskTimelineState::Done,
-                TaskTimelineState::Active,
-                TaskTimelineState::Pending,
-                TaskTimelineState::Pending,
-            ]
-        );
-
-        let mut failed = running.clone();
-        failed.id = "fail".to_string();
-        failed.status = TaskQueueStatus::Failed;
-        failed.completed_at = Some(now);
-        app.task_logs.insert(
-            failed.id.clone(),
-            VecDeque::from(vec![
-                "[OUT] Get:1 http://mirror/pool pkg 2.3 MB".to_string(),
-                "[ERR] Setting up pkg (1.2.3-1) ...".to_string(),
-            ]),
-        );
-        let failed_states = task_timeline_states(&app, &failed);
-        assert_eq!(
-            failed_states,
-            [
-                TaskTimelineState::Done,
-                TaskTimelineState::Done,
-                TaskTimelineState::Done,
-                TaskTimelineState::Failed,
-                TaskTimelineState::Pending,
-            ]
-        );
-
-        let mut cancelled = running.clone();
-        cancelled.id = "cancelled".to_string();
-        cancelled.status = TaskQueueStatus::Cancelled;
-        cancelled.started_at = None;
-        cancelled.completed_at = Some(now);
-        assert_eq!(
-            task_timeline_states(&app, &cancelled),
-            [
-                TaskTimelineState::Cancelled,
-                TaskTimelineState::Pending,
-                TaskTimelineState::Pending,
-                TaskTimelineState::Pending,
-                TaskTimelineState::Pending,
-            ]
-        );
-
-        let mut completed = running.clone();
-        completed.id = "done".to_string();
-        completed.status = TaskQueueStatus::Completed;
-        completed.completed_at = Some(now);
-        let done_states = task_timeline_states(&app, &completed);
-        assert!(done_states
-            .iter()
-            .all(|state| *state == TaskTimelineState::Done));
-    }
-
-    #[test]
-    fn blocked_reason_badges_are_stable() {
-        assert_eq!(
-            blocked_reason_badge(FailureCategory::Permissions),
-            "permission"
-        );
-        assert_eq!(blocked_reason_badge(FailureCategory::Network), "network");
-        assert_eq!(blocked_reason_badge(FailureCategory::NotFound), "not found");
-        assert_eq!(blocked_reason_badge(FailureCategory::Conflict), "conflict");
-        assert_eq!(blocked_reason_badge(FailureCategory::Unknown), "unknown");
-    }
-
-    #[test]
-    fn queue_blocked_category_counts_ignore_non_attention_tasks() {
-        let now = Local::now();
-        let mut app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
-            Arc::new(Mutex::new(None)),
-            None,
-            None,
-        );
-        let failed_task = |id: &str| TaskQueueEntry {
-            id: id.to_string(),
-            action: TaskQueueAction::Update,
-            package_id: format!("APT:{}", id),
-            package_name: id.to_string(),
-            package_source: PackageSource::Apt,
-            status: TaskQueueStatus::Failed,
-            queued_at: now - Duration::seconds(15),
-            started_at: Some(now - Duration::seconds(10)),
-            completed_at: Some(now),
-            error: Some("failure".to_string()),
-        };
-
-        let permissions = failed_task("perm");
-        let network = failed_task("net");
-        let conflict = failed_task("conflict");
-        let not_found = failed_task("missing");
-        let recovered = failed_task("recovered");
-
-        app.tasks = vec![
-            permissions.clone(),
-            network.clone(),
-            conflict.clone(),
-            not_found.clone(),
-            recovered.clone(),
-        ];
-        app.task_failure_categories
-            .insert(permissions.id.clone(), FailureCategory::Permissions);
-        app.task_failure_categories
-            .insert(network.id.clone(), FailureCategory::Network);
-        app.task_failure_categories
-            .insert(conflict.id.clone(), FailureCategory::Conflict);
-        app.task_failure_categories
-            .insert(not_found.id.clone(), FailureCategory::NotFound);
-        app.task_failure_categories
-            .insert(recovered.id.clone(), FailureCategory::Network);
-        app.task_recovery_states.insert(
-            recovered.id.clone(),
-            crate::cli::tui::state::queue::RecoveryState {
-                attempts: 1,
-                last_outcome: Some(TaskQueueStatus::Completed),
-            },
-        );
-
-        let counts = queue_blocked_category_counts(&app);
-        assert_eq!(
-            counts,
-            QueueBlockedCategoryCounts {
-                permissions: 1,
-                network: 1,
-                conflict: 1,
-                other: 1,
-            }
-        );
-    }
-
-    #[test]
-    fn queue_failure_filter_tabs_show_human_labels_with_counts() {
-        let line = queue_failure_filter_tabs(
-            QueueFailureFilter::Network,
-            QueueBlockedCategoryCounts {
-                permissions: 2,
-                network: 3,
-                conflict: 1,
-                other: 1,
-            },
-        )
-        .to_string();
-
-        assert!(line.contains("Failure Filter:"));
-        assert!(line.contains("[0] All 7"));
-        assert!(line.contains("[1] Permissions 2"));
-        assert!(line.contains("[2] Network 3"));
-        assert!(line.contains("[3] Conflict 1"));
-        assert!(line.contains("[4] Other 1"));
-    }
-
-    #[test]
-    fn render_task_line_includes_blocked_badges_for_failed_tasks() {
-        let now = Local::now();
-        let mut app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
-            Arc::new(Mutex::new(None)),
-            None,
-            None,
-        );
-        let failed = TaskQueueEntry {
-            id: "failed".to_string(),
-            action: TaskQueueAction::Update,
-            package_id: "APT:failed".to_string(),
-            package_name: "failed".to_string(),
-            package_source: PackageSource::Apt,
-            status: TaskQueueStatus::Failed,
-            queued_at: now - Duration::seconds(15),
-            started_at: Some(now - Duration::seconds(10)),
-            completed_at: Some(now),
-            error: Some("temporary failure resolving mirror".to_string()),
-        };
-        app.task_failure_categories
-            .insert(failed.id.clone(), FailureCategory::Network);
-
-        let line = render_task_line(&app, &failed, false, 160).to_string();
-        assert!(line.contains("[network]"));
-        assert!(line.contains("temporary failure resolving mirror"));
     }
 
     #[test]

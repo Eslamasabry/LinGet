@@ -286,6 +286,7 @@ pub enum CommandId {
     QueueLogNewer,
     ExportPackages,
     ImportPackages,
+    CycleTheme,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -542,6 +543,12 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
         id: CommandId::ImportPackages,
         label: "Import package list",
         shortcut: "I",
+        enabled: |_| true,
+    },
+    CommandDefinition {
+        id: CommandId::CycleTheme,
+        label: "Cycle UI theme",
+        shortcut: "T",
         enabled: |_| true,
     },
 ];
@@ -4359,8 +4366,19 @@ impl App {
     }
 
     pub fn spinner_frame(&self) -> char {
-        const FRAMES: [char; 4] = ['◐', '◓', '◑', '◒'];
+        // A braille-dot spinner reads smoother than block-circles on most
+        // monospace fonts and keeps a consistent vertical footprint.
+        const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         FRAMES[(self.tick as usize) % FRAMES.len()]
+    }
+
+    /// A soft pulse glyph driven by `tick` — useful for drawing attention to
+    /// important badges (security updates, failed queue entries) without the
+    /// distraction of continuous motion.
+    #[allow(dead_code)]
+    pub fn pulse_frame(&self) -> char {
+        const FRAMES: [char; 8] = ['·', '•', '●', '⬤', '●', '•', '·', ' '];
+        FRAMES[(self.tick as usize / 2) % FRAMES.len()]
     }
 }
 
@@ -4495,6 +4513,7 @@ fn command_group(command: CommandId) -> &'static str {
         | CommandId::SelectAll => "Selection",
         CommandId::Install | CommandId::Remove | CommandId::Update => "Actions",
         CommandId::ExportPackages | CommandId::ImportPackages => "Packages",
+        CommandId::CycleTheme => "Appearance",
         CommandId::ToggleQueue
         | CommandId::QueueCancel
         | CommandId::QueueRetry
@@ -4513,6 +4532,7 @@ fn command_group_order(command: CommandId) -> usize {
         "Selection" => 3,
         "Actions" => 4,
         "Queue" => 5,
+        "Appearance" => 6,
         _ => usize::MAX,
     }
 }
@@ -4549,6 +4569,7 @@ pub fn action_label(action: TaskQueueAction) -> &'static str {
 }
 
 pub async fn run() -> Result<()> {
+    crate::cli::tui::theme::init_from_env();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;

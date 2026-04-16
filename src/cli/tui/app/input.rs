@@ -206,12 +206,17 @@ impl App {
             CommandId::QueueLogNewer => self.queue_log_scroll_down(),
             CommandId::ExportPackages => self.export_packages().await,
             CommandId::ImportPackages => self.import_packages().await,
+            CommandId::CycleTheme => {
+                let name = crate::cli::tui::theme::cycle_theme();
+                self.set_status(format!("Theme: {}", name), false);
+            }
         }
     }
 
     async fn handle_palette_key(&mut self, key: KeyEvent) {
+        // Ctrl+C closes palette, never quits app
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.should_quit = true;
+            self.close_palette();
             return;
         }
 
@@ -269,8 +274,20 @@ impl App {
     }
 
     async fn handle_normal_key(&mut self, key: KeyEvent) {
+        // Ctrl+C cancels running task when in queue view, otherwise is ignored
+        // We never quit on Ctrl+C - use 'q' to quit instead
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.should_quit = true;
+            let can_cancel = self.queue_expanded
+                && self.focus == Focus::Queue
+                && self
+                    .tasks
+                    .get(self.task_cursor)
+                    .is_some_and(|t| t.status == TaskQueueStatus::Running);
+
+            if can_cancel {
+                self.execute_command(CommandId::QueueCancel).await;
+            }
+            // If can't cancel, do nothing (don't quit)
             return;
         }
 
@@ -467,6 +484,7 @@ impl App {
             KeyCode::Char('M') => self.execute_command(CommandId::QueueRemediate).await,
             KeyCode::Char('E') => self.execute_command(CommandId::ExportPackages).await,
             KeyCode::Char('I') => self.execute_command(CommandId::ImportPackages).await,
+            KeyCode::Char('T') => self.execute_command(CommandId::CycleTheme).await,
             _ => {}
         }
     }

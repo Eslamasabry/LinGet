@@ -16,18 +16,25 @@ use unicode_width::UnicodeWidthStr;
 pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     let mut left: Vec<Span> = vec![
         Span::styled(
-            " ◆ ",
+            " ❖ ",
             Style::default()
-                .fg(palette::CYAN)
-                .bg(palette::HEADER_BG)
+                .fg(palette::CYAN())
+                .bg(palette::HEADER_BG())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "LinGet ",
+            "LinGet",
             Style::default()
-                .fg(palette::WHITE)
-                .bg(palette::HEADER_BG)
+                .fg(palette::WHITE())
+                .bg(palette::HEADER_BG())
                 .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" · {} ", crate::cli::tui::theme::current_theme_name()),
+            Style::default()
+                .fg(palette::DARK_GRAY())
+                .bg(palette::HEADER_BG())
+                .add_modifier(Modifier::ITALIC),
         ),
         Span::styled(" ", header_bar()),
     ];
@@ -186,8 +193,8 @@ fn render_filter_tab(
             Span::styled(
                 key.to_string(),
                 Style::default()
-                    .fg(palette::YELLOW)
-                    .bg(palette::TAB_ACTIVE_BG)
+                    .fg(palette::YELLOW())
+                    .bg(palette::TAB_ACTIVE_BG())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" ", tab_active()),
@@ -205,15 +212,15 @@ fn render_filter_tab(
             Span::styled(
                 key.to_string(),
                 Style::default()
-                    .fg(palette::DARK_GRAY)
-                    .bg(palette::HEADER_BG),
+                    .fg(palette::DARK_GRAY())
+                    .bg(palette::HEADER_BG()),
             ),
             Span::styled(" ", header_bar()),
             Span::styled(
                 label.to_string(),
                 Style::default()
-                    .fg(palette::DARK_GRAY)
-                    .bg(palette::HEADER_BG),
+                    .fg(palette::DARK_GRAY())
+                    .bg(palette::HEADER_BG()),
             ),
         ];
         if let Some(count) = count {
@@ -221,8 +228,8 @@ fn render_filter_tab(
             spans.push(Span::styled(
                 count.to_string(),
                 Style::default()
-                    .fg(palette::DARK_GRAY)
-                    .bg(palette::HEADER_BG),
+                    .fg(palette::DARK_GRAY())
+                    .bg(palette::HEADER_BG()),
             ));
         }
         spans.push(Span::styled(" ", header_bar()));

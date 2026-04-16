@@ -5,7 +5,7 @@ use crate::cli::tui::format::{
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::theme::{
     accent, dim, error, loading, muted, row_cursor, row_selected, scrollbar_style, scrollbar_thumb,
-    source_color, success, table_header, text, warning,
+    source_color, success, table_header_band, text, warning,
 };
 use crate::cli::tui::ui::{panel_block, window_start};
 use crate::models::{Package, PackageStatus, UpdateCategory};
@@ -53,58 +53,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
     }
 
     if app.filtered.is_empty() {
-        let lines = if !app.search.is_empty() {
-            if app.search_results.is_some() {
-                vec![
-                    Line::from(Span::styled(
-                        format!("No provider results for '{}'", app.search),
-                        muted(),
-                    )),
-                    Line::from(Span::styled("Press Esc to return to local packages", dim())),
-                ]
-            } else {
-                vec![
-                    Line::from(Span::styled(
-                        format!("No local matches for '{}'", app.search),
-                        muted(),
-                    )),
-                    Line::from(Span::styled(
-                        "Press Enter to search providers or Esc to clear",
-                        dim(),
-                    )),
-                ]
-            }
-        } else if app.filter == Filter::Updates {
-            vec![
-                Line::from(Span::styled("No updates available", muted())),
-                Line::from(Span::styled("All packages are current", dim())),
-            ]
-        } else if app.filter == Filter::Favorites {
-            if app.favorites_updates_only {
-                vec![
-                    Line::from(Span::styled("No favorite updates available", muted())),
-                    Line::from(Span::styled("Press v to show all favorites", dim())),
-                ]
-            } else {
-                vec![
-                    Line::from(Span::styled("No favorites yet", muted())),
-                    Line::from(Span::styled(
-                        "Press f to favorite the selected package",
-                        dim(),
-                    )),
-                ]
-            }
-        } else if app.filter == Filter::SecurityUpdates {
-            vec![
-                Line::from(Span::styled("No security updates available", muted())),
-                Line::from(Span::styled("All packages are secure", dim())),
-            ]
-        } else {
-            vec![Line::from(Span::styled(
-                "No packages match this filter",
-                muted(),
-            ))]
-        };
+        let lines = build_empty_state_lines(app);
         let paragraph = Paragraph::new(lines)
             .style(text())
             .alignment(ratatui::layout::Alignment::Center);
@@ -112,7 +61,8 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let vertical_padding = inner.height.saturating_sub(2) / 2;
+        let total_lines = 7u16; // art(3) + spacing(1) + title(1) + spacing(1) + hint(1)
+        let vertical_padding = inner.height.saturating_sub(total_lines) / 2;
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(vertical_padding), Constraint::Min(1)])
@@ -242,7 +192,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
     }
 
     let header =
-        Row::new(vec!["", "★", "Name", "Version", "Source", "Status"]).style(table_header());
+        Row::new(vec!["", "★", "Name", "Version", "Source", "Status"]).style(table_header_band());
     let widths = [
         Constraint::Length(2),
         Constraint::Length(2),
@@ -418,4 +368,116 @@ fn fuzzy_match_positions(text: &str, query: &str) -> Vec<usize> {
     } else {
         Vec::new()
     }
+}
+
+/// Hero-style empty state with ASCII art, contextual copy and a key-hint chip.
+///
+/// The art is intentionally compact (3 rows) to fit even in modest terminals;
+/// the surrounding paragraph handles vertical centering.
+fn build_empty_state_lines(app: &App) -> Vec<Line<'static>> {
+    use crate::cli::tui::theme::key_hint;
+
+    struct State {
+        art: [&'static str; 3],
+        art_style: Style,
+        title: String,
+        subtitle: String,
+        hint_key: &'static str,
+        hint_label: &'static str,
+    }
+
+    let state = if !app.search.is_empty() {
+        if app.search_results.is_some() {
+            State {
+                art: ["  ╭─── ◯ ───╮  ", "  │  no hits │  ", "  ╰─────────╯  "],
+                art_style: muted(),
+                title: format!("No provider results for '{}'", app.search),
+                subtitle: "Try a broader term, or clear the search.".to_string(),
+                hint_key: "Esc",
+                hint_label: "back to local",
+            }
+        } else {
+            State {
+                art: ["   ╭───────╮   ", "   │  ?  ? │   ", "   ╰───────╯   "],
+                art_style: dim(),
+                title: format!("No local matches for '{}'", app.search),
+                subtitle: "Search online providers or clear the query.".to_string(),
+                hint_key: "Enter",
+                hint_label: "search providers",
+            }
+        }
+    } else if app.filter == Filter::Updates {
+        State {
+            art: ["    ╱◉◉◉╲    ", "   ╱ all ╲   ", "   ╲ ok  ╱   "],
+            art_style: success(),
+            title: "No updates available".to_string(),
+            subtitle: "Every installed package is on its latest version.".to_string(),
+            hint_key: "2",
+            hint_label: "view installed",
+        }
+    } else if app.filter == Filter::Favorites {
+        if app.favorites_updates_only {
+            State {
+                art: ["    ★ ☆ ★    ", "   all clear  ", "     ✓ ✓      "],
+                art_style: warning(),
+                title: "No favourite has a pending update".to_string(),
+                subtitle: "Your starred packages are all current.".to_string(),
+                hint_key: "v",
+                hint_label: "show all favourites",
+            }
+        } else {
+            State {
+                art: ["     ☆        ", "    ☆ ☆       ", "   ☆ ☆ ☆      "],
+                art_style: dim(),
+                title: "No favourites yet".to_string(),
+                subtitle: "Star a package to pin it here and watch for updates.".to_string(),
+                hint_key: "f",
+                hint_label: "favourite selected",
+            }
+        }
+    } else if app.filter == Filter::SecurityUpdates {
+        State {
+            art: ["   ╔═══════╗   ", "   ║  🛡  safe║   ", "   ╚═══════╝   "],
+            art_style: success(),
+            title: "No security updates pending".to_string(),
+            subtitle: "All installed packages are secure.".to_string(),
+            hint_key: "1",
+            hint_label: "browse catalogue",
+        }
+    } else if app.filter == Filter::Duplicates {
+        State {
+            art: ["   ╭─╮ ╭─╮    ", "   │·│ │·│    ", "   ╰─╯ ╰─╯    "],
+            art_style: muted(),
+            title: "No duplicate installations".to_string(),
+            subtitle: "Each package is installed from just one source.".to_string(),
+            hint_key: "1",
+            hint_label: "view all",
+        }
+    } else {
+        State {
+            art: ["   ┌──◆──┐   ", "   │ ... │   ", "   └─────┘   "],
+            art_style: muted(),
+            title: "No packages match this filter".to_string(),
+            subtitle: "Try a different view or broaden your search.".to_string(),
+            hint_key: "1",
+            hint_label: "view all",
+        }
+    };
+
+    vec![
+        Line::from(Span::styled(state.art[0].to_string(), state.art_style)),
+        Line::from(Span::styled(state.art[1].to_string(), state.art_style)),
+        Line::from(Span::styled(state.art[2].to_string(), state.art_style)),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(state.title, muted())),
+        Line::from(Span::raw("")),
+        Line::from(vec![Span::styled(state.subtitle, dim())]),
+        Line::from(Span::raw("")),
+        Line::from(vec![
+            Span::styled("[", dim()),
+            Span::styled(state.hint_key, key_hint()),
+            Span::styled("] ", dim()),
+            Span::styled(state.hint_label, muted()),
+        ]),
+    ]
 }
