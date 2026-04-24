@@ -4359,15 +4359,8 @@ impl App {
         (queued, running, completed, failed, cancelled)
     }
 
-    pub fn should_show_queue_bar(&self) -> bool {
-        !self.tasks.is_empty()
-    }
-
     pub fn queue_bar_height(&self) -> u16 {
-        if !self.should_show_queue_bar() {
-            return 0;
-        }
-        1
+        0
     }
 
     pub fn spinner_frame(&self) -> char {
