@@ -11,44 +11,33 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
 
 pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let mut left: Vec<Span> = vec![
-        Span::styled(
-            " ❖ ",
-            Style::default()
-                .fg(palette::CYAN())
-                .bg(palette::HEADER_BG())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "LinGet",
-            Style::default()
-                .fg(palette::WHITE())
-                .bg(palette::HEADER_BG())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  ·  {}", crate::cli::tui::theme::current_theme_name()),
-            Style::default()
-                .fg(palette::DARK_GRAY())
-                .bg(palette::HEADER_BG())
-                .add_modifier(Modifier::ITALIC),
-        ),
-        Span::styled(
-            format!("  ·  {} pkgs", app.filter_counts[0]),
-            Style::default()
-                .fg(palette::DARK_GRAY())
-                .bg(palette::HEADER_BG()),
-        ),
-    ];
+    let compact_tabs = compact_tabs(app, area.width);
+    let mut left = header_brand_spans();
+    for spec in filter_tab_specs(app, compact_tabs) {
+        left.extend(render_filter_tab(
+            spec.key,
+            spec.label,
+            Some(spec.count),
+            spec.active,
+            app.searching,
+        ));
+        left.push(Span::styled(" ", header_bar()));
+    }
 
     let mut right: Vec<Span> = Vec::new();
 
     right.push(Span::styled(
         format!("[{}] ", app.tui_mode_label()),
         mode_badge_style(app),
+    ));
+    right.push(Span::styled(
+        format!("{} ", crate::cli::tui::theme::current_theme_name()),
+        Style::default()
+            .fg(palette::DARK_GRAY())
+            .bg(palette::HEADER_BG())
+            .add_modifier(Modifier::ITALIC),
     ));
 
     if let Some(activity) = app.catalog_activity_label() {
@@ -71,6 +60,91 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     let line = compose_left_right(left, right, area.width as usize);
     let paragraph = Paragraph::new(line).style(header_bar());
     frame.render_widget(paragraph, area);
+}
+
+struct FilterTabSpec {
+    key: &'static str,
+    label: &'static str,
+    count: usize,
+    active: bool,
+    filter: Filter,
+}
+
+fn header_brand_spans() -> Vec<Span<'static>> {
+    vec![
+        Span::styled(
+            " ❖ ",
+            Style::default()
+                .fg(palette::CYAN())
+                .bg(palette::HEADER_BG())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "LinGet",
+            Style::default()
+                .fg(palette::WHITE())
+                .bg(palette::HEADER_BG())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", header_bar()),
+    ]
+}
+
+fn compact_tabs(app: &App, width: u16) -> bool {
+    app.compact || width < 112
+}
+
+fn filter_tab_specs(app: &App, compact: bool) -> [FilterTabSpec; 6] {
+    let installed_label = if compact { "Inst" } else { "Installed" };
+    let updates_label = if compact { "Upd" } else { "Updates" };
+    let favorites_label = if compact { "Fav" } else { "Favorites" };
+    let security_label = if compact { "Sec" } else { "Security" };
+    let dupes_label = if compact { "Dup" } else { "Duplicates" };
+
+    [
+        FilterTabSpec {
+            key: "1",
+            label: "All",
+            count: app.filter_counts[0],
+            active: app.filter == Filter::All,
+            filter: Filter::All,
+        },
+        FilterTabSpec {
+            key: "2",
+            label: installed_label,
+            count: app.filter_counts[1],
+            active: app.filter == Filter::Installed,
+            filter: Filter::Installed,
+        },
+        FilterTabSpec {
+            key: "3",
+            label: updates_label,
+            count: app.filter_counts[2],
+            active: app.filter == Filter::Updates,
+            filter: Filter::Updates,
+        },
+        FilterTabSpec {
+            key: "4",
+            label: favorites_label,
+            count: app.filter_counts[3],
+            active: app.filter == Filter::Favorites,
+            filter: Filter::Favorites,
+        },
+        FilterTabSpec {
+            key: "5",
+            label: security_label,
+            count: app.filter_counts[4],
+            active: app.filter == Filter::SecurityUpdates,
+            filter: Filter::SecurityUpdates,
+        },
+        FilterTabSpec {
+            key: "6",
+            label: dupes_label,
+            count: app.filter_counts[5],
+            active: app.filter == Filter::Duplicates,
+            filter: Filter::Duplicates,
+        },
+    ]
 }
 
 fn mode_badge_style(app: &App) -> Style {
@@ -167,76 +241,22 @@ pub fn header_filter_hit_test(
         return None;
     }
 
-    let installed_label = if app.compact { "Inst" } else { "Installed" };
-    let updates_label = if app.compact { "Upd" } else { "Updates" };
-    let favorites_label = if app.compact { "Fav" } else { "Favorites" };
-    let dupes_label = if app.compact { "Dup" } else { "Dupes" };
+    let mut cursor = header_filter_row.x + spans_width(&header_brand_spans()) as u16;
+    let tabs = filter_tab_specs(app, compact_tabs(app, header_filter_row.width));
 
-    let tabs = [
-        (
-            "1",
-            "All",
-            (app.filter == Filter::All).then_some(app.filter_counts[0]),
-            app.filter == Filter::All,
-            Filter::All,
-        ),
-        (
-            "2",
-            installed_label,
-            (app.filter == Filter::Installed).then_some(app.filter_counts[1]),
-            app.filter == Filter::Installed,
-            Filter::Installed,
-        ),
-        (
-            "3",
-            updates_label,
-            (app.filter == Filter::Updates).then_some(app.filter_counts[2]),
-            app.filter == Filter::Updates,
-            Filter::Updates,
-        ),
-        (
-            "4",
-            favorites_label,
-            (app.filter == Filter::Favorites).then_some(app.filter_counts[3]),
-            app.filter == Filter::Favorites,
-            Filter::Favorites,
-        ),
-        (
-            "5",
-            "Security",
-            (app.filter == Filter::SecurityUpdates).then_some(app.filter_counts[4]),
-            app.filter == Filter::SecurityUpdates,
-            Filter::SecurityUpdates,
-        ),
-        (
-            "6",
-            dupes_label,
-            (app.filter == Filter::Duplicates).then_some(app.filter_counts[5]),
-            app.filter == Filter::Duplicates,
-            Filter::Duplicates,
-        ),
-    ];
-
-    let mut cursor = header_filter_row.x
-        + UnicodeWidthStr::width(" ◆ ") as u16
-        + UnicodeWidthStr::width("LinGet ") as u16
-        + 1;
-
-    for (index, (key, label, count, active, filter)) in tabs.iter().enumerate() {
+    for spec in tabs {
         let width = spans_width(&render_filter_tab(
-            key,
-            label,
-            *count,
-            *active,
+            spec.key,
+            spec.label,
+            Some(spec.count),
+            spec.active,
             app.searching,
         )) as u16;
         if col >= cursor && col < cursor.saturating_add(width) {
-            return Some(*filter);
+            return Some(spec.filter);
         }
         cursor = cursor.saturating_add(width);
-        if index < tabs.len() - 1 {
-            cursor = cursor.saturating_add(1);
-        }
+        cursor = cursor.saturating_add(1);
     }
 
     None
