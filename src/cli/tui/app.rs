@@ -2304,6 +2304,11 @@ impl App {
         if self.source_management.loading && self.source_management.target_source == Some(source) {
             return;
         }
+        if self.source_management.target_source == Some(source)
+            && !self.source_management.repositories.is_empty()
+        {
+            return;
+        }
 
         self.source_management.reset();
         self.source_management.loading = true;

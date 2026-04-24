@@ -15,15 +15,6 @@ pub enum UpdateLane {
 }
 
 impl UpdateLane {
-    pub fn label(self) -> &'static str {
-        match self {
-            UpdateLane::Security => "Security",
-            UpdateLane::Recommended => "Recommended",
-            UpdateLane::Optional => "Optional",
-            UpdateLane::Risky => "Risky",
-        }
-    }
-
     fn sort_key(self) -> u8 {
         match self {
             UpdateLane::Security => 0,
@@ -38,7 +29,6 @@ impl UpdateLane {
 pub struct UpdateCandidate {
     pub package: Package,
     pub lane: UpdateLane,
-    pub category: UpdateCategory,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,11 +51,7 @@ pub fn classify_updates(packages: &[Package]) -> Vec<UpdateCandidate> {
                 .update_category
                 .unwrap_or_else(|| pkg.detect_update_category());
             let lane = classify_lane(&pkg, category);
-            UpdateCandidate {
-                package: pkg,
-                lane,
-                category,
-            }
+            UpdateCandidate { package: pkg, lane }
         })
         .collect();
 

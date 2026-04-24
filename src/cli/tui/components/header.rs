@@ -1,7 +1,7 @@
 use crate::cli::tui::app::App;
 use crate::cli::tui::state::filters::Filter;
 use crate::cli::tui::theme::{
-    accent, dim, header_bar, italic_status, loading, muted, palette, tab_active, warning,
+    accent, header_bar, italic_status, loading, muted, palette, tab_active, warning,
 };
 use crate::cli::tui::ui::{compose_left_right, spans_width};
 use ratatui::{
@@ -30,70 +30,21 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" · {} ", crate::cli::tui::theme::current_theme_name()),
+            format!("  ·  {}", crate::cli::tui::theme::current_theme_name()),
             Style::default()
                 .fg(palette::DARK_GRAY())
                 .bg(palette::HEADER_BG())
                 .add_modifier(Modifier::ITALIC),
         ),
-        Span::styled(" ", header_bar()),
+        Span::styled(
+            format!("  ·  {} pkgs", app.filter_counts[0]),
+            Style::default()
+                .fg(palette::DARK_GRAY())
+                .bg(palette::HEADER_BG()),
+        ),
     ];
-    let installed_label = if app.compact { "Inst" } else { "Installed" };
-    let updates_label = if app.compact { "Upd" } else { "Updates" };
-    let favorites_label = if app.compact { "Fav" } else { "Favorites" };
 
-    left.extend(render_filter_tab(
-        "1",
-        "All",
-        (app.filter == Filter::All).then_some(app.filter_counts[0]),
-        app.filter == Filter::All,
-        app.searching,
-    ));
-    left.push(Span::raw(" "));
-    left.extend(render_filter_tab(
-        "2",
-        installed_label,
-        (app.filter == Filter::Installed).then_some(app.filter_counts[1]),
-        app.filter == Filter::Installed,
-        app.searching,
-    ));
-    left.push(Span::raw(" "));
-    left.extend(render_filter_tab(
-        "3",
-        updates_label,
-        (app.filter == Filter::Updates).then_some(app.filter_counts[2]),
-        app.filter == Filter::Updates,
-        app.searching,
-    ));
-    left.push(Span::raw(" "));
-    left.extend(render_filter_tab(
-        "4",
-        favorites_label,
-        (app.filter == Filter::Favorites).then_some(app.filter_counts[3]),
-        app.filter == Filter::Favorites,
-        app.searching,
-    ));
-    if !app.compact {
-        left.push(Span::raw(" "));
-        left.extend(render_filter_tab(
-            "5",
-            "Security",
-            (app.filter == Filter::SecurityUpdates).then_some(app.filter_counts[4]),
-            app.filter == Filter::SecurityUpdates,
-            app.searching,
-        ));
-    }
-    left.push(Span::raw(" "));
-    let dupes_label = if app.compact { "Dup" } else { "Dupes" };
-    left.extend(render_filter_tab(
-        "6",
-        dupes_label,
-        (app.filter == Filter::Duplicates).then_some(app.filter_counts[5]),
-        app.filter == Filter::Duplicates,
-        app.searching,
-    ));
-
-    let mut right = Vec::new();
+    let mut right: Vec<Span> = Vec::new();
 
     right.push(Span::styled(
         format!("[{}] ", app.tui_mode_label()),
@@ -107,56 +58,15 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    if app.searching {
+    if !app.status.is_empty() {
         right.push(Span::styled(
-            format!(
-                "/ {}█ ",
-                render_search_input(&app.search, area.width as usize / 3)
-            ),
-            accent(),
+            format!("{} ", app.status.clone()),
+            italic_status(),
         ));
-        if area.width > 110 {
-            right.push(Span::styled(
-                format!(
-                    "Enter provider search  Esc {} ",
-                    app.search_escape_hint_label()
-                ),
-                muted(),
-            ));
-        }
-    } else if !app.search.is_empty() {
-        let scope = if app.search_results.is_some() {
-            app.provider_search_scope_label()
-                .unwrap_or_else(|| "provider results".to_string())
-        } else {
-            "local filter".to_string()
-        };
-        right.push(Span::styled(
-            format!("/ \"{}\" [{}] ", app.search, scope),
-            muted(),
-        ));
-        if area.width > 120 {
-            if let Some(summary) = app.provider_search_summary() {
-                right.push(Span::styled(format!("{} ", summary), dim()));
-            }
-        }
-        if area.width > 105 {
-            right.push(Span::styled(
-                format!(
-                    "Esc {}  / {} ",
-                    app.search_escape_hint_label(),
-                    app.search_query_hint_label()
-                ),
-                dim(),
-            ));
-        }
-    } else if app.filter == Filter::Favorites && app.favorites_updates_only {
-        right.push(Span::styled("Favorites: updates only [v] ", muted()));
     }
 
-    if !app.status.is_empty() && (!app.searching || area.width > 80) {
-        right.push(Span::styled(app.status.clone(), italic_status()));
-    }
+    // Reserve a trailing space so the right edge doesn't touch the border.
+    left.push(Span::styled(" ", header_bar()));
 
     let line = compose_left_right(left, right, area.width as usize);
     let paragraph = Paragraph::new(line).style(header_bar());
@@ -330,28 +240,4 @@ pub fn header_filter_hit_test(
     }
 
     None
-}
-
-fn render_search_input(query: &str, max_width: usize) -> String {
-    if UnicodeWidthStr::width(query) <= max_width {
-        return query.to_string();
-    }
-    if max_width <= 3 {
-        return "...".to_string();
-    }
-
-    let mut out = String::new();
-    let mut width = 0usize;
-    let target = max_width - 3;
-
-    for ch in query.chars().rev() {
-        let char_width = UnicodeWidthStr::width(ch.to_string().as_str());
-        if width + char_width > target {
-            break;
-        }
-        out.insert(0, ch);
-        width += char_width;
-    }
-
-    format!("...{}", out)
 }

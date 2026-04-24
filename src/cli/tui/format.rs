@@ -1,7 +1,4 @@
-use super::theme::{
-    badge_installed, badge_not_installed, badge_progress, badge_update, loading, muted, success,
-    warning,
-};
+use super::theme::{badge_installed, badge_not_installed, badge_progress, badge_update};
 #[cfg(test)]
 use crate::models::PackageSource;
 use crate::models::{Package, PackageStatus};
@@ -30,26 +27,6 @@ pub fn package_status_short(status: PackageStatus) -> (&'static str, Style) {
         PackageStatus::Installing | PackageStatus::Removing | PackageStatus::Updating => {
             (" ⟳ ", badge_progress())
         }
-    }
-}
-
-pub fn package_status_label(status: PackageStatus) -> &'static str {
-    match status {
-        PackageStatus::Installed => "installed",
-        PackageStatus::UpdateAvailable => "update available",
-        PackageStatus::NotInstalled => "available",
-        PackageStatus::Installing => "installing",
-        PackageStatus::Removing => "removing",
-        PackageStatus::Updating => "updating",
-    }
-}
-
-pub fn package_status_style(status: PackageStatus) -> Style {
-    match status {
-        PackageStatus::Installed => success(),
-        PackageStatus::UpdateAvailable => warning(),
-        PackageStatus::NotInstalled => muted(),
-        PackageStatus::Installing | PackageStatus::Removing | PackageStatus::Updating => loading(),
     }
 }
 
@@ -163,14 +140,12 @@ mod tests {
     }
 
     #[test]
-    fn package_status_copy_matches_detail_and_list_views() {
-        assert_eq!(package_status_label(PackageStatus::Installed), "installed");
+    fn package_status_copy_matches_list_view() {
         assert_eq!(
             package_status_short(PackageStatus::UpdateAvailable)
                 .0
                 .trim(),
             "↑"
         );
-        assert_eq!(package_status_label(PackageStatus::Removing), "removing");
     }
 }

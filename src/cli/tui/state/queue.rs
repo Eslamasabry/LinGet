@@ -15,17 +15,6 @@ pub enum QueueJourneyLane {
     Done,
 }
 
-impl QueueJourneyLane {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Now => "now",
-            Self::Next => "next",
-            Self::NeedsAttention => "needs attention",
-            Self::Done => "done",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueFailureFilter {
     All,

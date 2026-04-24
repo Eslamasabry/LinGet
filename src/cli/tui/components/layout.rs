@@ -82,16 +82,21 @@ pub fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
     } else {
         0
     };
+    let gap: u16 = if source_width > 0 { 1 } else { 0 };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(source_width), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(source_width),
+            Constraint::Length(gap),
+            Constraint::Min(1),
+        ])
         .split(area);
 
     let sources = columns[0];
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(columns[1]);
+        .split(columns[2]);
 
     let packages = right[0];
     if app.queue_expanded {

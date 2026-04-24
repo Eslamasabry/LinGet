@@ -4,26 +4,18 @@ use super::app::{
 };
 use super::format::truncate_to_width;
 use super::theme::*;
-use super::update_center;
-use crate::cli::tui::components::dashboard::draw_dashboard;
-use crate::cli::tui::components::details::{draw_compact_details_summary, draw_details_panel};
 use crate::cli::tui::components::header::draw_filter_bar;
 pub use crate::cli::tui::components::header::QueueHintAction;
-use crate::cli::tui::components::layout::sources_panel_width;
-pub use crate::cli::tui::components::layout::LayoutRegions;
-use crate::cli::tui::components::packages::draw_packages_panel;
-use crate::cli::tui::components::sources::draw_sources_panel;
-use crate::cli::tui::state::filters::{Filter, Focus, ViewMode};
-use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
+use crate::cli::tui::state::filters::{Filter, Focus};
+use crate::models::history::{TaskQueueEntry, TaskQueueStatus};
 use crate::models::{Package, PackageSource, PackageStatus};
 use chrono::Local;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, Gauge, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-        Wrap,
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
     },
     Frame,
 };
@@ -286,85 +278,12 @@ pub fn spans_width(spans: &[Span<'_>]) -> usize {
 }
 
 fn draw_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
-    match app.view_mode {
-        ViewMode::Dashboard => {
-            draw_dashboard(frame, app, area);
-        }
-        ViewMode::Queue => {
-            draw_expanded_queue(frame, app, area);
-        }
-        ViewMode::Browse => {
-            if app.compact {
-                draw_compact_content(frame, app, area);
-            } else {
-                draw_full_content(frame, app, area);
-            }
-        }
-    }
-}
-
-fn draw_full_content(frame: &mut Frame, app: &mut App, area: Rect) {
-    let source_width = if app.show_sidebar {
-        sources_panel_width(app, area.width)
-    } else {
-        0
-    };
-    let gap: u16 = if source_width > 0 { 1 } else { 0 };
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(source_width),
-            Constraint::Length(gap),
-            Constraint::Min(1),
-        ])
-        .split(area);
-
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(columns[2]);
-
     if app.queue_expanded {
-        draw_sources_panel(frame, app, columns[0]);
-        draw_packages_panel(frame, app, right[0], false);
-        draw_expanded_queue(frame, app, right[1]);
-    } else {
-        let regions = LayoutRegions {
-            sources: columns[0],
-            packages: right[0],
-            details: right[1],
-            ..LayoutRegions::default()
-        };
-        render_packages_or_sources(frame, app, &regions);
-    }
-}
-
-fn draw_compact_content(frame: &mut Frame, app: &mut App, area: Rect) {
-    if app.queue_expanded {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(area);
-        draw_packages_panel(frame, app, chunks[0], true);
-        draw_expanded_queue(frame, app, chunks[1]);
+        frame.render_widget(ratatui::widgets::Clear, area);
+        draw_expanded_queue(frame, app, area);
         return;
     }
-
-    if area.height < 4 {
-        draw_packages_panel(frame, app, area, true);
-        return;
-    }
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(2)])
-        .split(area);
-    draw_packages_panel(frame, app, chunks[0], true);
-    if app.focus == Focus::Sources {
-        draw_source_details_panel(frame, app, chunks[1]);
-    } else {
-        draw_compact_details_summary(frame, app, chunks[1]);
-    }
+    crate::cli::tui::components::workspace::draw(frame, app, area);
 }
 
 pub fn panel_block(title: String, focused: bool, _compact: bool) -> Block<'static> {
@@ -395,85 +314,6 @@ pub fn source_count_label(filter: Filter, counts: [usize; 6]) -> String {
         Filter::SecurityUpdates => format!(" {}", counts[4]),
         Filter::Duplicates => format!(" {}", counts[5]),
     }
-}
-
-fn draw_source_details_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.load_repositories(app.source.unwrap_or(PackageSource::Apt));
-
-    let source = app.source.unwrap_or(PackageSource::Apt);
-    let title = format!(" {} Details ", source);
-    let block = panel_block(title, app.focus == Focus::Sources, app.compact);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-
-    if app.source_management.loading {
-        let loading_text = Paragraph::new(Line::from(vec![
-            Span::styled(app.spinner_frame().to_string(), loading()),
-            Span::styled(" Loading repositories...", muted()),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center);
-        frame.render_widget(loading_text, inner);
-        return;
-    }
-
-    let repos = &app.source_management.repositories;
-    if repos.is_empty() {
-        let empty_text = Paragraph::new(Span::styled(
-            "No repositories found or supported by this backend.",
-            muted(),
-        ))
-        .alignment(ratatui::layout::Alignment::Center);
-        frame.render_widget(empty_text, inner);
-        return;
-    }
-
-    let mut lines = Vec::new();
-    let enabled_count = repos.iter().filter(|r| r.enabled).count();
-
-    lines.push(Line::from(vec![
-        Span::styled("Status: ", section_header()),
-        Span::styled(
-            format!("{} / {} enabled", enabled_count, repos.len()),
-            muted(),
-        ),
-    ]));
-    lines.push(Line::from(""));
-
-    for repo in repos {
-        let status_icon = if repo.enabled {
-            Span::styled("✓ ", badge_installed())
-        } else {
-            Span::styled("✗ ", badge_not_installed())
-        };
-
-        lines.push(Line::from(vec![
-            status_icon,
-            Span::styled(&repo.name, text()),
-        ]));
-
-        if let Some(desc) = &repo.description {
-            if !desc.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(desc, muted()),
-                ]));
-            }
-        }
-
-        if let Some(url) = &repo.url {
-            if !url.is_empty() {
-                lines.push(Line::from(vec![Span::raw("  "), Span::styled(url, dim())]));
-            }
-        }
-        lines.push(Line::from(""));
-    }
-
-    frame.render_widget(Paragraph::new(lines).scroll((0, 0)), inner);
 }
 
 fn draw_queue_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -828,17 +668,6 @@ fn line_suggests_apply_phase(line: &str) -> bool {
     .any(|keyword| line.contains(keyword))
 }
 
-fn short_task_id(task_id: &str) -> String {
-    task_id.chars().take(8).collect()
-}
-
-fn task_runtime_hint(task: &TaskQueueEntry) -> Option<String> {
-    let started_at = task.started_at.as_ref()?;
-    let finished_at = task.completed_at.unwrap_or_else(Local::now);
-    let elapsed_secs = finished_at.signed_duration_since(*started_at).num_seconds();
-    (elapsed_secs > 0).then(|| format!("runtime {}", format_eta_seconds(elapsed_secs as u64)))
-}
-
 fn running_task_eta_hint(task: &TaskQueueEntry, tasks: &[TaskQueueEntry]) -> Option<String> {
     let avg_secs = average_completed_task_secs(tasks)?;
     let elapsed_secs = running_elapsed_secs(task)? as f64;
@@ -949,21 +778,6 @@ fn format_eta_seconds(total_seconds: u64) -> String {
     format!("{}s", seconds)
 }
 
-pub fn render_packages_or_sources(frame: &mut Frame, app: &mut App, regions: &LayoutRegions) {
-    draw_sources_panel(frame, app, regions.sources);
-
-    match app.focus {
-        Focus::Sources => {
-            app.load_repositories(app.source.unwrap_or(PackageSource::Apt));
-            draw_source_details_panel(frame, app, regions.details);
-        }
-        Focus::Packages | Focus::Queue => {
-            draw_packages_panel(frame, app, regions.packages, app.compact);
-            draw_details_panel(frame, app, regions.details);
-        }
-    }
-}
-
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::new();
 
@@ -1054,345 +868,20 @@ fn push_hint(spans: &mut Vec<Span<'static>>, key: &'static str, label: &'static 
 
 fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::Queue;
-    let (now, next, attention, done) = app.queue_lane_counts();
-
-    // Clean title with lane counts
-    let title = format!(" ◉ {}  ◎ {}  ⚠ {}  ✓ {} ", now, next, attention, done);
+    let title = " Queue ".to_string();
     let block = panel_block(title, focused, app.compact);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     if app.tasks.is_empty() {
-        let empty_area = block.inner(area);
-        let empty = Paragraph::new("No tasks queued")
+        let empty = Paragraph::new("No tasks queued — press Esc to close")
             .alignment(ratatui::layout::Alignment::Center)
             .style(dim());
-        frame.render_widget(block, area);
-        frame.render_widget(empty, empty_area);
+        frame.render_widget(empty, inner);
         return;
     }
 
-    let inner = block.inner(area);
-
-    // VERTICAL layout: task list (top 50%) + detail card (bottom 50%)
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(50), // Task cards list
-            Constraint::Percentage(50), // Detail panel
-        ])
-        .split(inner);
-
-    // TOP: Card-based task list
-    draw_queue_task_cards(frame, app, sections[0]);
-
-    // BOTTOM: Detail card for selected task
-    if let Some(task) = app.tasks.get(app.task_cursor) {
-        draw_queue_detail_panel(frame, app, task, sections[1]);
-    } else {
-        let empty = Paragraph::new("Select a task to view details")
-            .alignment(ratatui::layout::Alignment::Center)
-            .style(dim());
-        frame.render_widget(empty, sections[1]);
-    }
-
-    frame.render_widget(block, area);
-}
-
-/// Draw task list as proper cards with borders
-fn draw_queue_task_cards(frame: &mut Frame, app: &App, area: Rect) {
-    let visible_indices = app.queue_visible_task_indices();
-    let item_height = 4u16; // Each card takes 4 lines (border + content + border + gap)
-    let visible_count = (area.height / item_height).max(1) as usize;
-    let selected_pos = app.queue_visible_cursor_position(&visible_indices);
-
-    let start = window_start(visible_indices.len(), visible_count, selected_pos);
-    let end = (start + visible_count).min(visible_indices.len());
-
-    let items: Vec<Constraint> = visible_indices
-        .iter()
-        .skip(start)
-        .take(end - start)
-        .map(|_| Constraint::Length(item_height))
-        .collect();
-
-    if items.is_empty() {
-        let empty = Paragraph::new("No matching tasks")
-            .alignment(ratatui::layout::Alignment::Center)
-            .style(dim());
-        frame.render_widget(empty, area);
-        return;
-    }
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(items)
-        .split(area);
-
-    for (idx, &task_idx) in visible_indices
-        .iter()
-        .skip(start)
-        .take(end - start)
-        .enumerate()
-    {
-        if let Some(task) = app.tasks.get(task_idx) {
-            let selected = task_idx == app.task_cursor;
-            draw_queue_task_card(frame, app, task, selected, rows[idx]);
-        }
-    }
-}
-
-/// Draw a single task card with border and gauge
-fn draw_queue_task_card(
-    frame: &mut Frame,
-    app: &App,
-    task: &TaskQueueEntry,
-    selected: bool,
-    area: Rect,
-) {
-    // Card border style based on selection
-    let border_style = if selected {
-        Style::default().fg(palette::CYAN())
-    } else {
-        Style::default().fg(palette::INACTIVE_BORDER())
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height < 2 || inner.width < 20 {
-        return;
-    }
-
-    // Status color
-    let status_color = match task.status {
-        TaskQueueStatus::Running => palette::CYAN(),
-        TaskQueueStatus::Queued => palette::YELLOW(),
-        TaskQueueStatus::Completed => palette::GREEN(),
-        TaskQueueStatus::Failed => palette::RED(),
-        TaskQueueStatus::Cancelled => palette::DARK_GRAY(),
-    };
-
-    // Layout: left (icon + name) | right (gauge/progress)
-    let layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(3),  // Icon
-            Constraint::Min(15),    // Name and action
-            Constraint::Length(12), // Progress/gauge
-        ])
-        .split(inner);
-
-    // Status icon
-    let icon = match task.status {
-        TaskQueueStatus::Running => "▶",
-        TaskQueueStatus::Queued => "◻",
-        TaskQueueStatus::Completed => "✓",
-        TaskQueueStatus::Failed => "✗",
-        TaskQueueStatus::Cancelled => "⊘",
-    };
-    frame.render_widget(
-        Paragraph::new(icon)
-            .alignment(ratatui::layout::Alignment::Center)
-            .style(
-                Style::default()
-                    .fg(status_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        layout[0],
-    );
-
-    // Package name and action
-    let action_line = action_label(task.action).to_lowercase();
-    let name_text = format!(
-        "{}\n{}",
-        truncate_to_width(&task.package_name, layout[1].width as usize),
-        action_line
-    );
-    frame.render_widget(
-        Paragraph::new(name_text).style(if selected { text() } else { muted() }),
-        layout[1],
-    );
-
-    // Progress display - gauge for running, status for others
-    if task.status == TaskQueueStatus::Running {
-        let phase = running_task_phase(app, task);
-        let ratio = phase.progress_weight();
-        let gauge = Gauge::default()
-            .ratio(ratio.clamp(0.0, 1.0))
-            .label(format!("{}%", (ratio * 100.0).round() as usize))
-            .gauge_style(Style::default().fg(status_color).bg(palette::HEADER_BG()));
-        frame.render_widget(gauge, layout[2]);
-    } else {
-        let status_text = match task.status {
-            TaskQueueStatus::Completed => "Done",
-            TaskQueueStatus::Failed => "Failed",
-            TaskQueueStatus::Queued => "Queued",
-            TaskQueueStatus::Cancelled => "Cancelled",
-            _ => "",
-        };
-        let style = match task.status {
-            TaskQueueStatus::Completed => success(),
-            TaskQueueStatus::Failed => error(),
-            TaskQueueStatus::Queued => warning(),
-            TaskQueueStatus::Cancelled => dim(),
-            _ => muted(),
-        };
-        frame.render_widget(
-            Paragraph::new(status_text)
-                .alignment(ratatui::layout::Alignment::Right)
-                .style(style),
-            layout[2],
-        );
-    }
-}
-
-/// Draw detail panel with proper hierarchy
-fn draw_queue_detail_panel(frame: &mut Frame, app: &App, task: &TaskQueueEntry, area: Rect) {
-    // Panel with border
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(palette::INACTIVE_BORDER()))
-        .title(" Task Details ")
-        .title_alignment(ratatui::layout::Alignment::Center);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height < 6 {
-        return;
-    }
-
-    // Tight vertical layout - no wasted space
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Header
-            Constraint::Length(1), // Gauge
-            Constraint::Length(1), // Metadata
-            Constraint::Min(2),    // Logs (at least 2 lines)
-            Constraint::Length(1), // Actions
-        ])
-        .margin(1) // Inner padding for all content
-        .split(inner);
-
-    // HEADER: Action verb + package name
-    let header = format!(
-        "{} {}  [{}]",
-        action_verb(task.action),
-        task.package_name,
-        task.package_source
-    );
-    frame.render_widget(
-        Paragraph::new(header).style(accent().add_modifier(Modifier::BOLD)),
-        sections[0],
-    );
-
-    // MAIN GAUGE: Large progress bar
-    let (ratio, label) = match task.status {
-        TaskQueueStatus::Running => {
-            let phase = running_task_phase(app, task);
-            (phase.progress_weight(), phase.label())
-        }
-        TaskQueueStatus::Completed => (1.0, "Complete"),
-        TaskQueueStatus::Failed => (0.0, "Failed"),
-        TaskQueueStatus::Queued => (0.0, "Waiting..."),
-        TaskQueueStatus::Cancelled => (0.0, "Cancelled"),
-    };
-
-    let gauge_style = match task.status {
-        TaskQueueStatus::Running => accent(),
-        TaskQueueStatus::Completed => success(),
-        TaskQueueStatus::Failed => error(),
-        _ => dim(),
-    };
-
-    let gauge = Gauge::default()
-        .ratio(ratio.clamp(0.0, 1.0))
-        .label(format!("{} · {}%", label, (ratio * 100.0).round() as usize))
-        .gauge_style(gauge_style);
-    frame.render_widget(gauge, sections[1]);
-
-    // METADATA: Single line with left padding
-    let mut meta = vec![
-        Span::styled("  ", dim()), // Left padding
-        Span::styled(short_task_id(&task.id), dim()),
-    ];
-
-    if let Some(runtime) = task_runtime_hint(task) {
-        meta.push(Span::styled(" · ", dim()));
-        meta.push(Span::styled(runtime, muted()));
-    }
-
-    if let Some(parent) = app.retry_parent_for_task(&task.id) {
-        let attempt = app.retry_attempt_for_task(&task.id).unwrap_or(1);
-        meta.push(Span::styled(
-            format!(" · Retry #{} of {}", attempt, parent.package_name),
-            warning(),
-        ));
-    }
-
-    if task.status == TaskQueueStatus::Running {
-        if let Some(eta) = running_task_eta_hint(task, &app.tasks) {
-            meta.push(Span::styled(" · ", dim()));
-            meta.push(Span::styled(eta, loading()));
-        }
-    }
-
-    frame.render_widget(Paragraph::new(Line::from(meta)), sections[2]);
-
-    // LOGS: Scrollable area - compact
-    let logs = app.task_logs.get(&task.id);
-    let log_area = sections[3];
-
-    let log_widget = if logs.map(|l| !l.is_empty()).unwrap_or(false) {
-        let logs = logs.unwrap();
-        let visible = log_area.height as usize;
-        let total = logs.len();
-        let scroll = app.task_log_scroll.min(total.saturating_sub(visible));
-        let end = (scroll + visible).min(total);
-
-        let log_lines: Vec<Line> = logs
-            .iter()
-            .skip(scroll)
-            .take(end.saturating_sub(scroll))
-            .map(|line| {
-                Line::from(Span::styled(
-                    truncate_to_width(line, log_area.width.saturating_sub(2) as usize),
-                    muted(),
-                ))
-            })
-            .collect();
-        Paragraph::new(log_lines)
-    } else {
-        Paragraph::new(Span::styled("  No logs available", dim()))
-    };
-    frame.render_widget(log_widget, log_area);
-
-    // ACTIONS: Keyboard hints
-    let actions = match task.status {
-        TaskQueueStatus::Failed => {
-            if app.failure_category_for_task(task).is_some() {
-                "  [R]etry  [M]fix-bundle  [A]safe-retry"
-            } else {
-                "  [R]etry"
-            }
-        }
-        TaskQueueStatus::Running => "  [Ctrl+C]ancel",
-        _ => "  [↑↓] Navigate  [logs] Scroll",
-    };
-    frame.render_widget(Paragraph::new(actions).style(key_hint()), sections[4]);
-}
-
-/// Helper: action verb for cleaner display
-fn action_verb(action: TaskQueueAction) -> &'static str {
-    match action {
-        TaskQueueAction::Update => "Update",
-        TaskQueueAction::Install => "Install",
-        TaskQueueAction::Remove => "Remove",
-    }
+    crate::cli::tui::components::queue_board::draw(frame, app, inner);
 }
 
 pub fn preflight_overlay_rect(area: Rect) -> Rect {
@@ -2336,14 +1825,6 @@ fn centered_rect(
     }
 }
 
-pub fn update_priority_label(package: &Package) -> Option<&'static str> {
-    let candidate = update_center::classify_updates(std::slice::from_ref(package))
-        .into_iter()
-        .next()?;
-    let _category = candidate.category;
-    Some(candidate.lane.label())
-}
-
 pub fn window_start(total: usize, visible: usize, selected: usize) -> usize {
     if total <= visible || visible == 0 {
         return 0;
@@ -2923,9 +2404,11 @@ pub fn wrap_text(text_value: &str, max_width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::super::app::App;
+    use super::super::components::layout::sources_panel_width;
     use super::super::format::truncate_middle_to_width;
     use super::*;
     use crate::backend::PackageManager;
+    use crate::models::history::TaskQueueAction;
     use crate::models::PackageSource;
     use chrono::{Duration, Local};
     use std::collections::VecDeque;

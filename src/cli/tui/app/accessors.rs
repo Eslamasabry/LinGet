@@ -254,11 +254,6 @@ impl App {
             .and_then(|package_id| self.changelog_cache.get(package_id))
     }
 
-    pub fn changelog_state_for_current_package(&self) -> Option<&ChangelogState> {
-        self.current_package()
-            .and_then(|package| self.changelog_cache.get(&package.id()))
-    }
-
     pub fn changelog_supported_for_target(&self) -> bool {
         self.changelog_target_package()
             .is_some_and(|package| Self::changelog_supported_for_source(package.source))
@@ -341,6 +336,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub fn package_source_note(&self, package: &Package) -> Option<String> {
         let alternative_sources = self.search_source_alternatives.get(&package.id())?;
         if alternative_sources.is_empty() {
