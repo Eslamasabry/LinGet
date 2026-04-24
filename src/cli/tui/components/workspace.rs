@@ -18,12 +18,16 @@
 //! are drawn on top in `ui::draw` and are unchanged by this module.
 
 use super::attention;
+use super::header::render_filter_tabs;
 use super::packages::draw_packages_panel;
 use super::source_rail;
 use crate::cli::tui::app::App;
-use crate::cli::tui::components::details::draw_compact_details_summary;
+use crate::cli::tui::format::{format_package_version, truncate_to_width};
 use crate::cli::tui::state::filters::Focus;
-use crate::cli::tui::theme::{accent, dim, muted, palette, text};
+use crate::cli::tui::theme::{
+    accent, dim, key_hint, muted, palette, source_color, success, text, warning,
+};
+use crate::models::PackageStatus;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -68,18 +72,21 @@ fn draw_list_region(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    // Split horizontally: list · source rail
-    let rail_width = if area.width > 40 {
+    // Split horizontally: source rail · list · inspector.
+    let rail_width = if area.width > 58 {
         source_rail::RAIL_WIDTH
     } else {
         0
     };
+    let inspector_width = if area.width > 118 { 34 } else { 0 };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Min(20),
-            Constraint::Length(if rail_width > 0 { 1 } else { 0 }), // gutter
             Constraint::Length(rail_width),
+            Constraint::Length(if rail_width > 0 { 1 } else { 0 }), // gutter
+            Constraint::Min(20),
+            Constraint::Length(if inspector_width > 0 { 1 } else { 0 }), // gutter
+            Constraint::Length(inspector_width),
         ])
         .split(area);
 
@@ -87,20 +94,31 @@ fn draw_list_region(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1), // package filter tabs
             Constraint::Length(1), // search/command bar
             Constraint::Length(1), // divider
             Constraint::Min(1),    // table
         ])
-        .split(columns[0]);
+        .split(columns[2]);
 
-    draw_search_combo(frame, app, list_chunks[0]);
-    draw_divider(frame, app, list_chunks[1]);
+    draw_package_tabs(frame, app, list_chunks[0]);
+    draw_search_combo(frame, app, list_chunks[1]);
+    draw_divider(frame, app, list_chunks[2]);
     // Re-use existing packages panel (will be refined in a later phase).
-    draw_packages_panel(frame, app, list_chunks[2], true);
+    draw_packages_panel(frame, app, list_chunks[3], true);
 
     if rail_width > 0 {
-        source_rail::draw(frame, app, columns[2]);
+        source_rail::draw(frame, app, columns[0]);
     }
+    if inspector_width > 0 {
+        draw_inspector(frame, app, columns[4]);
+    }
+}
+
+fn draw_package_tabs(frame: &mut Frame, app: &App, area: Rect) {
+    let mut line = render_filter_tabs(app, area.width);
+    line.spans.insert(0, Span::styled(" Views ", dim()));
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn draw_search_combo(frame: &mut Frame, app: &App, area: Rect) {
@@ -122,28 +140,8 @@ fn draw_search_combo(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled("   ", dim()));
         spans.push(Span::styled("? help", placeholder_style));
     }
-    // Right-align current filter chip.
-    let filter_chip = filter_chip_for(app);
-    let right = Line::from(vec![filter_chip]).alignment(ratatui::layout::Alignment::Right);
     let left = Line::from(spans);
     frame.render_widget(Paragraph::new(left), area);
-    frame.render_widget(Paragraph::new(right), area);
-}
-
-fn filter_chip_for(app: &App) -> Span<'static> {
-    use crate::cli::tui::state::filters::Filter;
-    let (label, count) = match app.filter {
-        Filter::All => ("all", app.filter_counts[0]),
-        Filter::Installed => ("installed", app.filter_counts[1]),
-        Filter::Updates => ("updates", app.filter_counts[2]),
-        Filter::Favorites => ("favorites", app.filter_counts[3]),
-        Filter::SecurityUpdates => ("security", app.filter_counts[4]),
-        Filter::Duplicates => ("duplicates", app.filter_counts[5]),
-    };
-    Span::styled(
-        format!(" {} · {} ", label, count),
-        accent().add_modifier(Modifier::REVERSED),
-    )
 }
 
 fn draw_divider(frame: &mut Frame, _app: &App, area: Rect) {
@@ -177,6 +175,139 @@ fn draw_details_strip(frame: &mut Frame, app: &App, area: Rect) {
         ))),
         rows[0],
     );
-    // Bottom row: reuse existing compact details summary
-    draw_compact_details_summary(frame, app, rows[1]);
+    draw_status_strip(frame, app, rows[1]);
+}
+
+fn draw_inspector(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("Inspector", text().add_modifier(Modifier::BOLD)),
+        Span::styled("  package context", dim()),
+    ]));
+    lines.push(Line::from(Span::styled(
+        "─".repeat(area.width as usize),
+        Style::default().fg(palette::DARK_GRAY()),
+    )));
+
+    let Some(package) = app.current_package() else {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("No package selected", dim())));
+        lines.push(Line::from(Span::styled(
+            "Move through the table to preview actions here.",
+            muted(),
+        )));
+        frame.render_widget(Paragraph::new(lines), area);
+        return;
+    };
+
+    let name_width = area.width.saturating_sub(2) as usize;
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        truncate_to_width(&package.name, name_width),
+        accent().add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled(package.source.to_string(), source_color(package.source)),
+        Span::styled("  ", dim()),
+        Span::styled(format_package_version(package), muted()),
+    ]));
+    lines.push(Line::from(""));
+
+    let status = match package.status {
+        PackageStatus::UpdateAvailable => ("Update available", warning()),
+        PackageStatus::Installed => ("Installed", success()),
+        PackageStatus::NotInstalled => ("Available", muted()),
+        PackageStatus::Installing => ("Installing", warning()),
+        PackageStatus::Updating => ("Updating", warning()),
+        PackageStatus::Removing => ("Removing", warning()),
+    };
+    lines.push(fact_line("Status", status.0, status.1));
+    lines.push(fact_line(
+        "Action",
+        package_action_label(package.status),
+        key_hint(),
+    ));
+    if !package.dependencies.is_empty() {
+        lines.push(fact_line(
+            "Deps",
+            &format!("{} known", package.dependencies.len()),
+            muted(),
+        ));
+    }
+    if let Some(homepage) = package.homepage.as_deref() {
+        lines.push(fact_line(
+            "Home",
+            &truncate_to_width(homepage, name_width.saturating_sub(6)),
+            muted(),
+        ));
+    }
+
+    let description = package.description.trim();
+    if !description.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Summary", dim())));
+        lines.push(Line::from(Span::styled(
+            truncate_to_width(description, name_width),
+            text(),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("[Enter]", key_hint()),
+        Span::styled(" act  ", muted()),
+        Span::styled("[c]", key_hint()),
+        Span::styled(" notes  ", muted()),
+        Span::styled("[Space]", key_hint()),
+        Span::styled(" select", muted()),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_status_strip(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(package) = app.current_package() else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("  No package selected", dim()))),
+            area,
+        );
+        return;
+    };
+
+    let text_value = format!(
+        "  {} · {} · {} · {} selected",
+        package.name,
+        package.source,
+        package_action_label(package.status),
+        app.selected.len()
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate_to_width(&text_value, area.width as usize),
+            muted(),
+        ))),
+        area,
+    );
+}
+
+fn fact_line(label: &str, value: &str, style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{:<7}", label), dim()),
+        Span::styled(value.to_string(), style),
+    ])
+}
+
+fn package_action_label(status: PackageStatus) -> &'static str {
+    match status {
+        PackageStatus::UpdateAvailable => "Queue update",
+        PackageStatus::Installed => "Remove",
+        PackageStatus::NotInstalled => "Install",
+        PackageStatus::Installing => "Installing",
+        PackageStatus::Updating => "Updating",
+        PackageStatus::Removing => "Removing",
+    }
 }

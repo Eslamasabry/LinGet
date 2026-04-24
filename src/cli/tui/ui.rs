@@ -134,8 +134,8 @@ pub fn header_filter_hit_test(
     header_filter_row: Rect,
     col: u16,
     row: u16,
-) -> Option<Filter> {
-    crate::cli::tui::components::header::header_filter_hit_test(app, header_filter_row, col, row)
+) -> Option<crate::cli::tui::components::header::HeaderAction> {
+    crate::cli::tui::components::header::header_action_hit_test(app, header_filter_row, col, row)
 }
 
 pub fn queue_hint_hit_test(

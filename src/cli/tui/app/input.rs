@@ -752,15 +752,57 @@ impl App {
     }
 
     fn handle_mouse_header(&mut self, col: u16, row: u16, regions: &LayoutRegions) {
-        if let Some(filter) = ui::header_filter_hit_test(self, regions.header_filter_row, col, row)
+        if let Some(action) = ui::header_filter_hit_test(self, regions.header_filter_row, col, row)
         {
-            self.filter = filter;
-            self.apply_filters();
+            self.apply_header_action(action);
             return;
         }
 
         if !self.searching {
             self.searching = true;
+        }
+    }
+
+    fn apply_header_action(&mut self, action: crate::cli::tui::components::header::HeaderAction) {
+        use crate::cli::tui::components::header::HeaderAction;
+
+        match action {
+            HeaderAction::Browse => {
+                self.queue_expanded = false;
+                self.focus = Focus::Packages;
+                self.filter = Filter::All;
+                self.apply_filters();
+            }
+            HeaderAction::Updates => {
+                self.queue_expanded = false;
+                self.focus = Focus::Packages;
+                self.filter = Filter::Updates;
+                self.apply_filters();
+            }
+            HeaderAction::Installed => {
+                self.queue_expanded = false;
+                self.focus = Focus::Packages;
+                self.filter = Filter::Installed;
+                self.apply_filters();
+            }
+            HeaderAction::Sources => {
+                self.queue_expanded = false;
+                self.focus = Focus::Sources;
+            }
+            HeaderAction::Queue => {
+                self.queue_expanded = true;
+                self.focus = Focus::Queue;
+            }
+            HeaderAction::Health => {
+                self.queue_expanded = false;
+                self.focus = Focus::Packages;
+                self.filter = if self.filter_counts[4] > 0 {
+                    Filter::SecurityUpdates
+                } else {
+                    Filter::Duplicates
+                };
+                self.apply_filters();
+            }
         }
     }
 

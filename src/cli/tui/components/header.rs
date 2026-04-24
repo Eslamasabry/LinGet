@@ -1,5 +1,5 @@
 use crate::cli::tui::app::App;
-use crate::cli::tui::state::filters::Filter;
+use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::theme::{
     accent, header_bar, italic_status, loading, muted, palette, tab_active, warning,
 };
@@ -7,19 +7,17 @@ use crate::cli::tui::ui::{compose_left_right, spans_width};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
-    text::Span,
+    text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
 
 pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let compact_tabs = compact_tabs(app, area.width);
     let mut left = header_brand_spans();
-    for spec in filter_tab_specs(app, compact_tabs) {
-        left.extend(render_filter_tab(
+    for spec in primary_tab_specs(app, area.width) {
+        left.extend(render_primary_tab(
             spec.key,
             spec.label,
-            Some(spec.count),
             spec.active,
             app.searching,
         ));
@@ -62,12 +60,21 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-struct FilterTabSpec {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderAction {
+    Browse,
+    Updates,
+    Installed,
+    Sources,
+    Queue,
+    Health,
+}
+
+struct PrimaryTabSpec {
     key: &'static str,
     label: &'static str,
-    count: usize,
     active: bool,
-    filter: Filter,
+    action: HeaderAction,
 }
 
 fn header_brand_spans() -> Vec<Span<'static>> {
@@ -90,8 +97,86 @@ fn header_brand_spans() -> Vec<Span<'static>> {
     ]
 }
 
-fn compact_tabs(app: &App, width: u16) -> bool {
-    app.compact || width < 112
+fn compact_tabs(width: u16) -> bool {
+    width < 112
+}
+
+fn primary_tab_specs(app: &App, width: u16) -> [PrimaryTabSpec; 6] {
+    let compact = compact_tabs(width);
+    let health_active = app.filter == Filter::SecurityUpdates || app.filter == Filter::Duplicates;
+    [
+        PrimaryTabSpec {
+            key: "B",
+            label: "Browse",
+            active: app.focus == Focus::Packages
+                && !matches!(
+                    app.filter,
+                    Filter::Installed
+                        | Filter::Updates
+                        | Filter::SecurityUpdates
+                        | Filter::Duplicates
+                )
+                && !app.queue_expanded,
+            action: HeaderAction::Browse,
+        },
+        PrimaryTabSpec {
+            key: "U",
+            label: "Updates",
+            active: app.filter == Filter::Updates && !app.queue_expanded,
+            action: HeaderAction::Updates,
+        },
+        PrimaryTabSpec {
+            key: "I",
+            label: if compact { "Inst" } else { "Installed" },
+            active: app.filter == Filter::Installed && !app.queue_expanded,
+            action: HeaderAction::Installed,
+        },
+        PrimaryTabSpec {
+            key: "S",
+            label: "Sources",
+            active: app.focus == Focus::Sources && !app.queue_expanded,
+            action: HeaderAction::Sources,
+        },
+        PrimaryTabSpec {
+            key: "Q",
+            label: "Queue",
+            active: app.queue_expanded,
+            action: HeaderAction::Queue,
+        },
+        PrimaryTabSpec {
+            key: "H",
+            label: "Health",
+            active: health_active && !app.queue_expanded,
+            action: HeaderAction::Health,
+        },
+    ]
+}
+
+fn render_primary_tab(key: &str, label: &str, active: bool, searching: bool) -> Vec<Span<'static>> {
+    render_filter_tab(key, label, None, active, searching)
+}
+
+pub fn render_filter_tabs(app: &App, width: u16) -> Line<'static> {
+    let compact = app.compact || compact_tabs(width);
+    let mut spans = Vec::new();
+    for spec in filter_tab_specs(app, compact) {
+        spans.extend(render_filter_tab(
+            spec.key,
+            spec.label,
+            Some(spec.count),
+            spec.active,
+            app.searching,
+        ));
+        spans.push(Span::raw(" "));
+    }
+    Line::from(spans)
+}
+
+struct FilterTabSpec {
+    key: &'static str,
+    label: &'static str,
+    count: usize,
+    active: bool,
 }
 
 fn filter_tab_specs(app: &App, compact: bool) -> [FilterTabSpec; 6] {
@@ -107,42 +192,36 @@ fn filter_tab_specs(app: &App, compact: bool) -> [FilterTabSpec; 6] {
             label: "All",
             count: app.filter_counts[0],
             active: app.filter == Filter::All,
-            filter: Filter::All,
         },
         FilterTabSpec {
             key: "2",
             label: installed_label,
             count: app.filter_counts[1],
             active: app.filter == Filter::Installed,
-            filter: Filter::Installed,
         },
         FilterTabSpec {
             key: "3",
             label: updates_label,
             count: app.filter_counts[2],
             active: app.filter == Filter::Updates,
-            filter: Filter::Updates,
         },
         FilterTabSpec {
             key: "4",
             label: favorites_label,
             count: app.filter_counts[3],
             active: app.filter == Filter::Favorites,
-            filter: Filter::Favorites,
         },
         FilterTabSpec {
             key: "5",
             label: security_label,
             count: app.filter_counts[4],
             active: app.filter == Filter::SecurityUpdates,
-            filter: Filter::SecurityUpdates,
         },
         FilterTabSpec {
             key: "6",
             label: dupes_label,
             count: app.filter_counts[5],
             active: app.filter == Filter::Duplicates,
-            filter: Filter::Duplicates,
         },
     ]
 }
@@ -228,12 +307,12 @@ pub enum QueueHintAction {
     Remediate,
 }
 
-pub fn header_filter_hit_test(
+pub fn header_action_hit_test(
     app: &App,
     header_filter_row: Rect,
     col: u16,
     row: u16,
-) -> Option<Filter> {
+) -> Option<HeaderAction> {
     if header_filter_row.width == 0 || header_filter_row.height == 0 || row != header_filter_row.y {
         return None;
     }
@@ -242,18 +321,17 @@ pub fn header_filter_hit_test(
     }
 
     let mut cursor = header_filter_row.x + spans_width(&header_brand_spans()) as u16;
-    let tabs = filter_tab_specs(app, compact_tabs(app, header_filter_row.width));
+    let tabs = primary_tab_specs(app, header_filter_row.width);
 
     for spec in tabs {
-        let width = spans_width(&render_filter_tab(
+        let width = spans_width(&render_primary_tab(
             spec.key,
             spec.label,
-            Some(spec.count),
             spec.active,
             app.searching,
         )) as u16;
         if col >= cursor && col < cursor.saturating_add(width) {
-            return Some(spec.filter);
+            return Some(spec.action);
         }
         cursor = cursor.saturating_add(width);
         cursor = cursor.saturating_add(1);

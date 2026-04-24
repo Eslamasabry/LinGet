@@ -6710,7 +6710,7 @@ Remove   1 Package
             ..regions.header_filter_row.x + regions.header_filter_row.width)
             .find(|col| {
                 ui::header_filter_hit_test(&app, regions.header_filter_row, *col, row)
-                    == Some(Filter::Installed)
+                    == Some(crate::cli::tui::components::header::HeaderAction::Installed)
             })
             .expect("installed tab column");
 
