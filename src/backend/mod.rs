@@ -39,7 +39,9 @@ pub use pacman::PacmanBackend;
 pub use pip::PipBackend;
 pub use pipx::PipxBackend;
 pub use pkexec::{run_pkexec, run_pkexec_with_logs, Suggest, SUGGEST_PREFIX};
-pub use providers::{detect_available_providers, detect_providers, ProviderStatus};
+pub use providers::{
+    detect_available_providers, detect_providers, detect_providers_fast, ProviderStatus,
+};
 pub use snap::SnapBackend;
 pub use traits::*;
 pub use zypper::ZypperBackend;
@@ -230,11 +232,23 @@ pub struct PackageManager {
 
 impl PackageManager {
     pub fn new() -> Self {
+        Self::new_with_provider_versions(true)
+    }
+
+    pub fn new_fast() -> Self {
+        Self::new_with_provider_versions(false)
+    }
+
+    fn new_with_provider_versions(include_provider_versions: bool) -> Self {
         info!("Initializing PackageManager, detecting available backends");
-        let provider_statuses = detect_providers()
-            .into_iter()
-            .map(|status| (status.source, status))
-            .collect();
+        let provider_statuses = if include_provider_versions {
+            detect_providers()
+        } else {
+            detect_providers_fast()
+        }
+        .into_iter()
+        .map(|status| (status.source, status))
+        .collect();
         let mut backends: HashMap<PackageSource, Box<dyn PackageBackend>> = HashMap::new();
 
         // Add available backends with logging

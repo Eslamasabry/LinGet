@@ -79,7 +79,7 @@ fn display_name(source: PackageSource) -> String {
     source.to_string()
 }
 
-fn provider_row(source: PackageSource) -> ProviderStatus {
+fn provider_row(source: PackageSource, include_version: bool) -> ProviderStatus {
     let probe = match source {
         PackageSource::Apt => ProviderProbe {
             list_cmds: &["apt", "dpkg-query"],
@@ -179,9 +179,13 @@ fn provider_row(source: PackageSource) -> ProviderStatus {
         _ => probe.list_cmds.iter().all(|c| which::which(c).is_ok()),
     };
 
-    let version = probe
-        .version_cmd
-        .and_then(|(cmd, args)| cmd_version(cmd, args));
+    let version = if include_version {
+        probe
+            .version_cmd
+            .and_then(|(cmd, args)| cmd_version(cmd, args))
+    } else {
+        None
+    };
     let reason = if available {
         None
     } else if probe.list_cmds.is_empty() {
@@ -229,9 +233,21 @@ fn provider_row(source: PackageSource) -> ProviderStatus {
 /// }
 /// ```
 pub fn detect_providers() -> Vec<ProviderStatus> {
+    detect_providers_with_options(true)
+}
+
+/// Detect providers without running version commands.
+///
+/// This keeps latency-sensitive startup paths fast while still reporting
+/// availability, paths, and install hints.
+pub fn detect_providers_fast() -> Vec<ProviderStatus> {
+    detect_providers_with_options(false)
+}
+
+fn detect_providers_with_options(include_versions: bool) -> Vec<ProviderStatus> {
     let mut rows: Vec<ProviderStatus> = PackageSource::current_platform_sources()
         .iter()
-        .map(|&source| provider_row(source))
+        .map(|&source| provider_row(source, include_versions))
         .collect();
 
     rows.sort_by(|a, b| {
@@ -280,6 +296,16 @@ mod tests {
                 assert!(provider.reason.is_some());
             }
         }
+    }
+
+    #[test]
+    fn test_detect_providers_fast_skips_versions() {
+        let providers = detect_providers_fast();
+        assert_eq!(
+            providers.len(),
+            PackageSource::current_platform_sources().len()
+        );
+        assert!(providers.iter().all(|provider| provider.version.is_none()));
     }
 
     #[test]

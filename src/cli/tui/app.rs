@@ -4581,7 +4581,7 @@ pub async fn run() -> Result<()> {
         default_hook(info);
     }));
 
-    let pm = Arc::new(Mutex::new(PackageManager::new()));
+    let pm = Arc::new(Mutex::new(PackageManager::new_fast()));
     let history_tracker = Arc::new(Mutex::new(None));
     let (task_tx, task_rx) = mpsc::channel(200);
 
