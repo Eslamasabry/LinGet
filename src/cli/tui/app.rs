@@ -4,8 +4,8 @@ mod input;
 use super::ui;
 use super::update_center;
 use crate::backend::{
-    BackendCapability, HistoryTracker, PackageManager, SearchCatalog, SearchProviderSummary,
-    SourceCapabilityContext, TaskQueueEvent, TaskQueueExecutor,
+    BackendCapability, HistoryTracker, PackageLoadProgress, PackageManager, SearchCatalog,
+    SearchProviderSummary, SourceCapabilityContext, TaskQueueEvent, TaskQueueExecutor,
 };
 use crate::cli::tui::components::layout::{compute_layout, LayoutRegions};
 use crate::cli::tui::state::filters::{DetailsTab, Filter, Focus, ViewMode};
@@ -264,7 +264,8 @@ type PackageLoadResult = Result<Vec<Package>, String>;
 
 #[derive(Debug)]
 pub enum LoadEvent {
-    Installed(PackageLoadResult),
+    Progress(PackageLoadProgress),
+    InstalledComplete(PackageLoadResult),
     Complete(PackageLoadResult),
 }
 
@@ -2229,15 +2230,26 @@ impl App {
         self.cursor_anchor_id = self.current_package_id();
         self.set_status("Loading installed packages...", false);
 
-        let (tx, rx) = mpsc::channel(2);
+        let (tx, rx) = mpsc::channel(64);
         self.load_rx = Some(rx);
         let pm = self.pm.clone();
 
         tokio::spawn(async move {
+            let (progress_tx, mut progress_rx) = mpsc::channel(32);
+            let event_tx = tx.clone();
+            let progress_forwarder = tokio::spawn(async move {
+                while let Some(progress) = progress_rx.recv().await {
+                    if event_tx.send(LoadEvent::Progress(progress)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
             let installed = {
                 let manager = pm.lock().await;
-                manager.list_all_installed().await
+                manager.list_all_installed_progressive(progress_tx).await
             };
+            let _ = progress_forwarder.await;
 
             let installed = match installed {
                 Ok(installed) => installed,
@@ -2248,7 +2260,7 @@ impl App {
             };
 
             if tx
-                .send(LoadEvent::Installed(Ok(installed.clone())))
+                .send(LoadEvent::InstalledComplete(Ok(installed.clone())))
                 .await
                 .is_err()
             {
@@ -2333,16 +2345,29 @@ impl App {
 
         loop {
             match rx.try_recv() {
-                Ok(LoadEvent::Installed(Ok(packages))) => {
+                Ok(LoadEvent::Progress(PackageLoadProgress::SourceLoaded { source, packages })) => {
+                    let count = packages.len();
+                    self.apply_source_packages(source, packages);
+                    self.catalog_activity = Some(CatalogActivity::RefreshingPackages);
+                    self.set_status(
+                        format!("Loaded {} {} packages; still scanning...", count, source),
+                        true,
+                    );
+                }
+                Ok(LoadEvent::Progress(PackageLoadProgress::SourceFailed { source, error })) => {
+                    self.catalog_activity = Some(CatalogActivity::RefreshingPackages);
+                    self.set_status(format!("Skipped {}: {}", source, error), true);
+                }
+                Ok(LoadEvent::InstalledComplete(Ok(packages))) => {
                     let count = packages.len();
                     self.apply_loaded_packages(packages);
                     self.catalog_activity = Some(CatalogActivity::RefreshingPackages);
                     self.set_status(
-                        format!("Loaded {} installed packages; checking updates...", count),
+                        format!("Loaded {} packages; checking updates...", count),
                         true,
                     );
                 }
-                Ok(LoadEvent::Installed(Err(error))) => {
+                Ok(LoadEvent::InstalledComplete(Err(error))) => {
                     self.catalog_activity = None;
                     self.set_status(format!("Package load error: {}", error), true);
                     return;
@@ -2380,6 +2405,7 @@ impl App {
 
     fn apply_loaded_packages(&mut self, packages: Vec<Package>) {
         self.local_packages = packages;
+        self.sort_local_packages();
         self.search_cache.clear();
         if self.search_results.is_none() {
             self.packages = self.local_packages.clone();
@@ -2388,6 +2414,23 @@ impl App {
         self.previous_statuses.clear();
         self.apply_filters();
         self.restore_cursor_anchor();
+    }
+
+    fn apply_source_packages(&mut self, source: PackageSource, packages: Vec<Package>) {
+        self.cursor_anchor_id = self.current_package_id();
+        self.local_packages
+            .retain(|package| package.source != source);
+        self.local_packages.extend(packages);
+        self.apply_loaded_packages(self.local_packages.clone());
+    }
+
+    fn sort_local_packages(&mut self) {
+        self.local_packages.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.source.cmp(&b.source))
+        });
     }
 
     pub fn poll_search(&mut self) {

@@ -58,11 +58,24 @@ use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info, instrument, warn};
 
 #[cfg(test)]
 pub(crate) static TEST_PATH_ENV_LOCK: Lazy<tokio::sync::Mutex<()>> =
     Lazy::new(|| tokio::sync::Mutex::new(()));
+
+const BACKEND_LIST_TIMEOUT: Duration = Duration::from_secs(8);
+const BACKEND_UPDATE_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn sort_packages(packages: &mut [Package]) {
+    packages.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.source.cmp(&b.source))
+    });
+}
 
 #[derive(Debug, Clone)]
 pub enum TaskQueueEvent {
@@ -70,6 +83,18 @@ pub enum TaskQueueEvent {
     Log { entry_id: String, line: StreamLine },
     Completed(TaskQueueEntry),
     Failed(TaskQueueEntry),
+}
+
+#[derive(Debug, Clone)]
+pub enum PackageLoadProgress {
+    SourceLoaded {
+        source: PackageSource,
+        packages: Vec<Package>,
+    },
+    SourceFailed {
+        source: PackageSource,
+        error: String,
+    },
 }
 
 #[derive(Clone)]
@@ -503,7 +528,23 @@ impl PackageManager {
 
     #[instrument(skip(self), level = "debug")]
     pub async fn list_all_installed(&self) -> Result<Vec<Package>> {
-        use futures::future::join_all;
+        self.list_all_installed_with_progress(None).await
+    }
+
+    #[instrument(skip(self, progress_sender), level = "debug")]
+    pub async fn list_all_installed_progressive(
+        &self,
+        progress_sender: mpsc::Sender<PackageLoadProgress>,
+    ) -> Result<Vec<Package>> {
+        self.list_all_installed_with_progress(Some(progress_sender))
+            .await
+    }
+
+    async fn list_all_installed_with_progress(
+        &self,
+        progress_sender: Option<mpsc::Sender<PackageLoadProgress>>,
+    ) -> Result<Vec<Package>> {
+        use futures::{stream::FuturesUnordered, StreamExt};
 
         let enabled_count = self.enabled_sources.len();
         debug!(
@@ -511,36 +552,57 @@ impl PackageManager {
             "Listing installed packages from all enabled backends"
         );
 
-        // Load all backends in parallel
-        let futures: Vec<_> = self
+        let mut futures = self
             .enabled_backends()
             .map(|(source, backend)| {
                 let source = *source;
-                async move { (source, backend.list_installed().await) }
+                async move {
+                    let result = match timeout(BACKEND_LIST_TIMEOUT, backend.list_installed()).await
+                    {
+                        Ok(result) => result.map_err(|error| error.to_string()),
+                        Err(_) => Err(format!(
+                            "{} package listing timed out after {}s",
+                            source,
+                            BACKEND_LIST_TIMEOUT.as_secs()
+                        )),
+                    };
+                    (source, result)
+                }
             })
-            .collect();
-
-        let results = join_all(futures).await;
+            .collect::<FuturesUnordered<_>>();
 
         let mut all_packages = Vec::new();
         let mut success_count = 0;
         let mut error_count = 0;
 
-        for (source, result) in results {
+        while let Some((source, result)) = futures.next().await {
             match result {
                 Ok(packages) => {
                     debug!(source = ?source, package_count = packages.len(), "Listed packages from backend");
                     success_count += 1;
+                    if let Some(sender) = progress_sender.as_ref() {
+                        let _ = sender
+                            .send(PackageLoadProgress::SourceLoaded {
+                                source,
+                                packages: packages.clone(),
+                            })
+                            .await;
+                    }
                     all_packages.extend(packages);
                 }
-                Err(e) => {
+                Err(error) => {
                     error_count += 1;
-                    warn!(source = ?source, error = %e, "Failed to list packages from backend");
+                    warn!(source = ?source, error = %error, "Failed to list packages from backend");
+                    if let Some(sender) = progress_sender.as_ref() {
+                        let _ = sender
+                            .send(PackageLoadProgress::SourceFailed { source, error })
+                            .await;
+                    }
                 }
             }
         }
 
-        all_packages.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        sort_packages(&mut all_packages);
 
         info!(
             total_packages = all_packages.len(),
@@ -554,26 +616,34 @@ impl PackageManager {
 
     #[instrument(skip(self), level = "debug")]
     pub async fn check_all_updates(&self) -> Result<Vec<Package>> {
-        use futures::future::join_all;
+        use futures::{stream::FuturesUnordered, StreamExt};
 
         debug!("Checking for updates from all enabled backends");
 
-        // Check all backends in parallel
-        let futures: Vec<_> = self
+        let mut futures = self
             .enabled_backends()
             .map(|(source, backend)| {
                 let source = *source;
-                async move { (source, backend.check_updates().await) }
+                async move {
+                    let result =
+                        match timeout(BACKEND_UPDATE_TIMEOUT, backend.check_updates()).await {
+                            Ok(result) => result.map_err(|error| error.to_string()),
+                            Err(_) => Err(format!(
+                                "{} update check timed out after {}s",
+                                source,
+                                BACKEND_UPDATE_TIMEOUT.as_secs()
+                            )),
+                        };
+                    (source, result)
+                }
             })
-            .collect();
-
-        let results = join_all(futures).await;
+            .collect::<FuturesUnordered<_>>();
 
         let mut all_updates = Vec::new();
         let mut success_count = 0;
         let mut error_count = 0;
 
-        for (source, result) in results {
+        while let Some((source, result)) = futures.next().await {
             match result {
                 Ok(packages) => {
                     if !packages.is_empty() {
@@ -582,9 +652,9 @@ impl PackageManager {
                     success_count += 1;
                     all_updates.extend(packages);
                 }
-                Err(e) => {
+                Err(error) => {
                     error_count += 1;
-                    warn!(source = ?source, error = %e, "Failed to check updates from backend");
+                    warn!(source = ?source, error = %error, "Failed to check updates from backend");
                 }
             }
         }
