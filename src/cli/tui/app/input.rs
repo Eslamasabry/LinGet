@@ -785,6 +785,24 @@ impl App {
                 self.filter = Filter::Installed;
                 self.apply_filters();
             }
+            HeaderAction::Favorites => {
+                self.queue_expanded = false;
+                self.focus = Focus::Packages;
+                self.filter = Filter::Favorites;
+                self.apply_filters();
+            }
+            HeaderAction::Security => {
+                self.queue_expanded = false;
+                self.focus = Focus::Packages;
+                self.filter = Filter::SecurityUpdates;
+                self.apply_filters();
+            }
+            HeaderAction::Duplicates => {
+                self.queue_expanded = false;
+                self.focus = Focus::Packages;
+                self.filter = Filter::Duplicates;
+                self.apply_filters();
+            }
             HeaderAction::Sources => {
                 self.queue_expanded = false;
                 self.focus = Focus::Sources;
@@ -792,16 +810,6 @@ impl App {
             HeaderAction::Queue => {
                 self.queue_expanded = true;
                 self.focus = Focus::Queue;
-            }
-            HeaderAction::Health => {
-                self.queue_expanded = false;
-                self.focus = Focus::Packages;
-                self.filter = if self.filter_counts[4] > 0 {
-                    Filter::SecurityUpdates
-                } else {
-                    Filter::Duplicates
-                };
-                self.apply_filters();
             }
         }
     }

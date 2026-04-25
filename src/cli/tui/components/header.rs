@@ -7,7 +7,7 @@ use crate::cli::tui::ui::{compose_left_right, spans_width};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
-    text::{Line, Span},
+    text::Span,
     widgets::Paragraph,
     Frame,
 };
@@ -18,6 +18,7 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
         left.extend(render_primary_tab(
             spec.key,
             spec.label,
+            spec.count,
             spec.active,
             app.searching,
         ));
@@ -65,14 +66,17 @@ pub enum HeaderAction {
     Browse,
     Updates,
     Installed,
+    Favorites,
+    Security,
+    Duplicates,
     Sources,
     Queue,
-    Health,
 }
 
 struct PrimaryTabSpec {
     key: &'static str,
     label: &'static str,
+    count: Option<usize>,
     active: bool,
     action: HeaderAction,
 }
@@ -98,132 +102,81 @@ fn header_brand_spans() -> Vec<Span<'static>> {
 }
 
 fn compact_tabs(width: u16) -> bool {
-    width < 112
+    width < 132
 }
 
-fn primary_tab_specs(app: &App, width: u16) -> [PrimaryTabSpec; 6] {
+fn primary_tab_specs(app: &App, width: u16) -> [PrimaryTabSpec; 8] {
     let compact = compact_tabs(width);
-    let health_active = app.filter == Filter::SecurityUpdates || app.filter == Filter::Duplicates;
     [
         PrimaryTabSpec {
             key: "B",
-            label: "Browse",
+            label: if compact { "All" } else { "Browse" },
+            count: Some(app.filter_counts[0]),
             active: app.focus == Focus::Packages
-                && !matches!(
-                    app.filter,
-                    Filter::Installed
-                        | Filter::Updates
-                        | Filter::SecurityUpdates
-                        | Filter::Duplicates
-                )
+                && matches!(app.filter, Filter::All)
                 && !app.queue_expanded,
             action: HeaderAction::Browse,
         },
         PrimaryTabSpec {
             key: "U",
-            label: "Updates",
+            label: if compact { "Upd" } else { "Updates" },
+            count: Some(app.filter_counts[2]),
             active: app.filter == Filter::Updates && !app.queue_expanded,
             action: HeaderAction::Updates,
         },
         PrimaryTabSpec {
             key: "I",
             label: if compact { "Inst" } else { "Installed" },
+            count: Some(app.filter_counts[1]),
             active: app.filter == Filter::Installed && !app.queue_expanded,
             action: HeaderAction::Installed,
         },
         PrimaryTabSpec {
+            key: "F",
+            label: if compact { "Fav" } else { "Favorites" },
+            count: Some(app.filter_counts[3]),
+            active: app.filter == Filter::Favorites && !app.queue_expanded,
+            action: HeaderAction::Favorites,
+        },
+        PrimaryTabSpec {
+            key: "5",
+            label: if compact { "Sec" } else { "Security" },
+            count: Some(app.filter_counts[4]),
+            active: app.filter == Filter::SecurityUpdates && !app.queue_expanded,
+            action: HeaderAction::Security,
+        },
+        PrimaryTabSpec {
+            key: "6",
+            label: if compact { "Dup" } else { "Duplicates" },
+            count: Some(app.filter_counts[5]),
+            active: app.filter == Filter::Duplicates && !app.queue_expanded,
+            action: HeaderAction::Duplicates,
+        },
+        PrimaryTabSpec {
             key: "S",
             label: "Sources",
+            count: Some(app.visible_sources().len()),
             active: app.focus == Focus::Sources && !app.queue_expanded,
             action: HeaderAction::Sources,
         },
         PrimaryTabSpec {
             key: "Q",
             label: "Queue",
+            count: Some(app.tasks.len()),
             active: app.queue_expanded,
             action: HeaderAction::Queue,
         },
-        PrimaryTabSpec {
-            key: "H",
-            label: "Health",
-            active: health_active && !app.queue_expanded,
-            action: HeaderAction::Health,
-        },
     ]
 }
 
-fn render_primary_tab(key: &str, label: &str, active: bool, searching: bool) -> Vec<Span<'static>> {
-    render_filter_tab(key, label, None, active, searching)
-}
-
-pub fn render_filter_tabs(app: &App, width: u16) -> Line<'static> {
-    let compact = app.compact || compact_tabs(width);
-    let mut spans = Vec::new();
-    for spec in filter_tab_specs(app, compact) {
-        spans.extend(render_filter_tab(
-            spec.key,
-            spec.label,
-            Some(spec.count),
-            spec.active,
-            app.searching,
-        ));
-        spans.push(Span::raw(" "));
-    }
-    Line::from(spans)
-}
-
-struct FilterTabSpec {
-    key: &'static str,
-    label: &'static str,
-    count: usize,
+fn render_primary_tab(
+    key: &str,
+    label: &str,
+    count: Option<usize>,
     active: bool,
-}
-
-fn filter_tab_specs(app: &App, compact: bool) -> [FilterTabSpec; 6] {
-    let installed_label = if compact { "Inst" } else { "Installed" };
-    let updates_label = if compact { "Upd" } else { "Updates" };
-    let favorites_label = if compact { "Fav" } else { "Favorites" };
-    let security_label = if compact { "Sec" } else { "Security" };
-    let dupes_label = if compact { "Dup" } else { "Duplicates" };
-
-    [
-        FilterTabSpec {
-            key: "1",
-            label: "All",
-            count: app.filter_counts[0],
-            active: app.filter == Filter::All,
-        },
-        FilterTabSpec {
-            key: "2",
-            label: installed_label,
-            count: app.filter_counts[1],
-            active: app.filter == Filter::Installed,
-        },
-        FilterTabSpec {
-            key: "3",
-            label: updates_label,
-            count: app.filter_counts[2],
-            active: app.filter == Filter::Updates,
-        },
-        FilterTabSpec {
-            key: "4",
-            label: favorites_label,
-            count: app.filter_counts[3],
-            active: app.filter == Filter::Favorites,
-        },
-        FilterTabSpec {
-            key: "5",
-            label: security_label,
-            count: app.filter_counts[4],
-            active: app.filter == Filter::SecurityUpdates,
-        },
-        FilterTabSpec {
-            key: "6",
-            label: dupes_label,
-            count: app.filter_counts[5],
-            active: app.filter == Filter::Duplicates,
-        },
-    ]
+    searching: bool,
+) -> Vec<Span<'static>> {
+    render_filter_tab(key, label, count, active, searching)
 }
 
 fn mode_badge_style(app: &App) -> Style {
@@ -327,6 +280,7 @@ pub fn header_action_hit_test(
         let width = spans_width(&render_primary_tab(
             spec.key,
             spec.label,
+            spec.count,
             spec.active,
             app.searching,
         )) as u16;

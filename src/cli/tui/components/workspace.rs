@@ -18,7 +18,6 @@
 //! are drawn on top in `ui::draw` and are unchanged by this module.
 
 use super::attention;
-use super::header::render_filter_tabs;
 use super::packages::draw_packages_panel;
 use super::source_rail;
 use crate::cli::tui::app::App;
@@ -94,18 +93,16 @@ fn draw_list_region(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // package filter tabs
             Constraint::Length(1), // search/command bar
             Constraint::Length(1), // divider
             Constraint::Min(1),    // table
         ])
         .split(columns[2]);
 
-    draw_package_tabs(frame, app, list_chunks[0]);
-    draw_search_combo(frame, app, list_chunks[1]);
-    draw_divider(frame, app, list_chunks[2]);
+    draw_search_combo(frame, app, list_chunks[0]);
+    draw_divider(frame, app, list_chunks[1]);
     // Re-use existing packages panel (will be refined in a later phase).
-    draw_packages_panel(frame, app, list_chunks[3], true);
+    draw_packages_panel(frame, app, list_chunks[2], true);
 
     if rail_width > 0 {
         source_rail::draw(frame, app, columns[0]);
@@ -113,12 +110,6 @@ fn draw_list_region(frame: &mut Frame, app: &mut App, area: Rect) {
     if inspector_width > 0 {
         draw_inspector(frame, app, columns[4]);
     }
-}
-
-fn draw_package_tabs(frame: &mut Frame, app: &App, area: Rect) {
-    let mut line = render_filter_tabs(app, area.width);
-    line.spans.insert(0, Span::styled(" Views ", dim()));
-    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn draw_search_combo(frame: &mut Frame, app: &App, area: Rect) {
