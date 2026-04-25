@@ -321,6 +321,8 @@ impl FailureCategory {
         {
             Self::Conflict
         } else if normalized.contains("permission denied")
+            || normalized.contains("externally managed")
+            || normalized.contains("externally-managed-environment")
             || normalized.contains("not permitted")
             || normalized.contains("operation not permitted")
             || normalized.contains("must be root")
@@ -721,6 +723,10 @@ mod tests {
     fn classifies_permission_failures() {
         assert_eq!(
             FailureCategory::classify("permission denied while invoking pkexec"),
+            FailureCategory::Permissions
+        );
+        assert_eq!(
+            FailureCategory::classify("pip refused to modify an externally managed environment"),
             FailureCategory::Permissions
         );
     }

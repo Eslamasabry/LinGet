@@ -1,3 +1,4 @@
+use super::streaming::{run_streaming, StreamLine};
 use super::PackageBackend;
 use crate::backend::SUGGEST_PREFIX;
 use crate::models::{Package, PackageSource, PackageStatus};
@@ -6,6 +7,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::process::Stdio;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 pub struct PipBackend;
 
@@ -21,6 +23,88 @@ impl PipBackend {
         } else {
             "pip"
         }
+    }
+
+    async fn run_pip_action(args: &[&str], context_msg: &str) -> Result<()> {
+        let pip = Self::get_pip_command();
+        let output = Command::new(pip)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .with_context(|| context_msg.to_string())?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            anyhow::bail!("{}", Self::pip_failure_message(pip, args, &stdout, &stderr));
+        }
+    }
+
+    async fn run_pip_action_streaming(
+        args: &[&str],
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        let pip = Self::get_pip_command();
+        if let Some(sender) = log_sender {
+            let (capture_tx, mut capture_rx) = mpsc::channel(64);
+            let forward_task = tokio::spawn(async move {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                while let Some(line) = capture_rx.recv().await {
+                    match &line {
+                        StreamLine::Stdout(text) => stdout.push(text.clone()),
+                        StreamLine::Stderr(text) => stderr.push(text.clone()),
+                    }
+                    if sender.send(line).await.is_err() {
+                        break;
+                    }
+                }
+                (stdout.join("\n"), stderr.join("\n"))
+            });
+
+            let result = run_streaming(pip, args, capture_tx).await?;
+            let (stdout, stderr) = forward_task.await.unwrap_or_default();
+            if result.success {
+                Ok(())
+            } else {
+                anyhow::bail!("{}", Self::pip_failure_message(pip, args, &stdout, &stderr));
+            }
+        } else {
+            Self::run_pip_action(args, "Failed to run pip command").await
+        }
+    }
+
+    fn pip_command_display(pip: &str, args: &[&str]) -> String {
+        format!("{} {}", pip, args.join(" "))
+    }
+
+    fn pip_failure_message(pip: &str, args: &[&str], stdout: &str, stderr: &str) -> String {
+        let output = format!("{}\n{}", stdout, stderr);
+        let lowered = output.to_ascii_lowercase();
+        if lowered.contains("externally-managed-environment")
+            || lowered.contains("this environment is externally managed")
+        {
+            return format!(
+                "pip refused to modify an externally managed Python environment. Use the distro package (apt install python3-<name>), pipx for Python apps, or a virtualenv. LinGet will not pass --break-system-packages automatically.\n\n{} {}",
+                SUGGEST_PREFIX,
+                Self::pip_command_display(pip, args)
+            );
+        }
+
+        let detail = output
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("pip exited without an error message");
+        format!(
+            "{} failed: {}",
+            Self::pip_command_display(pip, args),
+            detail
+        )
     }
 }
 
@@ -124,48 +208,47 @@ impl PackageBackend for PipBackend {
     }
 
     async fn install(&self, name: &str) -> Result<()> {
-        let pip = Self::get_pip_command();
-        let status = Command::new(pip)
-            .args(["install", "--user", name])
-            .status()
-            .await
-            .context("Failed to install pip package")?;
+        Self::run_pip_action(
+            &["install", "--user", name],
+            "Failed to install pip package",
+        )
+        .await
+    }
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to install pip package {}", name)
-        }
+    async fn install_streaming(
+        &self,
+        name: &str,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        Self::run_pip_action_streaming(&["install", "--user", name], log_sender).await
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
-        let pip = Self::get_pip_command();
-        let status = Command::new(pip)
-            .args(["uninstall", "-y", name])
-            .status()
-            .await
-            .context("Failed to remove pip package")?;
+        Self::run_pip_action(&["uninstall", "-y", name], "Failed to remove pip package").await
+    }
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to remove pip package {}", name)
-        }
+    async fn remove_streaming(
+        &self,
+        name: &str,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        Self::run_pip_action_streaming(&["uninstall", "-y", name], log_sender).await
     }
 
     async fn update(&self, name: &str) -> Result<()> {
-        let pip = Self::get_pip_command();
-        let status = Command::new(pip)
-            .args(["install", "--user", "--upgrade", name])
-            .status()
-            .await
-            .context("Failed to update pip package")?;
+        Self::run_pip_action(
+            &["install", "--user", "--upgrade", name],
+            "Failed to update pip package",
+        )
+        .await
+    }
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("Failed to update pip package {}", name)
-        }
+    async fn update_streaming(
+        &self,
+        name: &str,
+        log_sender: Option<mpsc::Sender<StreamLine>>,
+    ) -> Result<()> {
+        Self::run_pip_action_streaming(&["install", "--user", "--upgrade", name], log_sender).await
     }
 
     async fn downgrade_to(&self, name: &str, version: &str) -> Result<()> {
@@ -581,5 +664,34 @@ mod tests {
         assert_eq!(PipBackend::parse_pip_size("512 kib"), 524_288);
         assert_eq!(PipBackend::parse_pip_size("999"), 999);
         assert_eq!(PipBackend::parse_pip_size("invalid"), 0);
+    }
+
+    #[test]
+    fn pip_failure_message_guides_externally_managed_environment() {
+        let message = PipBackend::pip_failure_message(
+            "pip3",
+            &["install", "--user", "--upgrade", "cryptography"],
+            "",
+            "error: externally-managed-environment\n\nThis environment is externally managed",
+        );
+
+        assert!(message.contains("externally managed Python environment"));
+        assert!(message.contains("apt install python3-<name>"));
+        assert!(message.contains("--break-system-packages"));
+    }
+
+    #[test]
+    fn pip_failure_message_keeps_regular_errors_short() {
+        let message = PipBackend::pip_failure_message(
+            "pip3",
+            &["install", "--user", "missing-pkg"],
+            "",
+            "ERROR: No matching distribution found for missing-pkg",
+        );
+
+        assert_eq!(
+            message,
+            "pip3 install --user missing-pkg failed: ERROR: No matching distribution found for missing-pkg"
+        );
     }
 }
