@@ -260,7 +260,14 @@ pub struct PendingAction {
     pub risk_acknowledged: bool,
 }
 
-type LoadResult = Result<Vec<Package>, String>;
+type PackageLoadResult = Result<Vec<Package>, String>;
+
+#[derive(Debug)]
+pub enum LoadEvent {
+    Installed(PackageLoadResult),
+    Complete(PackageLoadResult),
+}
+
 type SearchResult = Result<SearchCatalog, String>;
 type RepositoriesResult = Result<Vec<crate::models::Repository>, String>;
 
@@ -679,7 +686,7 @@ pub struct App {
 
     pub pm: Arc<Mutex<PackageManager>>,
     pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
-    pub load_rx: Option<mpsc::Receiver<LoadResult>>,
+    pub load_rx: Option<mpsc::Receiver<LoadEvent>>,
     pub search_rx: Option<mpsc::Receiver<SearchResult>>,
     pub repositories_rx: Option<mpsc::Receiver<RepositoriesResult>>,
     pub task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
@@ -2220,24 +2227,43 @@ impl App {
 
         self.catalog_activity = Some(CatalogActivity::RefreshingPackages);
         self.cursor_anchor_id = self.current_package_id();
-        self.set_status("Refreshing packages...", false);
+        self.set_status("Loading installed packages...", false);
 
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, rx) = mpsc::channel(2);
         self.load_rx = Some(rx);
         let pm = self.pm.clone();
 
         tokio::spawn(async move {
-            let result: LoadResult = {
+            let installed = {
                 let manager = pm.lock().await;
-                match manager.list_all_installed().await {
-                    Ok(installed) => match manager.check_all_updates().await {
-                        Ok(updates) => Ok(Self::merge_installed_with_updates(installed, updates)),
-                        Err(error) => Err(error.to_string()),
-                    },
-                    Err(error) => Err(error.to_string()),
+                manager.list_all_installed().await
+            };
+
+            let installed = match installed {
+                Ok(installed) => installed,
+                Err(error) => {
+                    let _ = tx.send(LoadEvent::Complete(Err(error.to_string()))).await;
+                    return;
                 }
             };
-            let _ = tx.send(result).await;
+
+            if tx
+                .send(LoadEvent::Installed(Ok(installed.clone())))
+                .await
+                .is_err()
+            {
+                return;
+            }
+
+            let updates = {
+                let manager = pm.lock().await;
+                manager.check_all_updates().await
+            };
+            let result = match updates {
+                Ok(updates) => Ok(Self::merge_installed_with_updates(installed, updates)),
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = tx.send(LoadEvent::Complete(result)).await;
         });
 
         true
@@ -2305,39 +2331,63 @@ impl App {
             return;
         };
 
-        match rx.try_recv() {
-            Ok(Ok(packages)) => {
-                save_catalog_cache_async(packages.clone());
-                self.local_packages = packages;
-                self.search_cache.clear();
-                if self.search_results.is_none() {
-                    self.packages = self.local_packages.clone();
+        loop {
+            match rx.try_recv() {
+                Ok(LoadEvent::Installed(Ok(packages))) => {
+                    let count = packages.len();
+                    self.apply_loaded_packages(packages);
+                    self.catalog_activity = Some(CatalogActivity::RefreshingPackages);
+                    self.set_status(
+                        format!("Loaded {} installed packages; checking updates...", count),
+                        true,
+                    );
                 }
-                self.cleanup_stale_selections();
-                self.previous_statuses.clear();
-                self.apply_filters();
-                self.restore_cursor_anchor();
-                self.catalog_activity = None;
-                self.set_status(
-                    format!(
-                        "Loaded {} packages ({} updates)",
-                        self.filter_counts[0], self.filter_counts[2]
-                    ),
-                    true,
-                );
-            }
-            Ok(Err(error)) => {
-                self.catalog_activity = None;
-                self.set_status(format!("Load error: {}", error), true);
-            }
-            Err(mpsc::error::TryRecvError::Empty) => {
-                self.load_rx = Some(rx);
-            }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.catalog_activity = None;
-                self.set_status("Load failed: channel disconnected", true);
+                Ok(LoadEvent::Installed(Err(error))) => {
+                    self.catalog_activity = None;
+                    self.set_status(format!("Package load error: {}", error), true);
+                    return;
+                }
+                Ok(LoadEvent::Complete(Ok(packages))) => {
+                    save_catalog_cache_async(packages.clone());
+                    self.apply_loaded_packages(packages);
+                    self.catalog_activity = None;
+                    self.set_status(
+                        format!(
+                            "Loaded {} packages ({} updates)",
+                            self.filter_counts[0], self.filter_counts[2]
+                        ),
+                        true,
+                    );
+                    return;
+                }
+                Ok(LoadEvent::Complete(Err(error))) => {
+                    self.catalog_activity = None;
+                    self.set_status(format!("Update check error: {}", error), true);
+                    return;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    self.load_rx = Some(rx);
+                    return;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.catalog_activity = None;
+                    self.set_status("Load failed: channel disconnected", true);
+                    return;
+                }
             }
         }
+    }
+
+    fn apply_loaded_packages(&mut self, packages: Vec<Package>) {
+        self.local_packages = packages;
+        self.search_cache.clear();
+        if self.search_results.is_none() {
+            self.packages = self.local_packages.clone();
+        }
+        self.cleanup_stale_selections();
+        self.previous_statuses.clear();
+        self.apply_filters();
+        self.restore_cursor_anchor();
     }
 
     pub fn poll_search(&mut self) {
