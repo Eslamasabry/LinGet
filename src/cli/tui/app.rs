@@ -19,6 +19,7 @@ use crate::models::{
     ChangelogSummary, Config, Package, PackageSource, PackageStatus, UpdateCategory,
 };
 use anyhow::{Context, Result};
+use chrono::Utc;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -28,9 +29,12 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -52,6 +56,15 @@ const FILTER_SECURITY_INDEX: usize = 4;
 const FILTER_DUPLICATES_INDEX: usize = 5;
 const QUEUE_AUTO_HIDE_AFTER: Duration = Duration::from_secs(10);
 const SEARCH_CACHE_LIMIT: usize = 5;
+const TUI_CATALOG_CACHE_FILE: &str = "tui-catalog-cache.json";
+const TUI_CATALOG_CACHE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TuiCatalogCache {
+    version: u32,
+    saved_at_unix: i64,
+    packages: Vec<Package>,
+}
 
 fn rect_contains(rect: Rect, pos: (u16, u16)) -> bool {
     rect.width > 0
@@ -60,6 +73,56 @@ fn rect_contains(rect: Rect, pos: (u16, u16)) -> bool {
         && pos.0 < rect.x + rect.width
         && pos.1 >= rect.y
         && pos.1 < rect.y + rect.height
+}
+
+fn tui_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("linget")
+}
+
+fn tui_catalog_cache_path() -> PathBuf {
+    tui_data_dir().join(TUI_CATALOG_CACHE_FILE)
+}
+
+fn catalog_cache_from_packages(packages: Vec<Package>) -> TuiCatalogCache {
+    TuiCatalogCache {
+        version: TUI_CATALOG_CACHE_VERSION,
+        saved_at_unix: Utc::now().timestamp(),
+        packages,
+    }
+}
+
+fn load_catalog_cache_from_path(path: &Path) -> Result<Option<TuiCatalogCache>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(path).context("Failed to read TUI catalog cache")?;
+    let cache: TuiCatalogCache =
+        serde_json::from_str(&content).context("Failed to parse TUI catalog cache")?;
+    if cache.version != TUI_CATALOG_CACHE_VERSION {
+        return Ok(None);
+    }
+    Ok(Some(cache))
+}
+
+fn save_catalog_cache_to_path(path: &Path, packages: Vec<Package>) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).context("Failed to create TUI catalog cache directory")?;
+    }
+
+    let cache = catalog_cache_from_packages(packages);
+    let content = serde_json::to_string(&cache).context("Failed to serialize TUI catalog cache")?;
+    fs::write(path, content).context("Failed to write TUI catalog cache")
+}
+
+fn save_catalog_cache_async(packages: Vec<Package>) {
+    tokio::task::spawn_blocking(move || {
+        if let Err(error) = save_catalog_cache_to_path(&tui_catalog_cache_path(), packages) {
+            debug!(error = %error, "Failed to save TUI catalog cache");
+        }
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -989,6 +1052,36 @@ impl App {
         if self.focus == Focus::Queue && !self.queue_expanded {
             self.focus = Focus::Packages;
         }
+    }
+
+    pub fn load_catalog_cache(&mut self) {
+        let cache = match load_catalog_cache_from_path(&tui_catalog_cache_path()) {
+            Ok(Some(cache)) => cache,
+            Ok(None) => return,
+            Err(error) => {
+                debug!(error = %error, "Failed to load TUI catalog cache");
+                return;
+            }
+        };
+
+        if cache.packages.is_empty() {
+            return;
+        }
+
+        let package_count = cache.packages.len();
+        self.local_packages = cache.packages;
+        self.search_cache.clear();
+        if self.search_results.is_none() {
+            self.packages = self.local_packages.clone();
+        }
+        self.cleanup_stale_selections();
+        self.previous_statuses.clear();
+        self.apply_filters();
+        self.restore_cursor_anchor();
+        self.set_status(
+            format!("Showing cached catalog ({} packages)", package_count),
+            true,
+        );
     }
 
     fn write_session_to_config(&self, config: &mut Config) {
@@ -2214,6 +2307,7 @@ impl App {
 
         match rx.try_recv() {
             Ok(Ok(packages)) => {
+                save_catalog_cache_async(packages.clone());
                 self.local_packages = packages;
                 self.search_cache.clear();
                 if self.search_results.is_none() {
@@ -4591,6 +4685,7 @@ pub async fn run() -> Result<()> {
     app.load_sources().await;
     app.load_favorites();
     app.load_session_state();
+    app.load_catalog_cache();
     let _ = app.start_loading();
     app.spawn_task_executor();
 
@@ -4660,6 +4755,15 @@ async fn run_app(
 mod tests {
     use super::*;
 
+    fn temp_cache_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "linget-{}-{}-{}.json",
+            name,
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ))
+    }
+
     fn make_pkg(name: &str, source: PackageSource, status: PackageStatus) -> Package {
         Package {
             name: name.to_string(),
@@ -4678,6 +4782,53 @@ mod tests {
             update_category: None,
             enrichment: None,
         }
+    }
+
+    #[test]
+    fn tui_catalog_cache_round_trips_packages() {
+        let path = temp_cache_path("catalog-cache");
+        let packages = vec![
+            make_pkg("vim", PackageSource::Apt, PackageStatus::Installed),
+            make_pkg(
+                "firefox",
+                PackageSource::Flatpak,
+                PackageStatus::UpdateAvailable,
+            ),
+        ];
+
+        save_catalog_cache_to_path(&path, packages.clone()).expect("save catalog cache");
+        let cache = load_catalog_cache_from_path(&path)
+            .expect("load catalog cache")
+            .expect("cache should exist");
+
+        assert_eq!(cache.version, TUI_CATALOG_CACHE_VERSION);
+        assert_eq!(cache.packages.len(), packages.len());
+        assert_eq!(cache.packages[0].id(), packages[0].id());
+        assert!(cache.packages[1].available_version.is_some());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn tui_catalog_cache_ignores_version_mismatch() {
+        let path = temp_cache_path("catalog-cache-version");
+        let cache = TuiCatalogCache {
+            version: TUI_CATALOG_CACHE_VERSION + 1,
+            saved_at_unix: Utc::now().timestamp(),
+            packages: vec![make_pkg(
+                "vim",
+                PackageSource::Apt,
+                PackageStatus::Installed,
+            )],
+        };
+        let content = serde_json::to_string(&cache).expect("serialize cache");
+        fs::write(&path, content).expect("write cache");
+
+        assert!(load_catalog_cache_from_path(&path)
+            .expect("load cache")
+            .is_none());
+
+        let _ = fs::remove_file(path);
     }
 
     fn test_app() -> App {
