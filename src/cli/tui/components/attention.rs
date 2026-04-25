@@ -1,12 +1,15 @@
-//! Attention blocks — prioritized, actionable cards shown at the top of the
-//! workspace. Each block is a small hero ("accent bar · headline · CTA line")
-//! that surfaces the most important thing the user can do right now.
+//! Attention summary shown at the top of the workspace.
+//!
+//! The workspace needs to surface urgent work without pushing the package
+//! table down. Render attention as a compact "Today" strip instead of stacked
+//! cards.
 
 use crate::cli::tui::app::App;
-use crate::cli::tui::theme::{accent, dim, muted, palette, success, text, warning};
+use crate::cli::tui::format::truncate_to_width;
+use crate::cli::tui::theme::{accent, dim, palette, success, text, warning};
 use crate::models::{PackageStatus, UpdateCategory};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -134,60 +137,66 @@ pub fn build_blocks(app: &App) -> Vec<Block> {
     blocks
 }
 
-/// How tall the attention area wants to be given the provided blocks and
-/// available width. Each block is 2 rows (headline + CTA) plus an optional
-/// detail row and one blank row between blocks. Caller clamps.
+/// Two rows: signal summary, then recommended action/detail.
 pub fn desired_height(blocks: &[Block]) -> u16 {
-    let mut h: u16 = 0;
-    for (i, b) in blocks.iter().enumerate() {
-        if i > 0 {
-            h += 1;
-        }
-        h += 1; // headline
-        if b.detail.is_some() {
-            h += 1;
-        }
-        h += 1; // cta
+    if blocks.is_empty() {
+        0
+    } else {
+        2
     }
-    h
 }
 
 pub fn draw(frame: &mut Frame, blocks: &[Block], area: Rect) {
     if blocks.is_empty() || area.height == 0 {
         return;
     }
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, block) in blocks.iter().enumerate() {
-        if i > 0 {
-            lines.push(Line::from(""));
+
+    let mut summary_spans = vec![
+        Span::styled(" Today ", accent().add_modifier(Modifier::BOLD)),
+        Span::styled("│ ", dim()),
+    ];
+    for (index, block) in blocks.iter().enumerate() {
+        if index > 0 {
+            summary_spans.push(Span::styled("  │  ", dim()));
         }
-        lines.push(Line::from(vec![
-            Span::styled(" ▌ ", block.severity.accent_style()),
-            Span::styled(block.headline.clone(), text().add_modifier(Modifier::BOLD)),
-        ]));
-        if let Some(detail) = &block.detail {
-            lines.push(Line::from(vec![
-                Span::styled("   ", dim()),
-                Span::styled(detail.clone(), muted()),
-            ]));
-        }
-        let mut cta_spans: Vec<Span> = vec![Span::styled("   › ", dim())];
-        for (i, (key, label)) in block.cta.iter().enumerate() {
-            if i > 0 {
-                cta_spans.push(Span::styled("   ", dim()));
-            }
-            cta_spans.push(Span::styled(
-                format!("[{}]", key),
-                accent().add_modifier(Modifier::BOLD),
-            ));
-            cta_spans.push(Span::styled(format!(" {}", label), text()));
-        }
-        lines.push(Line::from(cta_spans));
+        summary_spans.push(Span::styled(
+            signal_label(block),
+            block.severity.accent_style(),
+        ));
+        summary_spans.push(Span::styled(" ", dim()));
+        summary_spans.push(Span::styled(block.headline.clone(), text()));
     }
-    let constraints = [Constraint::Min(1)];
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(area);
-    frame.render_widget(Paragraph::new(lines), layout[0]);
+
+    let recommended = &blocks[0];
+    let mut action_spans = vec![Span::styled(" Action ", dim()), Span::styled("│ ", dim())];
+    if let Some((key, label)) = recommended.cta.first() {
+        action_spans.push(Span::styled(
+            format!("[{}]", key),
+            accent().add_modifier(Modifier::BOLD),
+        ));
+        action_spans.push(Span::styled(format!(" {}", label), text()));
+    }
+    if let Some(detail) = recommended.detail.as_deref() {
+        action_spans.push(Span::styled("  ·  ", dim()));
+        action_spans.push(Span::styled(
+            truncate_to_width(detail, area.width.saturating_sub(18) as usize),
+            dim(),
+        ));
+    }
+
+    let lines = if area.height == 1 {
+        vec![Line::from(summary_spans)]
+    } else {
+        vec![Line::from(summary_spans), Line::from(action_spans)]
+    };
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn signal_label(block: &Block) -> &'static str {
+    match block.severity {
+        Severity::Critical => "SEC",
+        Severity::Warning => "UPD",
+        Severity::Info => "RUN",
+        Severity::Ok => "OK",
+    }
 }
