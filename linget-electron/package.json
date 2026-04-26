@@ -1,0 +1,14 @@
+{
+  "name": "linget-electron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron prototype for the LinGet dense updates console.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron --no-sandbox .",
+    "check": "node --check main.js && node --check preload.js && node --check src/renderer.js"
+  },
+  "devDependencies": {
+    "electron": "^41.3.0"
+  }
+}

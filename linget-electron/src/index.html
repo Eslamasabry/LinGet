@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LinGet</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-name">LinGet</span>
+          <span class="brand-dot">&bull;</span>
+          <span class="brand-subtitle">The Linux Package Manager</span>
+        </div>
+        <nav class="tabs" aria-label="Primary">
+          <button class="tab">Browse</button>
+          <button class="tab active">Updates</button>
+          <button class="tab">Installed</button>
+          <button class="tab">Sources</button>
+          <button class="tab">Queue</button>
+          <button class="tab">Health</button>
+        </nav>
+        <div class="header-stats">
+          <span>Tasks: <strong>207</strong></span>
+          <span class="stat-separator">|</span>
+          <span class="failed">Failed: <strong>15</strong></span>
+          <span class="clock" id="clock">14:37</span>
+        </div>
+      </header>
+
+      <section class="alert-strip" aria-label="System warnings">
+        <div class="alert-item danger">
+          <span class="alert-icon">!</span>
+          <strong>15</strong>
+          <span>tasks failed and require attention</span>
+        </div>
+        <span class="alert-divider">|</span>
+        <div class="alert-item security">
+          <span class="shield-icon"></span>
+          <strong>7</strong>
+          <span>security updates available</span>
+        </div>
+        <span class="alert-divider">|</span>
+        <div class="alert-item info">
+          <span class="info-icon">i</span>
+          <strong>5</strong>
+          <span>packages have changelogs</span>
+        </div>
+      </section>
+
+      <main class="workbench">
+        <aside class="left-rail">
+          <section class="panel sources-panel">
+            <h2>Sources</h2>
+            <div class="source-list" id="sourceList"></div>
+          </section>
+          <section class="panel system-panel">
+            <h2>System</h2>
+            <dl>
+              <div><dt>OS</dt><dd>Arch Linux x86_64</dd></div>
+              <div><dt>Kernel</dt><dd>6.8.9-arch1-1</dd></div>
+              <div><dt>Uptime</dt><dd>2d 4h 17m</dd></div>
+              <div><dt>Packages</dt><dd>1387 (installed)</dd></div>
+            </dl>
+          </section>
+        </aside>
+
+        <section class="center-pane">
+          <div class="filter-grid" id="filterGrid"></div>
+
+          <section class="table-panel">
+            <div class="table-header">
+              <span>Package</span>
+              <span>Current <span class="arrow">&rarr;</span> New</span>
+              <span>Source</span>
+              <span>Status</span>
+              <span>Action</span>
+            </div>
+            <div class="package-list" id="packageList" role="listbox" aria-label="Available updates"></div>
+            <div class="table-footer">
+              <span id="resultCount">Showing 1-12 of 207</span>
+              <div class="pager">
+                <button aria-label="Previous page">^</button>
+                <button aria-label="Next page">v</button>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <aside class="details-panel panel" id="detailsPanel"></aside>
+      </main>
+
+      <footer class="keybar" aria-label="Keyboard shortcuts">
+        <button data-command="details"><kbd>Enter</kbd><span>View Details</span></button>
+        <button data-command="update"><kbd>u</kbd><span>Update</span></button>
+        <button data-command="update-all"><kbd>U</kbd><span>Update All</span></button>
+        <button data-command="ignore"><kbd>i</kbd><span>Ignore</span></button>
+        <button data-command="favorite"><kbd>*</kbd><span>Toggle Favorite</span></button>
+        <button data-command="repos"><kbd>r</kbd><span>Repositories</span></button>
+        <button data-command="search"><kbd>/</kbd><span>Search</span></button>
+        <button data-command="filters"><kbd>f</kbd><span>Filters</span></button>
+        <button data-command="quit"><kbd>q</kbd><span>Quit</span></button>
+        <button data-command="help"><kbd>?</kbd><span>Help</span></button>
+      </footer>
+    </div>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

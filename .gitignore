@@ -41,6 +41,8 @@ dist/linget-v*.tar.gz
 linget-tauri/src-tauri/target/
 linget-tauri/ui/node_modules/
 linget-tauri/ui/dist/
+linget-electron/node_modules/
+linget-electron/dist/
 
 # Session and local scratch artifacts
 session-ses_*.md
