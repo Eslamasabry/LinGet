@@ -28,6 +28,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // TODO: Start or connect to the real LinGet backend and expose package/task IPC through preload.
   ipcMain.handle('window:close', () => {
     const focused = BrowserWindow.getFocusedWindow();
     if (focused) {

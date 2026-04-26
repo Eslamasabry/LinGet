@@ -1,3 +1,10 @@
+// Fake surface map for the Electron prototype:
+// TODO: Replace sources, filters, package records, versions, changelogs, dependencies, sizes, and failure timestamps with live data from LinGet's Rust backend.
+// TODO: Replace in-memory queue/ignore/favorite/search state with persisted backend state and real operations.
+// FIXME: Source selection currently highlights context only; it does not filter the update list because the reference screenshot keeps all rows visible.
+// FIXME: Repository, filter help, details, and pager actions are placeholders until their target views exist.
+
+// TODO: Load source names/counts/icons from PackageBackend/provider inventory instead of the screenshot fixture.
 const sources = [
   { id: 'arch', name: 'Arch Linux [core]', count: 89, icon: 'A', color: '#2e9dff' },
   { id: 'aur', name: 'AUR', count: 42, icon: 'pkg', color: '#f7f7f7' },
@@ -10,6 +17,7 @@ const sources = [
   { id: 'all', name: 'All Sources', count: 207, icon: 'db', color: '#f7f7f7', separated: true },
 ];
 
+// TODO: Compute filter counts from the current package set instead of hardcoded screenshot totals.
 const filters = [
   { id: 'all', label: 'All', count: 207 },
   { id: 'apps', label: 'Apps', count: 86 },
@@ -19,6 +27,7 @@ const filters = [
   { id: 'favorites', label: 'Favorites', count: 9 },
 ];
 
+// TODO: Replace this package catalog fixture with real installed/update metadata, dependency, changelog, and queue data.
 const packages = [
   {
     name: 'tailscale',
@@ -281,13 +290,14 @@ const packages = [
 ];
 
 const state = {
+  // TODO: Derive initial selection from route/query/user preference once app state is real.
   selectedPackage: 'tailscale',
   selectedFilter: 'all',
   selectedSource: 'arch',
+  // TODO: Persist these sets through backend package operations instead of local session-only UI state.
   queued: new Set(),
   ignored: new Set(),
   favorites: new Set(['tailscale', 'firefox', 'vscode']),
-  searchOpen: false,
   query: '',
 };
 
@@ -303,6 +313,7 @@ function iconMarkup(pkg) {
 }
 
 function iconText(icon) {
+  // FIXME: These text glyphs only approximate package/source icons. Replace with real icon assets/provider icons.
   switch (icon) {
     case 'grid': return '&#8759;';
     case 'linux': return 'L';
@@ -330,6 +341,7 @@ function filteredPackages() {
     if (state.selectedFilter === 'apps' && pkg.category !== 'apps') return false;
     if (state.selectedFilter === 'libraries' && pkg.category !== 'libraries') return false;
     if (state.selectedFilter === 'favorites' && !state.favorites.has(pkg.name)) return false;
+    // FIXME: Duplicate detection is a screenshot fixture; implement real duplicate/package-origin grouping.
     if (state.selectedFilter === 'duplicates' && !['nodejs', 'docker', 'vscode'].includes(pkg.name)) return false;
     if (state.ignored.has(pkg.name)) return false;
     if (state.query && !`${pkg.name} ${pkg.description} ${pkg.source}`.toLowerCase().includes(state.query)) return false;
@@ -393,6 +405,7 @@ function renderPackages() {
     `;
   }).join('');
 
+  // TODO: Replace hardcoded total with backend result counts once pagination/search is real.
   resultCount.textContent = rows.length === 0 ? 'Showing 0 of 207' : `Showing 1-${rows.length} of 207`;
   renderDetails();
 }
@@ -466,6 +479,7 @@ function showToast(message, tone = 'info') {
 }
 
 function queueSelected() {
+  // TODO: Call the real package update/queue command and render operation progress/errors.
   state.queued.add(state.selectedPackage);
   renderPackages();
   showToast(`Queued ${state.selectedPackage} for update`, 'info');
@@ -478,6 +492,7 @@ function updateAll() {
 }
 
 function ignoreSelected() {
+  // TODO: Persist ignore/hold state through the package manager or LinGet settings.
   state.ignored.add(state.selectedPackage);
   const nextVisible = filteredPackages()[0];
   if (nextVisible) {
@@ -488,6 +503,7 @@ function ignoreSelected() {
 }
 
 function toggleFavorite() {
+  // TODO: Persist favorites in app settings instead of mutating this session-only set.
   if (state.favorites.has(state.selectedPackage)) {
     state.favorites.delete(state.selectedPackage);
     showToast('Removed from favorites', 'info');
@@ -508,6 +524,7 @@ function moveSelection(delta) {
 }
 
 function openSearch() {
+  // FIXME: Browser prompt is a prototype shortcut; replace with the in-app search control.
   const query = window.prompt('Search packages', state.query || '');
   if (query !== null) {
     state.query = query.trim().toLowerCase();
@@ -519,6 +536,7 @@ function openSearch() {
 function handleCommand(command) {
   switch (command) {
     case 'details':
+      // FIXME: Details action only emits feedback because the details panel is already always visible.
       showToast(`Showing details for ${state.selectedPackage}`, 'info');
       break;
     case 'update':
@@ -534,12 +552,14 @@ function handleCommand(command) {
       toggleFavorite();
       break;
     case 'repos':
+      // TODO: Route to a real repositories view when that Electron screen exists.
       showToast('Repository view is mocked in this Electron prototype', 'info');
       break;
     case 'search':
       openSearch();
       break;
     case 'filters':
+      // TODO: Open a real filter drawer/modal instead of pointing at the static filter tiles.
       showToast('Use the filter tiles above the update table', 'info');
       break;
     case 'quit':
@@ -548,6 +568,7 @@ function handleCommand(command) {
       }
       break;
     case 'help':
+      // TODO: Replace toast-only help with a shortcut/help overlay.
       showToast('Use arrow keys, Enter, u, U, i, *, /, f, and q', 'info');
       break;
     default:
@@ -559,6 +580,7 @@ sourceList.addEventListener('click', (event) => {
   const row = event.target.closest('[data-source]');
   if (!row) return;
   state.selectedSource = row.dataset.source;
+  // FIXME: Source clicks update highlight only; wire backend/source filtering after row counts are live.
   renderSources();
   renderPackages();
 });

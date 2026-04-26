@@ -23,6 +23,7 @@
           <button class="tab">Health</button>
         </nav>
         <div class="header-stats">
+          <!-- TODO: Replace screenshot fixture counts with live task/queue health from LinGet backend. -->
           <span>Tasks: <strong>207</strong></span>
           <span class="stat-separator">|</span>
           <span class="failed">Failed: <strong>15</strong></span>
@@ -31,6 +32,7 @@
       </header>
 
       <section class="alert-strip" aria-label="System warnings">
+        <!-- TODO: Drive alert counts and labels from real failed tasks, security updates, and changelog availability. -->
         <div class="alert-item danger">
           <span class="alert-icon">!</span>
           <strong>15</strong>
@@ -58,6 +60,7 @@
           </section>
           <section class="panel system-panel">
             <h2>System</h2>
+            <!-- TODO: Read system facts from the Rust backend instead of keeping screenshot placeholder values. -->
             <dl>
               <div><dt>OS</dt><dd>Arch Linux x86_64</dd></div>
               <div><dt>Kernel</dt><dd>6.8.9-arch1-1</dd></div>
@@ -81,6 +84,7 @@
             <div class="package-list" id="packageList" role="listbox" aria-label="Available updates"></div>
             <div class="table-footer">
               <span id="resultCount">Showing 1-12 of 207</span>
+              <!-- FIXME: Pager buttons are visual only until real pagination/windowing is wired. -->
               <div class="pager">
                 <button aria-label="Previous page">^</button>
                 <button aria-label="Next page">v</button>

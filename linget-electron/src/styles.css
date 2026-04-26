@@ -265,6 +265,7 @@ button {
 }
 
 .source-icon {
+  /* FIXME: CSS source badges are placeholders; swap for real provider icons/assets. */
   display: inline-grid;
   place-items: center;
   width: 31px;
@@ -536,6 +537,7 @@ dd {
 }
 
 .pkg-icon {
+  /* FIXME: CSS package icons are visual stand-ins for the screenshot, not real package icon metadata. */
   display: inline-grid;
   place-items: center;
   width: 31px;
