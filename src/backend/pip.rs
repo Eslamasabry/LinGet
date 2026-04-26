@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::process::Stdio;
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
 
 pub struct PipBackend;
 
@@ -106,6 +107,35 @@ impl PipBackend {
             detail
         )
     }
+
+    async fn run_pip_output_with_timeout(
+        args: &[&str],
+        context_msg: &str,
+        timeout_duration: Duration,
+    ) -> Result<std::process::Output> {
+        let pip = Self::get_pip_command();
+        let mut command = Command::new(pip);
+        command
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let child = command.spawn().with_context(|| {
+            format!("{}: {}", context_msg, Self::pip_command_display(pip, args))
+        })?;
+
+        timeout(timeout_duration, child.wait_with_output())
+            .await
+            .with_context(|| {
+                format!(
+                    "{} timed out after {}s",
+                    Self::pip_command_display(pip, args),
+                    timeout_duration.as_secs()
+                )
+            })?
+            .with_context(|| context_msg.to_string())
+    }
 }
 
 impl Default for PipBackend {
@@ -171,14 +201,12 @@ impl PackageBackend for PipBackend {
     }
 
     async fn check_updates(&self) -> Result<Vec<Package>> {
-        let pip = Self::get_pip_command();
-        let output = Command::new(pip)
-            .args(["list", "--outdated", "--format=json"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("Failed to check pip updates")?;
+        let output = Self::run_pip_output_with_timeout(
+            &["list", "--outdated", "--format=json"],
+            "Failed to check pip updates",
+            Duration::from_secs(8),
+        )
+        .await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut packages = Vec::new();

@@ -7,7 +7,13 @@ impl App {
 
     pub fn catalog_loading_message(&self) -> String {
         match &self.catalog_activity {
-            Some(CatalogActivity::RefreshingPackages) => "Loading packages...".to_string(),
+            Some(CatalogActivity::RefreshingPackages) => {
+                if self.status.trim().is_empty() {
+                    "Loading packages...".to_string()
+                } else {
+                    format!("Loading packages • {}", self.status)
+                }
+            }
             Some(CatalogActivity::SearchingProviders { query }) => {
                 format!("Searching providers for '{}'...", query)
             }

@@ -6,8 +6,7 @@ use crate::cli::tui::theme::{
     accent, border_focused, border_unfocused, dim, muted, row_cursor, source_color, text, ROUNDED,
 };
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::Modifier,
+    layout::Rect,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
@@ -41,19 +40,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let sections = if inner.height >= 5 {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(3)])
-            .split(inner)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(0)])
-            .split(inner)
-    };
-
-    let visible_rows = sections[0].height as usize;
+    let visible_rows = inner.height as usize;
     let source_count = app.visible_sources().len() + 1;
     let start =
         crate::cli::tui::ui::window_start(source_count, visible_rows.max(1), app.source_index());
@@ -83,23 +70,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             ));
         }
     }
-    frame.render_widget(Paragraph::new(rows), sections[0]);
-
-    if sections[1].height > 0 {
-        let divider = "─".repeat(sections[1].width as usize);
-        let hints = vec![
-            Line::from(Span::styled(divider, dim())),
-            Line::from(Span::styled(
-                "↑/↓ navigate",
-                dim().add_modifier(Modifier::ITALIC),
-            )),
-            Line::from(Span::styled(
-                "Enter open source",
-                dim().add_modifier(Modifier::ITALIC),
-            )),
-        ];
-        frame.render_widget(Paragraph::new(hints), sections[1]);
-    }
+    frame.render_widget(Paragraph::new(rows), inner);
 }
 
 fn source_row(

@@ -804,31 +804,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut left = vec![Span::raw(" ")];
-    footer_button(&mut left, "Enter", "Queue update");
-    footer_separator(&mut left);
-    footer_button(&mut left, "Space", "Select package");
-    footer_separator(&mut left);
-    footer_button(&mut left, "C", "Release notes");
-    footer_separator(&mut left);
-    footer_button(
-        &mut left,
-        "/",
-        title_case_hint(app.search_query_hint_label()),
-    );
-    footer_separator(&mut left);
-    footer_button(&mut left, "Q", "Open queue");
-    footer_separator(&mut left);
-    footer_button(&mut left, "R", "Refresh");
-    footer_separator(&mut left);
-    footer_button(&mut left, "?", "Help");
-    footer_separator(&mut left);
-    let esc_label = if app.searching || !app.search.is_empty() {
-        app.search_escape_hint_label()
-    } else {
-        "Back"
-    };
-    footer_button(&mut left, "Esc", esc_label);
+    let left = footer_commands(app);
 
     let right_label = if app.selected.is_empty() {
         format!("{} updates available", app.filter_counts[2])
@@ -856,6 +832,88 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(compose_left_right(left, right, inner.width as usize)),
         inner,
     );
+}
+
+fn footer_commands(app: &App) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::raw(" ")];
+    let mut first = true;
+
+    let mut push = |spans: &mut Vec<Span<'static>>, key: &'static str, label: String| {
+        if !first {
+            footer_separator(spans);
+        }
+        first = false;
+        footer_button(spans, key, label);
+    };
+
+    if app.searching || !app.search.is_empty() || app.search_results.is_some() {
+        push(
+            &mut spans,
+            "/",
+            title_case_hint(app.search_query_hint_label()),
+        );
+        if !app.search.trim().is_empty() {
+            push(&mut spans, "Enter", "Search providers".to_string());
+        }
+        push(
+            &mut spans,
+            "Esc",
+            app.search_escape_hint_label().to_string(),
+        );
+        push(&mut spans, "?", "Help".to_string());
+        return spans;
+    }
+
+    if app.queue_expanded || app.focus == Focus::Queue {
+        push(&mut spans, "Q", "Collapse queue".to_string());
+        push(&mut spans, "R", "Refresh".to_string());
+        push(&mut spans, "?", "Help".to_string());
+        push(&mut spans, "Esc", "Back".to_string());
+        return spans;
+    }
+
+    match app.focus {
+        Focus::Sources => {
+            push(&mut spans, "Enter", "Open source".to_string());
+            push(&mut spans, "/", "Search".to_string());
+            push(&mut spans, "R", "Refresh".to_string());
+            push(&mut spans, "?", "Help".to_string());
+        }
+        Focus::Packages => {
+            if let Some(package) = app.current_package() {
+                push(
+                    &mut spans,
+                    "Enter",
+                    footer_package_action_label(package.status),
+                );
+                push(&mut spans, "Space", "Select".to_string());
+                push(&mut spans, "C", "Notes".to_string());
+            }
+            push(&mut spans, "/", "Search".to_string());
+            push(&mut spans, "Q", "Queue".to_string());
+            push(&mut spans, "R", "Refresh".to_string());
+            push(&mut spans, "?", "Help".to_string());
+        }
+        Focus::Queue => {
+            push(&mut spans, "Q", "Collapse queue".to_string());
+            push(&mut spans, "R", "Refresh".to_string());
+            push(&mut spans, "?", "Help".to_string());
+        }
+    }
+
+    spans
+}
+
+fn footer_package_action_label(status: PackageStatus) -> String {
+    match status {
+        PackageStatus::UpdateAvailable => "Queue update",
+        PackageStatus::Installed => "Remove",
+        PackageStatus::NotInstalled => "Install",
+        PackageStatus::Installing => "Installing",
+        PackageStatus::Updating => "Updating",
+        PackageStatus::Removing => "Removing",
+    }
+    .to_string()
 }
 
 fn footer_button(spans: &mut Vec<Span<'static>>, key: &'static str, label: impl Into<String>) {

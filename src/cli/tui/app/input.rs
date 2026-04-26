@@ -837,7 +837,7 @@ impl App {
         }
 
         let top = sources_rect.y.saturating_add(1);
-        let visible_rows = sources_rect.height.saturating_sub(5) as usize;
+        let visible_rows = sources_rect.height.saturating_sub(2) as usize;
         if visible_rows == 0 {
             return None;
         }

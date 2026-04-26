@@ -2247,13 +2247,16 @@ impl App {
 
             let installed = {
                 let manager = pm.lock().await;
-                manager.list_all_installed_progressive(progress_tx).await
+                manager
+                    .list_all_installed_progressive(progress_tx.clone())
+                    .await
             };
-            let _ = progress_forwarder.await;
 
             let installed = match installed {
                 Ok(installed) => installed,
                 Err(error) => {
+                    drop(progress_tx);
+                    let _ = progress_forwarder.await;
                     let _ = tx.send(LoadEvent::Complete(Err(error.to_string()))).await;
                     return;
                 }
@@ -2269,8 +2272,13 @@ impl App {
 
             let updates = {
                 let manager = pm.lock().await;
-                manager.check_all_updates().await
+                manager
+                    .check_all_updates_progressive(progress_tx.clone())
+                    .await
             };
+            drop(progress_tx);
+            let _ = progress_forwarder.await;
+
             let result = match updates {
                 Ok(updates) => Ok(Self::merge_installed_with_updates(installed, updates)),
                 Err(error) => Err(error.to_string()),
@@ -2357,6 +2365,15 @@ impl App {
                 Ok(LoadEvent::Progress(PackageLoadProgress::SourceFailed { source, error })) => {
                     self.catalog_activity = Some(CatalogActivity::RefreshingPackages);
                     self.set_status(format!("Skipped {}: {}", source, error), true);
+                }
+                Ok(LoadEvent::Progress(PackageLoadProgress::UpdateChecked { source, updates })) => {
+                    self.catalog_activity = Some(CatalogActivity::RefreshingPackages);
+                    let noun = if updates == 1 { "update" } else { "updates" };
+                    self.set_status(format!("Checked {}: {} {}", source, updates, noun), false);
+                }
+                Ok(LoadEvent::Progress(PackageLoadProgress::UpdateFailed { source, error })) => {
+                    self.catalog_activity = Some(CatalogActivity::RefreshingPackages);
+                    self.set_status(format!("Skipped {} updates: {}", source, error), false);
                 }
                 Ok(LoadEvent::InstalledComplete(Ok(packages))) => {
                     let count = packages.len();
@@ -6964,6 +6981,54 @@ Remove   1 Package
         .await;
 
         assert_eq!(app.filter, Filter::Installed);
+    }
+
+    #[test]
+    fn dense_tui_layout_keeps_single_top_control_panel() {
+        let mut app = test_app();
+        app.focus = Focus::Packages;
+        app.filter = Filter::Updates;
+        app.packages = vec![
+            make_pkg(
+                "containerd.io",
+                PackageSource::Apt,
+                PackageStatus::UpdateAvailable,
+            ),
+            make_pkg(
+                "cosmic-files",
+                PackageSource::Apt,
+                PackageStatus::UpdateAvailable,
+            ),
+            make_pkg("vim", PackageSource::Apt, PackageStatus::Installed),
+        ];
+        app.apply_filters();
+
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app))
+            .expect("render tui");
+
+        let screen = buffer_text(terminal.backend().buffer());
+        assert!(screen.contains("Today:"));
+        assert!(screen.contains("[ Favorites 0 ]"));
+        assert!(screen.contains("/ Search packages"));
+        assert!(screen.contains("Package Inspector"));
+        assert!(screen.contains("Showing 1-2 of 2 updates"));
+        assert!(!screen.contains("[ All "));
+        assert!(!screen.contains("Enter open source"));
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        let mut lines = Vec::new();
+        for y in 0..buffer.area.height {
+            let mut line = String::new();
+            for x in 0..buffer.area.width {
+                line.push_str(buffer[(x, y)].symbol());
+            }
+            lines.push(line);
+        }
+        lines.join("\n")
     }
 
     #[tokio::test]

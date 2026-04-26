@@ -95,6 +95,14 @@ pub enum PackageLoadProgress {
         source: PackageSource,
         error: String,
     },
+    UpdateChecked {
+        source: PackageSource,
+        updates: usize,
+    },
+    UpdateFailed {
+        source: PackageSource,
+        error: String,
+    },
 }
 
 #[derive(Clone)]
@@ -616,6 +624,22 @@ impl PackageManager {
 
     #[instrument(skip(self), level = "debug")]
     pub async fn check_all_updates(&self) -> Result<Vec<Package>> {
+        self.check_all_updates_with_progress(None).await
+    }
+
+    #[instrument(skip(self, progress_sender), level = "debug")]
+    pub async fn check_all_updates_progressive(
+        &self,
+        progress_sender: mpsc::Sender<PackageLoadProgress>,
+    ) -> Result<Vec<Package>> {
+        self.check_all_updates_with_progress(Some(progress_sender))
+            .await
+    }
+
+    async fn check_all_updates_with_progress(
+        &self,
+        progress_sender: Option<mpsc::Sender<PackageLoadProgress>>,
+    ) -> Result<Vec<Package>> {
         use futures::{stream::FuturesUnordered, StreamExt};
 
         debug!("Checking for updates from all enabled backends");
@@ -646,15 +670,26 @@ impl PackageManager {
         while let Some((source, result)) = futures.next().await {
             match result {
                 Ok(packages) => {
+                    let updates = packages.len();
                     if !packages.is_empty() {
-                        debug!(source = ?source, update_count = packages.len(), "Found updates");
+                        debug!(source = ?source, update_count = updates, "Found updates");
                     }
                     success_count += 1;
+                    if let Some(sender) = progress_sender.as_ref() {
+                        let _ = sender
+                            .send(PackageLoadProgress::UpdateChecked { source, updates })
+                            .await;
+                    }
                     all_updates.extend(packages);
                 }
                 Err(error) => {
                     error_count += 1;
                     warn!(source = ?source, error = %error, "Failed to check updates from backend");
+                    if let Some(sender) = progress_sender.as_ref() {
+                        let _ = sender
+                            .send(PackageLoadProgress::UpdateFailed { source, error })
+                            .await;
+                    }
                 }
             }
         }

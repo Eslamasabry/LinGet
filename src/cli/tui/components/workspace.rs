@@ -148,6 +148,7 @@ fn top_status_line(app: &App, width: usize) -> Line<'static> {
     let security = app.filter_counts[4];
     let safe_updates = app.filter_counts[2].saturating_sub(security);
     let (_, _, _, failed, _) = app.queue_counts();
+    let (tail_label, tail_value, tail_style) = top_status_tail(app, width);
     Line::from(vec![
         Span::styled(" Today: ", accent()),
         Span::styled("🔒", error()),
@@ -165,9 +166,21 @@ fn top_status_line(app: &App, width: usize) -> Line<'static> {
         Span::styled(" Failed tasks ", muted()),
         Span::styled(failed.to_string(), error()),
         Span::styled("   |   ", dim()),
-        Span::styled("Recommended: ", success().add_modifier(Modifier::BOLD)),
-        Span::styled(recommended_text(app, width), text()),
+        Span::styled(tail_label, tail_style.add_modifier(Modifier::BOLD)),
+        Span::styled(tail_value, text()),
     ])
+}
+
+fn top_status_tail(app: &App, width: usize) -> (&'static str, String, Style) {
+    if app.is_catalog_busy() {
+        return (
+            "Loading: ",
+            truncate_to_width(&app.catalog_loading_message(), width.saturating_sub(82)),
+            accent(),
+        );
+    }
+
+    ("Recommended: ", recommended_text(app, width), success())
 }
 
 fn recommended_text(app: &App, width: usize) -> String {
@@ -321,12 +334,26 @@ fn draw_inspector(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("See full changelog online.", muted()),
     ]));
 
+    let summary = package_summary(package);
+    if !summary.is_empty() {
+        lines.push(separator_line(content_width));
+        lines.push(Line::from(Span::styled("Summary", accent())));
+        lines.push(Line::from(Span::styled(
+            truncate_to_width(&summary, content_width),
+            muted(),
+        )));
+    }
+
     lines.push(separator_line(content_width));
     lines.push(Line::from(Span::styled("Dependencies", accent())));
     if package.dependencies.is_empty() {
         lines.push(Line::from(Span::styled("• none listed", dim())));
     } else {
-        for dep in package.dependencies.iter().take(3) {
+        let remaining = chunks[0]
+            .height
+            .saturating_sub(u16::try_from(lines.len()).unwrap_or(u16::MAX))
+            .saturating_sub(1) as usize;
+        for dep in package.dependencies.iter().take(remaining.clamp(3, 8)) {
             lines.push(Line::from(vec![
                 Span::styled("• ", dim()),
                 Span::styled(
@@ -348,6 +375,17 @@ fn draw_inspector(frame: &mut Frame, app: &App, area: Rect) {
         inspector_button(&mut buttons, "Space", "Select");
         frame.render_widget(Paragraph::new(Line::from(buttons)), chunks[1]);
     }
+}
+
+fn package_summary(package: &Package) -> String {
+    package
+        .enrichment
+        .as_ref()
+        .and_then(|enrichment| enrichment.summary.as_deref())
+        .filter(|summary| !summary.trim().is_empty())
+        .unwrap_or(&package.description)
+        .trim()
+        .to_string()
 }
 
 struct FilterTabSpec {

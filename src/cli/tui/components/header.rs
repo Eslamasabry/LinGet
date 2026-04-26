@@ -20,7 +20,7 @@ static KERNEL_LABEL: Lazy<String> = Lazy::new(kernel_label);
 pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     let mut left = header_brand_spans();
     for spec in primary_tab_specs(app) {
-        left.extend(render_primary_tab(spec.label, spec.active, app.searching));
+        left.extend(render_primary_tab(&spec.label, spec.active, app.searching));
         left.push(Span::raw("  "));
     }
 
@@ -50,7 +50,7 @@ pub enum HeaderAction {
 }
 
 struct PrimaryTabSpec {
-    label: &'static str,
+    label: String,
     active: bool,
     action: HeaderAction,
 }
@@ -68,10 +68,13 @@ fn header_brand_spans() -> Vec<Span<'static>> {
     ]
 }
 
-fn primary_tab_specs(app: &App) -> [PrimaryTabSpec; 6] {
-    [
+fn primary_tab_specs(app: &App) -> Vec<PrimaryTabSpec> {
+    let (queued, running, _completed, failed, _cancelled) = app.queue_counts();
+    let queue_count = queued + running;
+    let health_count = failed + app.filter_counts[4];
+    vec![
         PrimaryTabSpec {
-            label: "Browse",
+            label: format!("Browse {}", compact_count(app.filter_counts[0])),
             active: app.focus == Focus::Packages
                 && app.filter == Filter::All
                 && !app.queue_expanded
@@ -79,27 +82,27 @@ fn primary_tab_specs(app: &App) -> [PrimaryTabSpec; 6] {
             action: HeaderAction::Browse,
         },
         PrimaryTabSpec {
-            label: "Updates",
+            label: format!("Upd {}", compact_count(app.filter_counts[2])),
             active: app.filter == Filter::Updates && !app.queue_expanded,
             action: HeaderAction::Updates,
         },
         PrimaryTabSpec {
-            label: "Installed",
+            label: format!("Inst {}", compact_count(app.filter_counts[1])),
             active: app.filter == Filter::Installed && !app.queue_expanded,
             action: HeaderAction::Installed,
         },
         PrimaryTabSpec {
-            label: "Sources",
+            label: format!("Src {}", compact_count(app.visible_sources().len() + 1)),
             active: app.focus == Focus::Sources && !app.queue_expanded,
             action: HeaderAction::Sources,
         },
         PrimaryTabSpec {
-            label: "Queue",
+            label: format!("Q {}", compact_count(queue_count)),
             active: app.queue_expanded,
             action: HeaderAction::Queue,
         },
         PrimaryTabSpec {
-            label: "Health",
+            label: format!("Health {}", compact_count(health_count)),
             active: app.view_mode == ViewMode::Dashboard && !app.queue_expanded,
             action: HeaderAction::Health,
         },
@@ -124,6 +127,14 @@ fn render_primary_tab(label: &str, active: bool, searching: bool) -> Vec<Span<'s
             ),
             Span::styled(" ]", header_bar()),
         ]
+    }
+}
+
+fn compact_count(value: usize) -> String {
+    if value >= 10_000 {
+        format!("{:.1}k", value as f64 / 1000.0)
+    } else {
+        value.to_string()
     }
 }
 
@@ -203,7 +214,8 @@ pub fn header_action_hit_test(
     let tabs = primary_tab_specs(app);
 
     for spec in tabs {
-        let width = spans_width(&render_primary_tab(spec.label, spec.active, app.searching)) as u16;
+        let width =
+            spans_width(&render_primary_tab(&spec.label, spec.active, app.searching)) as u16;
         if col >= cursor && col < cursor.saturating_add(width) {
             return Some(spec.action);
         }

@@ -97,6 +97,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
         let is_selected = app.selected.contains(&package_id);
         let is_favorite = app.is_favorite_id(&package_id);
         let row_style = if is_cursor { row_cursor() } else { text() };
+        let quiet_style = if is_cursor { row_style } else { dim() };
         let marker = if is_cursor {
             ">"
         } else if is_selected {
@@ -181,6 +182,8 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
                     risk,
                     if is_cursor {
                         row_style
+                    } else if risk == "routine" {
+                        quiet_style
                     } else if package.status == PackageStatus::UpdateAvailable {
                         risk_style
                     } else {
@@ -189,7 +192,13 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
                 )),
                 Cell::from(Span::styled(
                     action,
-                    if is_cursor { row_style } else { action_style },
+                    if is_cursor {
+                        row_style
+                    } else if action == "update" {
+                        quiet_style
+                    } else {
+                        action_style
+                    },
                 )),
             ])
             .style(row_style),
@@ -308,8 +317,8 @@ fn risk_cell(package: &Package) -> (&'static str, Style) {
         .unwrap_or_else(|| package.detect_update_category());
     match category {
         UpdateCategory::Security => ("security", error()),
-        _ if package.status == PackageStatus::UpdateAvailable => ("routine", success()),
-        _ => ("routine", success()),
+        _ if package.status == PackageStatus::UpdateAvailable => ("routine", dim()),
+        _ => ("routine", dim()),
     }
 }
 
