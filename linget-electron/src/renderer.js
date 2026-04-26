@@ -298,6 +298,9 @@ const state = {
   queued: new Set(),
   ignored: new Set(),
   favorites: new Set(['tailscale', 'firefox', 'vscode']),
+  // TODO: Replace simulated operation progress with backend task events.
+  operationProgress: new Map(),
+  refreshStartedAt: Date.now(),
   query: '',
 };
 
@@ -307,6 +310,34 @@ const packageList = document.querySelector('#packageList');
 const detailsPanel = document.querySelector('#detailsPanel');
 const resultCount = document.querySelector('#resultCount');
 const toastRegion = document.querySelector('#toastRegion');
+const queuedCount = document.querySelector('#queuedCount');
+const syncFill = document.querySelector('#syncFill');
+const syncLabel = document.querySelector('#syncLabel');
+const refreshAge = document.querySelector('#refreshAge');
+const searchOverlay = document.querySelector('#searchOverlay');
+const searchInput = document.querySelector('#searchInput');
+const searchClear = document.querySelector('#searchClear');
+const shortcutOverlay = document.querySelector('#shortcutOverlay');
+
+function refreshIcons(root = document) {
+  if (!window.lucide) return;
+  window.lucide.createIcons({
+    icons: window.lucide.icons,
+    attrs: {
+      'stroke-width': 1.75,
+      'aria-hidden': 'true',
+    },
+    root,
+  });
+}
+
+function transitionUpdate(update) {
+  if (document.startViewTransition) {
+    document.startViewTransition(update);
+    return;
+  }
+  update();
+}
 
 function iconMarkup(pkg) {
   return `<span class="pkg-icon ${pkg.icon}" aria-hidden="true">${iconText(pkg.icon)}</span>`;
@@ -349,24 +380,35 @@ function filteredPackages() {
   });
 }
 
+function operationLabel(pkg) {
+  const progress = state.operationProgress.get(pkg.name);
+  if (progress === undefined) return pkg.status;
+  if (progress >= 100) return 'Staged';
+  return `${Math.max(1, Math.round(progress))}%`;
+}
+
 function renderSources() {
-  sourceList.innerHTML = sources.map((source) => `
+  sourceList.innerHTML = sources.map((source, index) => `
     <button class="source-row ${source.id === state.selectedSource ? 'active' : ''} ${source.separated ? 'separated' : ''}" data-source="${source.id}">
       ${sourceIcon(source)}
       <span class="source-name">${source.name}</span>
       <span class="count-dot"></span>
       <span class="source-count">${source.count}</span>
+      <span class="source-latency" style="--latency: ${Math.max(18, 94 - index * 8)}%"></span>
     </button>
   `).join('');
+  refreshIcons(sourceList);
 }
 
 function renderFilters() {
   filterGrid.innerHTML = filters.map((filter) => `
     <button class="filter-tile ${filter.id === state.selectedFilter ? 'active' : ''} ${filter.danger ? 'danger' : ''}" data-filter="${filter.id}">
+      <i data-lucide="${filter.danger ? 'shield-alert' : filter.id === 'favorites' ? 'star' : filter.id === 'duplicates' ? 'copy' : 'list-filter'}"></i>
       <span>${filter.label}</span>
       <strong>${filter.count}</strong>
     </button>
   `).join('');
+  refreshIcons(filterGrid);
 }
 
 function renderPackages() {
@@ -375,12 +417,13 @@ function renderPackages() {
     state.selectedPackage = rows[0].name;
   }
 
-  packageList.innerHTML = rows.map((pkg) => {
+  packageList.innerHTML = rows.map((pkg, index) => {
     const queued = state.queued.has(pkg.name);
     const isSelected = pkg.name === state.selectedPackage;
     const statusClass = pkg.status === 'Security' ? 'security' : 'update';
+    const progress = state.operationProgress.get(pkg.name) || 0;
     return `
-      <button class="package-row ${isSelected ? 'selected' : ''}" data-package="${pkg.name}" role="option" aria-selected="${isSelected}">
+      <button class="package-row ${isSelected ? 'selected' : ''} ${queued ? 'queued-row' : ''}" data-package="${pkg.name}" role="option" aria-selected="${isSelected}" style="--row-index: ${index}; --operation-progress: ${progress}%">
         <span class="pkg-cell pkg-main">
           ${iconMarkup(pkg)}
           <span class="pkg-copy">
@@ -395,24 +438,32 @@ function renderPackages() {
         </span>
         <span class="pkg-cell source-cell">${pkg.source}</span>
         <span class="pkg-cell status-cell">
-          <span class="status-pill ${queued ? 'queued' : statusClass}">${queued ? 'Queued' : pkg.status}</span>
+          <span class="status-pill ${queued ? 'queued' : statusClass}">
+            ${pkg.status === 'Security' && !queued ? '<i data-lucide="shield-alert"></i>' : queued ? '<i data-lucide="loader-circle"></i>' : '<i data-lucide="refresh-cw"></i>'}
+            ${queued ? operationLabel(pkg) : pkg.status}
+          </span>
         </span>
         <span class="pkg-cell action-cell">
-          <span class="download-button" aria-hidden="true">&#8681;</span>
-          <span class="more-button" aria-hidden="true">&#8942;</span>
+          <span class="download-button" aria-hidden="true"><i data-lucide="${queued ? 'check' : 'download'}"></i></span>
+          <span class="more-button" aria-hidden="true"><i data-lucide="ellipsis-vertical"></i></span>
         </span>
+        <span class="row-progress" aria-hidden="true"></span>
       </button>
     `;
   }).join('');
 
   // TODO: Replace hardcoded total with backend result counts once pagination/search is real.
   resultCount.textContent = rows.length === 0 ? 'Showing 0 of 207' : `Showing 1-${rows.length} of 207`;
+  renderTelemetry();
+  refreshIcons(packageList);
   renderDetails();
 }
 
 function renderDetails() {
   const pkg = packages.find((item) => item.name === state.selectedPackage) || packages[0];
   const queued = state.queued.has(pkg.name);
+  const progress = state.operationProgress.get(pkg.name) || 0;
+  detailsPanel.classList.remove('detail-ready');
   detailsPanel.innerHTML = `
     <div class="detail-title">
       ${iconMarkup(pkg)}
@@ -420,6 +471,16 @@ function renderDetails() {
         <h2>${pkg.name}</h2>
         <p>${pkg.description}</p>
       </div>
+      <span class="detail-badge ${pkg.status === 'Security' ? 'danger' : 'info'}">
+        <i data-lucide="${pkg.status === 'Security' ? 'shield-alert' : 'sparkles'}"></i>
+        ${pkg.status === 'Security' ? 'priority' : 'ready'}
+      </span>
+    </div>
+
+    <div class="detail-health">
+      <span><i data-lucide="network"></i><strong>${pkg.source}</strong><small>source</small></span>
+      <span><i data-lucide="package-check"></i><strong>${pkg.download}</strong><small>download</small></span>
+      <span><i data-lucide="activity"></i><strong>${queued ? `${Math.round(progress)}%` : 'idle'}</strong><small>queue</small></span>
     </div>
 
     <div class="detail-section metrics">
@@ -451,7 +512,7 @@ function renderDetails() {
     <div class="detail-section recommendation">
       <h3>Recommended Action</h3>
       <button class="recommend-card" data-recommend="${pkg.name}">
-        <span class="big-download">&#8681;</span>
+        <span class="big-download"><i data-lucide="${queued ? 'check' : 'download'}"></i></span>
         <span>
           <strong>${queued ? 'Queued' : `Update ${pkg.name}`}</strong>
           <small>${pkg.installed} <span class="arrow">&rarr;</span> ${pkg.available}</small>
@@ -465,28 +526,63 @@ function renderDetails() {
       `}
     </div>
   `;
+  refreshIcons(detailsPanel);
+  requestAnimationFrame(() => detailsPanel.classList.add('detail-ready'));
 }
 
 function showToast(message, tone = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast ${tone}`;
-  toast.textContent = message;
+  const icon = tone === 'danger' ? 'circle-alert' : tone === 'security' ? 'shield-check' : 'info';
+  toast.innerHTML = `<i data-lucide="${icon}"></i><span>${message}</span>`;
+  toast.querySelector('span').textContent = message;
   toastRegion.appendChild(toast);
+  refreshIcons(toast);
   setTimeout(() => {
     toast.classList.add('leaving');
     setTimeout(() => toast.remove(), 220);
   }, 1800);
 }
 
+function renderTelemetry() {
+  queuedCount.textContent = String(state.queued.size);
+  const elapsed = Math.max(1, Math.round((Date.now() - state.refreshStartedAt) / 1000));
+  const sweep = 58 + Math.round(Math.sin(Date.now() / 900) * 14 + 14);
+  syncFill.style.width = `${Math.min(96, Math.max(42, sweep))}%`;
+  syncLabel.textContent = state.queued.size > 0 ? 'queue active' : 'cache warm';
+  refreshAge.textContent = `${elapsed}s ago`;
+}
+
+function startOperation(pkgName) {
+  if (state.operationProgress.get(pkgName) >= 100) return;
+  if (!state.operationProgress.has(pkgName)) {
+    state.operationProgress.set(pkgName, 12);
+  }
+
+  const timer = setInterval(() => {
+    const next = Math.min(100, (state.operationProgress.get(pkgName) || 0) + 8 + Math.random() * 12);
+    state.operationProgress.set(pkgName, next);
+    renderPackages();
+    if (next >= 100) {
+      clearInterval(timer);
+      showToast(`${pkgName} staged in queue`, 'security');
+    }
+  }, 220);
+}
+
 function queueSelected() {
   // TODO: Call the real package update/queue command and render operation progress/errors.
   state.queued.add(state.selectedPackage);
+  startOperation(state.selectedPackage);
   renderPackages();
   showToast(`Queued ${state.selectedPackage} for update`, 'info');
 }
 
 function updateAll() {
-  filteredPackages().forEach((pkg) => state.queued.add(pkg.name));
+  filteredPackages().forEach((pkg) => {
+    state.queued.add(pkg.name);
+    startOperation(pkg.name);
+  });
   renderPackages();
   showToast('Queued visible updates', 'security');
 }
@@ -524,13 +620,37 @@ function moveSelection(delta) {
 }
 
 function openSearch() {
-  // FIXME: Browser prompt is a prototype shortcut; replace with the in-app search control.
-  const query = window.prompt('Search packages', state.query || '');
-  if (query !== null) {
-    state.query = query.trim().toLowerCase();
-    renderPackages();
-    showToast(state.query ? `Filtered by "${state.query}"` : 'Search cleared', 'info');
-  }
+  searchOverlay.hidden = false;
+  searchInput.value = state.query;
+  requestAnimationFrame(() => {
+    searchOverlay.classList.add('open');
+    searchInput.focus();
+    searchInput.select();
+  });
+}
+
+function closeSearch() {
+  searchOverlay.classList.remove('open');
+  setTimeout(() => {
+    searchOverlay.hidden = true;
+  }, 140);
+}
+
+function applySearch(query) {
+  state.query = query.trim().toLowerCase();
+  transitionUpdate(renderPackages);
+}
+
+function openShortcuts() {
+  shortcutOverlay.hidden = false;
+  requestAnimationFrame(() => shortcutOverlay.classList.add('open'));
+}
+
+function closeShortcuts() {
+  shortcutOverlay.classList.remove('open');
+  setTimeout(() => {
+    shortcutOverlay.hidden = true;
+  }, 140);
 }
 
 function handleCommand(command) {
@@ -568,8 +688,8 @@ function handleCommand(command) {
       }
       break;
     case 'help':
-      // TODO: Replace toast-only help with a shortcut/help overlay.
-      showToast('Use arrow keys, Enter, u, U, i, *, /, f, and q', 'info');
+      // TODO: Make the shortcut overlay command-searchable once routes/actions are real.
+      openShortcuts();
       break;
     default:
       break;
@@ -581,23 +701,27 @@ sourceList.addEventListener('click', (event) => {
   if (!row) return;
   state.selectedSource = row.dataset.source;
   // FIXME: Source clicks update highlight only; wire backend/source filtering after row counts are live.
-  renderSources();
-  renderPackages();
+  transitionUpdate(() => {
+    renderSources();
+    renderPackages();
+  });
 });
 
 filterGrid.addEventListener('click', (event) => {
   const tile = event.target.closest('[data-filter]');
   if (!tile) return;
   state.selectedFilter = tile.dataset.filter;
-  renderFilters();
-  renderPackages();
+  transitionUpdate(() => {
+    renderFilters();
+    renderPackages();
+  });
 });
 
 packageList.addEventListener('click', (event) => {
   const row = event.target.closest('[data-package]');
   if (!row) return;
   state.selectedPackage = row.dataset.package;
-  renderPackages();
+  transitionUpdate(renderPackages);
 });
 
 detailsPanel.addEventListener('click', (event) => {
@@ -613,13 +737,47 @@ document.querySelector('.keybar').addEventListener('click', (event) => {
   handleCommand(button.dataset.command);
 });
 
+searchInput.addEventListener('input', () => {
+  applySearch(searchInput.value);
+});
+
+searchInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeSearch();
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    closeSearch();
+  }
+});
+
+searchClear.addEventListener('click', () => {
+  searchInput.value = '';
+  applySearch('');
+  searchInput.focus();
+});
+
+shortcutOverlay.addEventListener('click', (event) => {
+  if (event.target === shortcutOverlay || event.target.closest('[data-dismiss-shortcuts]')) {
+    closeShortcuts();
+  }
+});
+
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    if (!searchOverlay.hidden) closeSearch();
+    if (!shortcutOverlay.hidden) closeShortcuts();
+    return;
+  }
+
+  if (!searchOverlay.hidden) return;
+
   if (event.key === 'ArrowDown') {
     event.preventDefault();
-    moveSelection(1);
+    transitionUpdate(() => moveSelection(1));
   } else if (event.key === 'ArrowUp') {
     event.preventDefault();
-    moveSelection(-1);
+    transitionUpdate(() => moveSelection(-1));
   } else if (event.key === 'Enter') {
     handleCommand('details');
   } else if (event.key === 'u') {
@@ -655,4 +813,7 @@ renderSources();
 renderFilters();
 renderPackages();
 renderClock();
+refreshIcons();
+renderTelemetry();
 setInterval(renderClock, 30000);
+setInterval(renderTelemetry, 1000);

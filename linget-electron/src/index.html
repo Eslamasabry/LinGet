@@ -15,18 +15,19 @@
           <span class="brand-subtitle">The Linux Package Manager</span>
         </div>
         <nav class="tabs" aria-label="Primary">
-          <button class="tab">Browse</button>
-          <button class="tab active">Updates</button>
-          <button class="tab">Installed</button>
-          <button class="tab">Sources</button>
-          <button class="tab">Queue</button>
-          <button class="tab">Health</button>
+          <button class="tab"><i data-lucide="package-search"></i><span>Browse</span></button>
+          <button class="tab active"><i data-lucide="refresh-cw"></i><span>Updates</span></button>
+          <button class="tab"><i data-lucide="hard-drive"></i><span>Installed</span></button>
+          <button class="tab"><i data-lucide="boxes"></i><span>Sources</span></button>
+          <button class="tab"><i data-lucide="list-checks"></i><span>Queue</span></button>
+          <button class="tab"><i data-lucide="activity"></i><span>Health</span></button>
         </nav>
         <div class="header-stats">
           <!-- TODO: Replace screenshot fixture counts with live task/queue health from LinGet backend. -->
           <span>Tasks: <strong>207</strong></span>
           <span class="stat-separator">|</span>
           <span class="failed">Failed: <strong>15</strong></span>
+          <span class="queued-stat">Queued: <strong id="queuedCount">0</strong></span>
           <span class="clock" id="clock">14:37</span>
         </div>
       </header>
@@ -34,7 +35,7 @@
       <section class="alert-strip" aria-label="System warnings">
         <!-- TODO: Drive alert counts and labels from real failed tasks, security updates, and changelog availability. -->
         <div class="alert-item danger">
-          <span class="alert-icon">!</span>
+          <span class="alert-icon"><i data-lucide="circle-alert"></i></span>
           <strong>15</strong>
           <span>tasks failed and require attention</span>
         </div>
@@ -46,9 +47,34 @@
         </div>
         <span class="alert-divider">|</span>
         <div class="alert-item info">
-          <span class="info-icon">i</span>
+          <span class="info-icon"><i data-lucide="info"></i></span>
           <strong>5</strong>
           <span>packages have changelogs</span>
+        </div>
+      </section>
+
+      <section class="ops-strip" aria-label="Live operation summary">
+        <!-- TODO: Replace ops strip fixture values with live progressive provider events from LinGet backend. -->
+        <div class="ops-item wide">
+          <i data-lucide="radar"></i>
+          <span>Provider pulse</span>
+          <strong id="syncLabel">warming cache</strong>
+          <span class="sync-track"><span id="syncFill"></span></span>
+        </div>
+        <div class="ops-item">
+          <i data-lucide="shield-check"></i>
+          <span>Risk window</span>
+          <strong>7 security</strong>
+        </div>
+        <div class="ops-item">
+          <i data-lucide="timer-reset"></i>
+          <span>Last refresh</span>
+          <strong id="refreshAge">14s ago</strong>
+        </div>
+        <div class="ops-item">
+          <i data-lucide="circle-gauge"></i>
+          <span>Backend health</span>
+          <strong>8/8 live</strong>
         </div>
       </section>
 
@@ -97,20 +123,48 @@
       </main>
 
       <footer class="keybar" aria-label="Keyboard shortcuts">
-        <button data-command="details"><kbd>Enter</kbd><span>View Details</span></button>
-        <button data-command="update"><kbd>u</kbd><span>Update</span></button>
-        <button data-command="update-all"><kbd>U</kbd><span>Update All</span></button>
-        <button data-command="ignore"><kbd>i</kbd><span>Ignore</span></button>
-        <button data-command="favorite"><kbd>*</kbd><span>Toggle Favorite</span></button>
-        <button data-command="repos"><kbd>r</kbd><span>Repositories</span></button>
-        <button data-command="search"><kbd>/</kbd><span>Search</span></button>
-        <button data-command="filters"><kbd>f</kbd><span>Filters</span></button>
-        <button data-command="quit"><kbd>q</kbd><span>Quit</span></button>
-        <button data-command="help"><kbd>?</kbd><span>Help</span></button>
+        <button data-command="details"><kbd>Enter</kbd><i data-lucide="panel-right-open"></i><span>View Details</span></button>
+        <button data-command="update"><kbd>u</kbd><i data-lucide="download"></i><span>Update</span></button>
+        <button data-command="update-all"><kbd>U</kbd><i data-lucide="list-checks"></i><span>Update All</span></button>
+        <button data-command="ignore"><kbd>i</kbd><i data-lucide="eye-off"></i><span>Ignore</span></button>
+        <button data-command="favorite"><kbd>*</kbd><i data-lucide="star"></i><span>Toggle Favorite</span></button>
+        <button data-command="repos"><kbd>r</kbd><i data-lucide="boxes"></i><span>Repositories</span></button>
+        <button data-command="search"><kbd>/</kbd><i data-lucide="search"></i><span>Search</span></button>
+        <button data-command="filters"><kbd>f</kbd><i data-lucide="sliders-horizontal"></i><span>Filters</span></button>
+        <button data-command="quit"><kbd>q</kbd><i data-lucide="power"></i><span>Quit</span></button>
+        <button data-command="help"><kbd>?</kbd><i data-lucide="circle-help"></i><span>Help</span></button>
       </footer>
     </div>
 
+    <div class="search-overlay" id="searchOverlay" hidden>
+      <div class="search-panel">
+        <i data-lucide="search"></i>
+        <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search packages, sources, versions" />
+        <button id="searchClear" aria-label="Clear search"><i data-lucide="x"></i></button>
+        <kbd>Esc</kbd>
+      </div>
+    </div>
+
+    <div class="shortcut-overlay" id="shortcutOverlay" hidden>
+      <div class="shortcut-panel">
+        <div class="shortcut-title">
+          <i data-lucide="keyboard"></i>
+          <strong>Command Keys</strong>
+          <button data-dismiss-shortcuts aria-label="Close shortcuts"><i data-lucide="x"></i></button>
+        </div>
+        <div class="shortcut-grid">
+          <span><kbd>↑↓</kbd> Move selection</span>
+          <span><kbd>Enter</kbd> Inspect package</span>
+          <span><kbd>u</kbd> Queue update</span>
+          <span><kbd>U</kbd> Queue visible</span>
+          <span><kbd>/</kbd> Search</span>
+          <span><kbd>i</kbd> Ignore</span>
+        </div>
+      </div>
+    </div>
+
     <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+    <script src="../node_modules/lucide/dist/umd/lucide.min.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>
