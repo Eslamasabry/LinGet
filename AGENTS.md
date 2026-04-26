@@ -22,19 +22,29 @@ RUST_LOG=linget=debug cargo run  # Run with debug logging
 - **Privilege**: System ops (apt, dnf) use `pkexec` via `run_pkexec()` helper
 
 ## Beads (bd) Issue Tracking
-- **Common commands**:
+- **Use the installed CLI help as source of truth**:
   ```bash
-  bd list
+  bd --help
+  bd <command> --help
+  ```
+- **Common commands from this `bd` CLI**:
+  ```bash
+  bd status                         # Database summary
+  bd ready                          # Dependency-aware ready work
+  bd list --status open             # Filter issues
   bd create "Title" --description "Context + intended change" --acceptance "How we know it's done"
   bd show <issue-id>
   bd update <issue-id> --status in_progress
-  bd update <issue-id> --status closed
-  bd close <issue-id>
-  bd sync
+  bd update <issue-id> --add-label <label>
+  bd close <issue-id> --reason "Done"
+  bd reopen <issue-id>
+  bd export --no-memories -o .beads/issues.jsonl
+  bd vc status
   ```
-- **Repo state**: Issues are stored in `.beads/issues.jsonl` (git-tracked); local cache is `.beads/beads.db` (gitignored)
+- **Repo state**: The live local database is auto-discovered from `.beads/*.db` (currently `.beads/beads.db`). If a JSONL snapshot is needed for review or git tracking, refresh it with `bd export --no-memories -o .beads/issues.jsonl`.
+- **Important**: This installed `bd` does not have `bd sync`; do not use or document it. Use `bd export` for JSONL refresh and normal `git pull --rebase` / `git push` for repository synchronization.
 - **Hooks**: If auto-sync warnings appear, run `bd hooks install`
-- **Before pushing code**: Run `bd sync` so issue state is in the remote
+- **Before pushing code**: Run `bd status` or `bd vc status`; export `.beads/issues.jsonl` only when issue state needs to be committed.
 
 ## Landing the Plane (Session Completion)
 
@@ -48,7 +58,9 @@ RUST_LOG=linget=debug cargo run  # Run with debug logging
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
+   bd status
+   # If issue data changed and the repo tracks a JSONL snapshot:
+   bd export --no-memories -o .beads/issues.jsonl
    git push
    git status  # MUST show "up to date with origin"
    ```
