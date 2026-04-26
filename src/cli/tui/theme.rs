@@ -1,8 +1,9 @@
 //! Themed styling for the TUI.
 //!
 //! All styling flows through a runtime-switchable [`Theme`]. Built-in themes
-//! include Nord, Dracula, Tokyo Night, Gruvbox Dark, High Contrast, and a
-//! Monochrome palette that is auto-selected when `NO_COLOR` is set.
+//! include the default LinGet terminal palette, Nord, Dracula, Tokyo Night,
+//! Gruvbox Dark, High Contrast, and a Monochrome palette that is auto-selected
+//! when `NO_COLOR` is set.
 //!
 //! External callers should use the semantic helpers (`accent()`, `dim()`,
 //! `badge_installed()`, …) or the `palette::cyan()` / `palette::header_bg()`
@@ -59,7 +60,37 @@ macro_rules! rgb {
 
 // ---------- Built-in themes ----------
 
-/// Nord — calm, frosty blues. The historical LinGet default.
+/// LinGet — black terminal chrome with crisp status accents.
+pub const LINGET: Theme = Theme {
+    name: "linget",
+    monochrome: false,
+    cyan: rgb!(0, 188, 212),
+    yellow: rgb!(255, 193, 7),
+    green: rgb!(55, 184, 44),
+    red: rgb!(211, 38, 38),
+    white: rgb!(210, 210, 210),
+    light_gray: rgb!(155, 155, 155),
+    dark_gray: rgb!(93, 93, 93),
+    inactive_border: rgb!(82, 82, 82),
+    magenta: rgb!(48, 96, 255),
+    blue: rgb!(53, 125, 204),
+    orange: rgb!(255, 132, 0),
+    teal: rgb!(0, 188, 212),
+    peach: rgb!(255, 164, 75),
+    lavender: rgb!(120, 143, 255),
+    pink: rgb!(255, 94, 130),
+    sky: rgb!(0, 150, 220),
+    header_bg: rgb!(0, 0, 0),
+    footer_bg: rgb!(0, 0, 0),
+    tab_active_bg: rgb!(13, 48, 92),
+    badge_installed_bg: rgb!(12, 44, 20),
+    badge_update_bg: rgb!(54, 38, 0),
+    badge_not_installed_bg: rgb!(20, 20, 20),
+    badge_progress_bg: rgb!(9, 43, 56),
+    scrollbar_track_bg: rgb!(0, 0, 0),
+};
+
+/// Nord — calm, frosty blues.
 pub const NORD: Theme = Theme {
     name: "nord",
     monochrome: false,
@@ -241,6 +272,7 @@ pub const MONOCHROME: Theme = Theme {
 };
 
 pub const BUILTIN_THEMES: &[&Theme] = &[
+    &LINGET,
     &NORD,
     &DRACULA,
     &TOKYO_NIGHT,
@@ -249,7 +281,7 @@ pub const BUILTIN_THEMES: &[&Theme] = &[
     &MONOCHROME,
 ];
 
-static ACTIVE_THEME: RwLock<&'static Theme> = RwLock::new(&NORD);
+static ACTIVE_THEME: RwLock<&'static Theme> = RwLock::new(&LINGET);
 
 /// Return a copy of the currently active theme.
 pub fn active() -> Theme {

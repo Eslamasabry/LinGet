@@ -804,7 +804,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut left = Vec::new();
+    let mut left = vec![Span::raw(" ")];
     footer_button(&mut left, "Enter", "Queue update");
     footer_separator(&mut left);
     footer_button(&mut left, "Space", "Select package");

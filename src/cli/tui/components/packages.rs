@@ -78,7 +78,12 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
 
     frame.render_widget(block, area);
 
-    let visible_rows = sections[0].height.saturating_sub(1) as usize;
+    let available_rows = sections[0].height.saturating_sub(2) as usize;
+    let visible_rows = if area.width >= 96 && available_rows > 9 {
+        9
+    } else {
+        available_rows
+    };
     let start = window_start(app.filtered.len(), visible_rows.max(1), app.cursor);
     let end = (start + visible_rows.max(1)).min(app.filtered.len());
 
@@ -114,7 +119,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
             .available_version
             .clone()
             .unwrap_or_else(|| "-".to_string());
-        let source = app.package_source_badge(package);
+        let source = source_table_label(app, package);
 
         // In Duplicates filter, append "also: X" hint to the name
         let display_name = if app.filter == Filter::Duplicates {
@@ -204,9 +209,10 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
         "Risk",
         "Action",
     ])
-    .style(dim().add_modifier(Modifier::BOLD));
+    .style(dim().add_modifier(Modifier::BOLD))
+    .bottom_margin(1);
     let widths = [
-        Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Min(24),
         Constraint::Length(14),
         Constraint::Length(14),
@@ -217,6 +223,18 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
 
     let table = Table::new(rows, widths).header(header).column_spacing(1);
     frame.render_widget(table, sections[0]);
+    if sections[0].height > 1 {
+        let separator = Paragraph::new("─".repeat(sections[0].width as usize)).style(dim());
+        frame.render_widget(
+            separator,
+            Rect {
+                x: sections[0].x,
+                y: sections[0].y + 1,
+                width: sections[0].width,
+                height: 1,
+            },
+        );
+    }
 
     if sections[1].height > 0 {
         let footer = vec![
@@ -229,17 +247,27 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
     if app.filtered.len() > visible_rows {
         let mut scrollbar_state = ScrollbarState::new(app.filtered.len()).position(app.cursor);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("║"))
+            .thumb_symbol("█")
             .style(scrollbar_style())
             .thumb_style(scrollbar_thumb());
         frame.render_stateful_widget(
             scrollbar,
-            sections[0].inner(ratatui::layout::Margin {
-                vertical: 0,
-                horizontal: 0,
-            }),
+            Rect {
+                x: sections[0].x,
+                y: sections[0].y.saturating_add(2),
+                width: sections[0].width,
+                height: sections[0].height.saturating_sub(2),
+            },
             &mut scrollbar_state,
         );
     }
+}
+
+fn source_table_label(app: &App, package: &Package) -> String {
+    app.package_source_badge(package).to_lowercase()
 }
 
 fn packages_panel_title(app: &App) -> String {

@@ -68,7 +68,7 @@ pub fn filter_panel_hit_test(
         return None;
     }
 
-    let mut cursor = inner.x;
+    let mut cursor = inner.x.saturating_add(1);
     for spec in filter_tab_specs(app) {
         let width = spans_width(&filter_tab_spans(
             spec.label,
@@ -101,7 +101,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(1), Constraint::Length(3)])
         .split(inner);
 
-    let mut tab_spans = Vec::new();
+    let mut tab_spans = vec![Span::raw(" ")];
     for (index, spec) in filter_tab_specs(app).iter().enumerate() {
         if index > 0 {
             tab_spans.push(Span::raw("  "));
@@ -232,7 +232,7 @@ fn draw_inspector(frame: &mut Frame, app: &App, area: Rect) {
         text().add_modifier(Modifier::BOLD),
     )));
     lines.push(separator_line(content_width));
-    push_fact_line(&mut lines, "Source", &package.source.to_string(), muted());
+    push_fact_line(&mut lines, "Source", &source_detail_label(package), muted());
     lines.push(version_line(package));
     push_fact_line(
         &mut lines,
@@ -408,6 +408,10 @@ fn status_label(status: PackageStatus) -> &'static str {
         PackageStatus::Updating => "updating",
         PackageStatus::Removing => "removing",
     }
+}
+
+fn source_detail_label(package: &Package) -> String {
+    package.source.to_string().to_lowercase()
 }
 
 fn risk_label(package: &Package) -> (&'static str, Style) {
