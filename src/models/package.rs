@@ -429,15 +429,6 @@ impl UpdateCategory {
         }
     }
 
-    pub fn css_class(&self) -> &'static str {
-        match self {
-            UpdateCategory::Security => "update-security",
-            UpdateCategory::Bugfix => "update-bugfix",
-            UpdateCategory::Feature => "update-feature",
-            UpdateCategory::Minor => "update-minor",
-        }
-    }
-
     pub fn label(&self) -> &'static str {
         match self {
             UpdateCategory::Security => "Security",

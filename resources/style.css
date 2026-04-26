@@ -558,7 +558,7 @@ button:focus-visible {
 .title-1 {
     font-size: 18pt;
     font-weight: 800;
-    letter-spacing: -0.5px;
+    letter-spacing: 0;
 }
 
 .title-2 {
@@ -575,7 +575,7 @@ button:focus-visible {
     font-size: 9pt;
     font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0;
     opacity: 0.7;
 }
 
@@ -1087,7 +1087,7 @@ button:active:not(:disabled) {
 .title-large {
     font-size: 24pt;
     font-weight: 800;
-    letter-spacing: -0.75px;
+    letter-spacing: 0;
     line-height: 1.2;
 }
 
@@ -1256,7 +1256,7 @@ button:active:not(:disabled) {
     font-size: 8pt;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0;
     opacity: 0.8;
 }
 
@@ -1282,7 +1282,7 @@ button:active:not(:disabled) {
     padding: 2px 8px;
     border-radius: 999px;
     text-transform: uppercase;
-    letter-spacing: 0.3px;
+    letter-spacing: 0;
 }
 
 .status-badge-update {
@@ -1328,7 +1328,7 @@ button:active:not(:disabled) {
 .hero-title {
     font-size: 28pt;
     font-weight: 800;
-    letter-spacing: -1.5px;
+    letter-spacing: 0;
     line-height: 1.1;
 }
 
@@ -1531,7 +1531,7 @@ statuspage.success-status .icon {
 .empty-state .title {
     font-size: 20pt;
     font-weight: 800;
-    letter-spacing: -0.5px;
+    letter-spacing: 0;
     margin-bottom: 12px;
 }
 
@@ -1983,3 +1983,441 @@ flowbox.package-grid flowboxchild:nth-child(12) { animation-delay: 330ms; }
     border-top: none;
 }
 
+/* ==========================================================================
+   OPS REFERENCE SURFACE
+   GTK shell styled to match the dense terminal package-manager reference.
+   ========================================================================== */
+
+@define-color ops_bg #020302;
+@define-color ops_panel #050605;
+@define-color ops_panel_2 #080a08;
+@define-color ops_border #1b1d1b;
+@define-color ops_border_bright #333733;
+@define-color ops_text #e7e9e7;
+@define-color ops_muted #7c817c;
+@define-color ops_dim #505650;
+@define-color ops_green #7bdc4a;
+@define-color ops_blue #2d73ff;
+@define-color ops_red #ff3131;
+@define-color ops_yellow #f0a800;
+@define-color ops_info #2f82ff;
+
+.ops-shell,
+.ops-shell window,
+.ops-shell .background,
+.ops-shell scrolledwindow,
+.ops-shell viewport {
+    background-color: @ops_bg;
+    color: @ops_text;
+}
+
+.ops-shell * {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Mono", "DejaVu Sans Mono", monospace;
+    letter-spacing: 0;
+}
+
+.ops-muted,
+.ops-shell .dim-label {
+    color: @ops_muted;
+    opacity: 1;
+}
+
+.ops-accent-text {
+    color: @ops_blue;
+}
+
+.ops-danger-text {
+    color: @ops_red;
+}
+
+.ops-warning-text {
+    color: @ops_yellow;
+}
+
+.ops-info-text {
+    color: @ops_info;
+}
+
+.ops-topbar {
+    min-height: 58px;
+    padding: 0 14px;
+    background-color: @ops_bg;
+    border: 1px solid @ops_border;
+    border-bottom: none;
+}
+
+.ops-brand {
+    color: @ops_green;
+    font-size: 13pt;
+    font-weight: 800;
+}
+
+.ops-tabs {
+    min-width: 760px;
+}
+
+.ops-tab {
+    min-width: 122px;
+    min-height: 38px;
+    padding: 0 14px;
+    border-radius: 2px;
+    border: 1px solid @ops_border_bright;
+    background: transparent;
+    color: @ops_text;
+    font-weight: 700;
+}
+
+.ops-tab:hover {
+    background-color: @ops_panel_2;
+    border-color: @ops_blue;
+}
+
+.ops-tab:checked {
+    background-color: alpha(@ops_blue, 0.24);
+    border-color: @ops_blue;
+    color: @ops_text;
+}
+
+.ops-icon-button {
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    border-radius: 2px;
+    color: @ops_muted;
+}
+
+.ops-hidden-tool {
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    opacity: 0;
+}
+
+.ops-alertbar {
+    min-height: 46px;
+    padding: 0 22px;
+    background-color: @ops_bg;
+    border: 1px solid alpha(@ops_red, 0.72);
+}
+
+.ops-filterbar {
+    min-height: 68px;
+    padding: 10px 12px;
+    background-color: @ops_bg;
+    border-left: 1px solid @ops_border;
+    border-right: 1px solid @ops_border;
+    border-bottom: 1px solid @ops_border;
+}
+
+.ops-filter-tile {
+    min-width: 130px;
+    min-height: 58px;
+    padding: 0 12px;
+    border-radius: 2px;
+    border: 1px solid @ops_border;
+    background: transparent;
+    color: @ops_text;
+}
+
+.ops-filter-tile:hover,
+.ops-filter-tile.selected {
+    background-color: alpha(@ops_blue, 0.12);
+    border-color: @ops_blue;
+}
+
+.ops-filter-danger .ops-filter-title,
+.ops-filter-danger .ops-filter-count {
+    color: @ops_red;
+}
+
+.ops-filter-title {
+    font-size: 10pt;
+    color: @ops_text;
+}
+
+.ops-filter-count {
+    font-size: 9pt;
+    color: @ops_muted;
+}
+
+.ops-action-primary {
+    border-radius: 2px;
+    border: 1px solid @ops_blue;
+    background-color: alpha(@ops_blue, 0.18);
+    color: @ops_text;
+}
+
+.ops-table-header {
+    min-height: 34px;
+    padding: 0 16px;
+    background-color: @ops_bg;
+    border-left: 1px solid @ops_border;
+    border-right: 1px solid @ops_border;
+    border-bottom: 1px solid @ops_blue;
+}
+
+.ops-table-head-label {
+    color: @ops_muted;
+    font-size: 9pt;
+}
+
+.ops-package-col {
+    min-width: 250px;
+}
+
+.ops-current-col,
+.ops-new-col {
+    min-width: 116px;
+}
+
+.ops-arrow-col {
+    min-width: 18px;
+}
+
+.ops-source-col {
+    min-width: 126px;
+}
+
+.ops-status-col {
+    min-width: 134px;
+}
+
+.ops-action-col {
+    min-width: 76px;
+}
+
+.ops-shell .boxed-list {
+    background-color: @ops_bg;
+    border-radius: 0;
+    border: 1px solid @ops_border;
+    border-top: none;
+}
+
+.ops-shell .boxed-list > row,
+.ops-shell .boxed-row {
+    background-color: @ops_bg;
+    color: @ops_text;
+    border-bottom: 1px solid alpha(@ops_border, 0.7);
+    min-height: 52px;
+    padding: 0 8px;
+}
+
+.ops-shell .boxed-list > row:hover,
+.ops-shell .boxed-row:hover,
+.ops-shell .pkg-row:hover {
+    background-color: @ops_panel_2;
+}
+
+.ops-shell .boxed-list > row:selected,
+.ops-shell .keyboard-focused.pkg-row {
+    background-color: alpha(@ops_blue, 0.16);
+    border-color: @ops_blue;
+}
+
+.ops-package-row .title {
+    color: @ops_text;
+    font-size: 10pt;
+    font-weight: 700;
+}
+
+.ops-package-row .subtitle {
+    color: @ops_muted;
+    font-size: 8pt;
+    opacity: 1;
+}
+
+.ops-package-row .icon-frame {
+    min-width: 34px;
+    min-height: 34px;
+    border-radius: 2px;
+    border: none;
+    background-color: transparent;
+    padding: 0;
+}
+
+.ops-version-label {
+    color: @ops_muted;
+    font-size: 9pt;
+}
+
+.ops-source-pill {
+    min-height: 26px;
+    padding: 0 10px;
+    border-radius: 3px;
+    border: 1px solid @ops_border_bright;
+    background-color: transparent;
+    color: @ops_muted;
+    font-size: 9pt;
+}
+
+.ops-status-badge {
+    min-width: 88px;
+    min-height: 24px;
+    padding: 0 8px;
+    border-radius: 4px;
+    border: 1px solid @ops_blue;
+    background-color: transparent;
+    color: @ops_blue;
+}
+
+.ops-status-security {
+    border-color: @ops_yellow;
+    color: @ops_yellow;
+}
+
+.ops-status-warning {
+    border-color: @ops_yellow;
+    color: @ops_yellow;
+}
+
+.ops-status-info,
+.ops-status-update {
+    border-color: @ops_blue;
+    color: @ops_blue;
+}
+
+.ops-status-muted {
+    border-color: @ops_border_bright;
+    color: @ops_muted;
+}
+
+.ops-shell .row-action {
+    min-width: 30px;
+    min-height: 30px;
+    border-radius: 2px;
+    border: 1px solid @ops_border_bright;
+    color: @ops_text;
+    opacity: 1;
+}
+
+.ops-shell .row-action.suggested-action {
+    background-color: transparent;
+    color: @ops_blue;
+    opacity: 1;
+}
+
+.ops-shell .sidebar {
+    background-color: @ops_bg;
+    border: 1px solid @ops_border;
+    border-top: none;
+    border-bottom: none;
+}
+
+.ops-section-title {
+    color: @ops_text;
+    font-size: 10pt;
+    font-weight: 800;
+}
+
+.ops-shell .provider-row {
+    min-height: 42px;
+    margin: 0;
+    padding: 0 10px;
+    border-radius: 2px;
+    border: 1px solid transparent;
+}
+
+.ops-shell .provider-row:hover,
+.ops-shell .provider-row.provider-active-filter,
+.ops-shell .provider-row.source-all {
+    background-color: alpha(@ops_blue, 0.12);
+    border-color: @ops_blue;
+}
+
+.provider-icon {
+    color: @ops_text;
+}
+
+.provider-icon.source-dot {
+    min-width: 18px;
+    min-height: 18px;
+    border-radius: 3px;
+    margin-right: 0;
+}
+
+.ops-shell .provider-title {
+    color: @ops_text;
+    font-size: 10pt;
+    font-weight: 600;
+}
+
+.provider-count {
+    min-width: 34px;
+    color: @ops_muted;
+}
+
+.ops-system-panel {
+    padding: 12px 14px;
+    border: 1px solid @ops_border;
+    background-color: @ops_bg;
+}
+
+.ops-shell .details-panel {
+    min-width: 420px;
+    background-color: @ops_bg;
+    border-left: 1px solid @ops_border;
+}
+
+.ops-shell .details-panel headerbar {
+    min-height: 48px;
+    border-bottom: 1px solid @ops_border;
+    background-color: @ops_bg;
+}
+
+.ops-shell .details-panel .icon-frame {
+    border-radius: 2px;
+    background-color: transparent;
+}
+
+.ops-shell preferencesgroup,
+.ops-shell preferencespage,
+.ops-shell row,
+.ops-shell actionrow,
+.ops-shell .card,
+.ops-shell expander {
+    background-color: @ops_bg;
+    color: @ops_text;
+}
+
+.ops-shell .property {
+    border-bottom: 1px solid alpha(@ops_border, 0.65);
+}
+
+.ops-keybar {
+    min-height: 52px;
+    padding: 0 10px;
+    background-color: @ops_bg;
+    border: 1px solid @ops_border;
+}
+
+.ops-key-item {
+    min-width: 124px;
+    padding: 0 12px;
+    border-right: 1px solid @ops_border;
+}
+
+.ops-keycap {
+    min-width: 30px;
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: 2px;
+    border: 1px solid @ops_border_bright;
+    color: @ops_text;
+    font-weight: 800;
+}
+
+.ops-shell separator {
+    background-color: @ops_border;
+}
+
+.ops-shell scrollbar,
+.ops-shell scrollbar trough {
+    background-color: @ops_bg;
+}
+
+.ops-shell scrollbar slider {
+    min-width: 6px;
+    min-height: 6px;
+    border-radius: 2px;
+    background-color: @ops_border_bright;
+}

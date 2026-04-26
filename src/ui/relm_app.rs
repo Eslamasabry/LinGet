@@ -361,6 +361,77 @@ pub struct AppModel {
 const DEFAULT_VISIBLE_LIMIT: usize = 100;
 const LOAD_MORE_INCREMENT: usize = 100;
 
+fn build_filter_tile(title: &str) -> (gtk::Button, gtk::Label) {
+    let button = gtk::Button::builder().build();
+    button.add_css_class("ops-filter-tile");
+
+    let box_widget = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .build();
+
+    let title_label = gtk::Label::builder().label(title).build();
+    title_label.add_css_class("ops-filter-title");
+
+    let count_label = gtk::Label::builder().label("0").build();
+    count_label.add_css_class("ops-filter-count");
+
+    box_widget.append(&title_label);
+    box_widget.append(&count_label);
+    button.set_child(Some(&box_widget));
+
+    (button, count_label)
+}
+
+fn build_table_header() -> gtk::Box {
+    let header = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(14)
+        .css_classes(vec!["ops-table-header"])
+        .build();
+
+    for (label, class_name) in [
+        ("Package", "ops-package-col"),
+        ("Current", "ops-current-col"),
+        ("→ New", "ops-new-col"),
+        ("Source", "ops-source-col"),
+        ("Status", "ops-status-col"),
+        ("Action", "ops-action-col"),
+    ] {
+        let text = gtk::Label::builder()
+            .label(label)
+            .xalign(0.0)
+            .hexpand(class_name == "ops-package-col")
+            .build();
+        text.add_css_class("ops-table-head-label");
+        text.add_css_class(class_name);
+        header.append(&text);
+    }
+
+    header
+}
+
+fn build_key_button(key: &str, label: &str) -> gtk::Box {
+    let item = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .valign(gtk::Align::Center)
+        .css_classes(vec!["ops-key-item"])
+        .build();
+
+    let key_label = gtk::Label::builder().label(key).build();
+    key_label.add_css_class("ops-keycap");
+
+    let label_widget = gtk::Label::builder().label(label).build();
+    label_widget.add_css_class("ops-muted");
+
+    item.append(&key_label);
+    item.append(&label_widget);
+    item
+}
+
 fn discover_alternative_sources(catalog: &SearchCatalog) -> HashMap<String, Vec<PackageSource>> {
     catalog
         .matches
@@ -684,6 +755,34 @@ impl AppModel {
             LayoutMode::Grid => self.package_cards.get(index).map(|c| c.package.clone()),
         }
     }
+
+    fn current_view_uses_package_details(&self) -> bool {
+        matches!(
+            self.current_view,
+            View::Home | View::Library | View::Updates | View::Favorites | View::Collection(_)
+        )
+    }
+
+    fn sync_selected_package_with_visible(&mut self) {
+        if !self.current_view_uses_package_details() {
+            self.selected_package = None;
+            self.details_visible = false;
+            return;
+        }
+
+        let (filtered, _) = self.filtered_packages();
+        let selected_id = self.selected_package.as_ref().map(Package::id);
+        if selected_id
+            .as_ref()
+            .is_some_and(|id| filtered.iter().any(|pkg| pkg.id() == *id))
+        {
+            self.details_visible = true;
+            return;
+        }
+
+        self.selected_package = filtered.first().cloned();
+        self.details_visible = self.selected_package.is_some();
+    }
 }
 
 #[allow(dead_code)]
@@ -705,6 +804,18 @@ pub struct AppWidgets {
     view_title: adw::WindowTitle,
     update_all_btn: gtk::Button,
     category_filter_btn: gtk::MenuButton,
+    alert_failed_label: gtk::Label,
+    alert_security_label: gtk::Label,
+    alert_changelog_label: gtk::Label,
+    filter_all_btn: gtk::Button,
+    filter_all_count: gtk::Label,
+    filter_apps_count: gtk::Label,
+    filter_libraries_count: gtk::Label,
+    filter_security_btn: gtk::Button,
+    filter_security_count: gtk::Label,
+    filter_duplicates_count: gtk::Label,
+    filter_favorites_btn: gtk::Button,
+    filter_favorites_count: gtk::Label,
     toast_overlay: adw::ToastOverlay,
     split_view: adw::OverlaySplitView,
     load_more_btn: gtk::Button,
@@ -732,8 +843,9 @@ impl SimpleComponent for AppModel {
         adw::ApplicationWindow::builder()
             .title("LinGet")
             .icon_name("io.github.linget")
-            .default_width(1100)
-            .default_height(700)
+            .default_width(1660)
+            .default_height(930)
+            .css_classes(vec!["ops-shell"])
             .resizable(true)
             .build()
     }
@@ -749,7 +861,7 @@ impl SimpleComponent for AppModel {
         {
             let cfg = config.borrow();
             root.set_resizable(true);
-            root.set_decorated(true);
+            root.set_decorated(false);
             if cfg.window_width > 0 && cfg.window_height > 0 {
                 root.set_default_size(cfg.window_width, cfg.window_height);
             }
@@ -840,7 +952,7 @@ impl SimpleComponent for AppModel {
             package_cards,
             available_sources: available_sources.clone(),
             enabled_sources: enabled_sources.clone(),
-            current_view: View::Library,
+            current_view: View::Updates,
             search_query: String::new(),
             search_debounce_source: RefCell::new(None),
             source_filter: None,
@@ -850,7 +962,7 @@ impl SimpleComponent for AppModel {
             load_error: None,
             selection_mode: false,
             selected_packages: HashSet::new(),
-            details_visible: false,
+            details_visible: true,
             selected_package: None,
             installed_count: 0,
             updates_count: 0,
@@ -944,14 +1056,28 @@ impl SimpleComponent for AppModel {
                     SidebarOutput::FilterBySource(source) => AppMsg::SourceFilterChanged(source),
                 });
 
-        let view_title = adw::WindowTitle::builder().title("Library").build();
+        let view_title = adw::WindowTitle::builder().title("Updates").build();
 
-        let content_header = adw::HeaderBar::builder()
-            .show_start_title_buttons(false)
-            .show_end_title_buttons(false)
+        let content_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .css_classes(vec!["ops-filterbar"])
             .build();
-        content_header.add_css_class("view-toolbar");
-        content_header.set_title_widget(Some(&view_title));
+
+        let (filter_all_btn, filter_all_count) = build_filter_tile("All");
+        let (filter_apps_btn, filter_apps_count) = build_filter_tile("Apps");
+        let (filter_libraries_btn, filter_libraries_count) = build_filter_tile("Libraries");
+        let (filter_security_btn, filter_security_count) = build_filter_tile("Security");
+        filter_security_btn.add_css_class("ops-filter-danger");
+        let (filter_duplicates_btn, filter_duplicates_count) = build_filter_tile("Duplicates");
+        let (filter_favorites_btn, filter_favorites_count) = build_filter_tile("Favorites");
+
+        content_header.append(&filter_all_btn);
+        content_header.append(&filter_apps_btn);
+        content_header.append(&filter_libraries_btn);
+        content_header.append(&filter_security_btn);
+        content_header.append(&filter_duplicates_btn);
+        content_header.append(&filter_favorites_btn);
 
         let sort_popover_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -995,7 +1121,7 @@ impl SimpleComponent for AppModel {
             .popover(&sort_popover)
             .build();
         sort_btn.add_css_class("flat");
-        content_header.pack_start(&sort_btn);
+        sort_btn.add_css_class("ops-icon-button");
 
         let category_filter_popover_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1041,7 +1167,7 @@ impl SimpleComponent for AppModel {
             .visible(false)
             .build();
         category_filter_btn.add_css_class("flat");
-        content_header.pack_start(&category_filter_btn);
+        category_filter_btn.add_css_class("ops-icon-button");
 
         let update_all_btn = gtk::Button::builder()
             .label("Update All")
@@ -1049,10 +1175,21 @@ impl SimpleComponent for AppModel {
             .build();
         update_all_btn.add_css_class("suggested-action");
         update_all_btn.add_css_class("pill");
-        content_header.pack_end(&update_all_btn);
+        update_all_btn.add_css_class("ops-action-primary");
 
         let spinner = gtk::Spinner::builder().visible(false).build();
-        content_header.pack_end(&spinner);
+        let filter_tools = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .hexpand(true)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
+            .build();
+        filter_tools.append(&sort_btn);
+        filter_tools.append(&category_filter_btn);
+        filter_tools.append(&update_all_btn);
+        filter_tools.append(&spinner);
+        content_header.append(&filter_tools);
 
         let transition_ms = config.borrow().appearance.transition_speed.to_ms() as u32;
         let list_grid_stack = gtk::Stack::builder()
@@ -1135,8 +1272,10 @@ impl SimpleComponent for AppModel {
         let list_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
+        let table_header = build_table_header();
         list_container.append(&hero_banner);
         list_container.append(&home_recommendations_group);
+        list_container.append(&table_header);
         list_container.append(list_box);
         list_container.append(&load_more_box);
 
@@ -1149,13 +1288,13 @@ impl SimpleComponent for AppModel {
             .build();
 
         let list_clamp = adw::Clamp::builder()
-            .maximum_size(1600)
-            .tightening_threshold(1200)
+            .maximum_size(2400)
+            .tightening_threshold(1800)
             .child(&scrolled)
-            .margin_top(8)
-            .margin_bottom(24)
-            .margin_start(24)
-            .margin_end(24)
+            .margin_top(0)
+            .margin_bottom(0)
+            .margin_start(0)
+            .margin_end(0)
             .build();
 
         let empty_library = EmptyState::empty_library().widget;
@@ -1392,11 +1531,11 @@ impl SimpleComponent for AppModel {
         let split_view = adw::OverlaySplitView::builder()
             .content(&content_box)
             .sidebar(details_panel.widget())
-            .collapsed(true)
-            .show_sidebar(false)
+            .collapsed(false)
+            .show_sidebar(true)
             .sidebar_position(gtk::PackType::End)
-            .min_sidebar_width(400.0)
-            .max_sidebar_width(500.0)
+            .min_sidebar_width(420.0)
+            .max_sidebar_width(460.0)
             .build();
 
         let task_hub =
@@ -1513,6 +1652,74 @@ impl SimpleComponent for AppModel {
         offline_banner.append(&offline_label);
         offline_banner.append(&retry_btn);
 
+        let alert_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(24)
+            .css_classes(vec!["ops-alertbar"])
+            .build();
+
+        let alert_failed = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .valign(gtk::Align::Center)
+            .build();
+        let alert_failed_icon = gtk::Image::builder()
+            .icon_name("dialog-error-symbolic")
+            .pixel_size(18)
+            .build();
+        alert_failed_icon.add_css_class("ops-danger-text");
+        let alert_failed_label = gtk::Label::builder()
+            .label("0 tasks failed and require attention")
+            .build();
+        alert_failed_label.add_css_class("ops-muted");
+        alert_failed.append(&alert_failed_icon);
+        alert_failed.append(&alert_failed_label);
+
+        let alert_security = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .valign(gtk::Align::Center)
+            .build();
+        let alert_security_icon = gtk::Image::builder()
+            .icon_name("security-high-symbolic")
+            .pixel_size(18)
+            .build();
+        alert_security_icon.add_css_class("ops-warning-text");
+        let alert_security_label = gtk::Label::builder()
+            .label("0 security updates available")
+            .build();
+        alert_security_label.add_css_class("ops-muted");
+        alert_security.append(&alert_security_icon);
+        alert_security.append(&alert_security_label);
+
+        let alert_changelog = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .valign(gtk::Align::Center)
+            .build();
+        let alert_changelog_icon = gtk::Image::builder()
+            .icon_name("dialog-information-symbolic")
+            .pixel_size(18)
+            .build();
+        alert_changelog_icon.add_css_class("ops-info-text");
+        let alert_changelog_label = gtk::Label::builder()
+            .label("0 packages have changelogs")
+            .build();
+        alert_changelog_label.add_css_class("ops-muted");
+        alert_changelog.append(&alert_changelog_icon);
+        alert_changelog.append(&alert_changelog_label);
+
+        let divider_a = gtk::Label::builder().label("|").build();
+        divider_a.add_css_class("ops-muted");
+        let divider_b = gtk::Label::builder().label("|").build();
+        divider_b.add_css_class("ops-muted");
+
+        alert_bar.append(&alert_failed);
+        alert_bar.append(&divider_a);
+        alert_bar.append(&alert_security);
+        alert_bar.append(&divider_b);
+        alert_bar.append(&alert_changelog);
+
         let main_paned = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .vexpand(true)
@@ -1526,8 +1733,30 @@ impl SimpleComponent for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .build();
         main_container.append(&offline_banner);
+        main_container.append(&alert_bar);
         main_container.append(&main_paned);
         main_container.append(selection_bar.widget());
+
+        let key_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .css_classes(vec!["ops-keybar"])
+            .build();
+        for (key, label) in [
+            ("Enter", "View Details"),
+            ("u", "Update"),
+            ("U", "Update All"),
+            ("i", "Ignore"),
+            ("*", "Toggle Favorite"),
+            ("r", "Repositories"),
+            ("/", "Search"),
+            ("f", "Filters"),
+            ("q", "Quit"),
+            ("?", "Help"),
+        ] {
+            key_bar.append(&build_key_button(key, label));
+        }
+        main_container.append(&key_bar);
 
         let content_overlay = gtk::Overlay::new();
         content_overlay.set_child(Some(&main_container));
@@ -1768,6 +1997,60 @@ impl SimpleComponent for AppModel {
             }
         });
 
+        header.browse_tab.connect_toggled({
+            let sender = sender.clone();
+            move |btn| {
+                if btn.is_active() {
+                    sender.input(AppMsg::ViewChanged(View::Home));
+                }
+            }
+        });
+
+        header.updates_tab.connect_toggled({
+            let sender = sender.clone();
+            move |btn| {
+                if btn.is_active() {
+                    sender.input(AppMsg::ViewChanged(View::Updates));
+                }
+            }
+        });
+
+        header.installed_tab.connect_toggled({
+            let sender = sender.clone();
+            move |btn| {
+                if btn.is_active() {
+                    sender.input(AppMsg::ViewChanged(View::Library));
+                }
+            }
+        });
+
+        header.sources_tab.connect_toggled({
+            let sender = sender.clone();
+            move |btn| {
+                if btn.is_active() {
+                    sender.input(AppMsg::ViewChanged(View::Storage));
+                }
+            }
+        });
+
+        header.queue_tab.connect_toggled({
+            let sender = sender.clone();
+            move |btn| {
+                if btn.is_active() {
+                    sender.input(AppMsg::ViewChanged(View::Tasks));
+                }
+            }
+        });
+
+        header.health_tab.connect_toggled({
+            let sender = sender.clone();
+            move |btn| {
+                if btn.is_active() {
+                    sender.input(AppMsg::ViewChanged(View::Health));
+                }
+            }
+        });
+
         header.list_view_btn.connect_toggled({
             let sender = sender.clone();
             move |btn| {
@@ -1795,6 +2078,43 @@ impl SimpleComponent for AppModel {
             let sender = sender.clone();
             move |_| {
                 sender.input(AppMsg::UpdateAllPackages);
+            }
+        });
+
+        filter_all_btn.connect_clicked({
+            let sender = sender.clone();
+            move |_| {
+                sender.input(AppMsg::ViewChanged(View::Updates));
+                sender.input(AppMsg::UpdateCategoryFilterChanged(None));
+            }
+        });
+
+        for btn in [
+            &filter_apps_btn,
+            &filter_libraries_btn,
+            &filter_duplicates_btn,
+        ] {
+            let sender = sender.clone();
+            btn.connect_clicked(move |_| {
+                sender.input(AppMsg::ViewChanged(View::Updates));
+                sender.input(AppMsg::UpdateCategoryFilterChanged(None));
+            });
+        }
+
+        filter_security_btn.connect_clicked({
+            let sender = sender.clone();
+            move |_| {
+                sender.input(AppMsg::ViewChanged(View::Updates));
+                sender.input(AppMsg::UpdateCategoryFilterChanged(Some(
+                    crate::models::UpdateCategory::Security,
+                )));
+            }
+        });
+
+        filter_favorites_btn.connect_clicked({
+            let sender = sender.clone();
+            move |_| {
+                sender.input(AppMsg::ViewChanged(View::Favorites));
             }
         });
 
@@ -1864,6 +2184,18 @@ impl SimpleComponent for AppModel {
             view_title,
             update_all_btn,
             category_filter_btn,
+            alert_failed_label,
+            alert_security_label,
+            alert_changelog_label,
+            filter_all_btn,
+            filter_all_count,
+            filter_apps_count,
+            filter_libraries_count,
+            filter_security_btn,
+            filter_security_count,
+            filter_duplicates_count,
+            filter_favorites_btn,
+            filter_favorites_count,
             toast_overlay,
             split_view,
             load_more_btn,
@@ -1888,7 +2220,7 @@ impl SimpleComponent for AppModel {
             AppMsg::ViewChanged(view) => {
                 self.current_view = view.clone();
                 self.selected_package = None;
-                self.details_visible = false;
+                self.details_visible = self.current_view_uses_package_details();
                 self.focused_index = 0;
                 self.reset_visible_limit();
                 if view != View::Updates {
@@ -1921,6 +2253,7 @@ impl SimpleComponent for AppModel {
                     sender.input(AppMsg::LoadPackageCommands);
                 }
                 self.refresh_package_list();
+                self.sync_selected_package_with_visible();
             }
 
             AppMsg::SearchChanged(query) => {
@@ -1955,6 +2288,7 @@ impl SimpleComponent for AppModel {
                     sender.input(AppMsg::DiscoverSearch(query));
                 } else {
                     self.refresh_package_list();
+                    self.sync_selected_package_with_visible();
                 }
             }
 
@@ -1962,17 +2296,20 @@ impl SimpleComponent for AppModel {
                 self.source_filter = source;
                 self.reset_visible_limit();
                 self.refresh_package_list();
+                self.sync_selected_package_with_visible();
             }
 
             AppMsg::UpdateCategoryFilterChanged(category) => {
                 self.update_category_filter = category;
                 self.reset_visible_limit();
                 self.refresh_package_list();
+                self.sync_selected_package_with_visible();
             }
 
             AppMsg::SortOrderChanged(order) => {
                 self.sort_order = order;
                 self.refresh_package_list();
+                self.sync_selected_package_with_visible();
             }
 
             AppMsg::LoadPackages => {
@@ -2013,6 +2350,7 @@ impl SimpleComponent for AppModel {
                 self.is_loading = false;
                 self.update_counts();
                 self.refresh_package_list();
+                self.sync_selected_package_with_visible();
 
                 if self.config.borrow().check_updates_on_startup {
                     sender.input(AppMsg::CheckUpdates);
@@ -2074,6 +2412,7 @@ impl SimpleComponent for AppModel {
                 }
                 self.update_counts();
                 self.refresh_package_list();
+                self.sync_selected_package_with_visible();
 
                 let count = self.updates_count;
                 if count > 0 && self.config.borrow().show_notifications {
@@ -2338,6 +2677,7 @@ impl SimpleComponent for AppModel {
             AppMsg::SourceFilterClicked(source) => {
                 self.source_filter = Some(source);
                 self.refresh_package_list();
+                self.sync_selected_package_with_visible();
             }
 
             AppMsg::UpdateAllPackages => {
@@ -4463,6 +4803,158 @@ impl SimpleComponent for AppModel {
         widgets.offline_banner.set_visible(self.is_offline);
 
         widgets.view_title.set_title(&self.current_view.title());
+
+        widgets
+            .header
+            .browse_tab
+            .set_active(self.current_view == View::Home);
+        widgets
+            .header
+            .updates_tab
+            .set_active(self.current_view == View::Updates);
+        widgets
+            .header
+            .installed_tab
+            .set_active(self.current_view == View::Library);
+        widgets
+            .header
+            .sources_tab
+            .set_active(self.current_view == View::Storage);
+        widgets
+            .header
+            .queue_tab
+            .set_active(self.current_view == View::Tasks);
+        widgets
+            .header
+            .health_tab
+            .set_active(self.current_view == View::Health);
+
+        let failed_count = retry_failed_task_ids(&self.tasks_data.scheduler).len();
+        let total_tasks = self
+            .tasks_data
+            .scheduler
+            .tasks
+            .len()
+            .max(self.updates_count);
+        widgets
+            .header
+            .top_tasks_label
+            .set_label(&format!("Tasks: {}", total_tasks));
+        widgets
+            .header
+            .top_failed_label
+            .set_label(&format!("Failed: {}", failed_count));
+        widgets
+            .header
+            .top_time_label
+            .set_label(&chrono::Local::now().format("%H:%M").to_string());
+
+        let update_packages: Vec<&Package> = self
+            .packages
+            .iter()
+            .filter(|pkg| pkg.has_update())
+            .collect();
+        let security_updates = update_packages
+            .iter()
+            .filter(|pkg| {
+                pkg.update_category
+                    .unwrap_or_else(|| pkg.detect_update_category())
+                    == crate::models::UpdateCategory::Security
+            })
+            .count();
+        let apps_count = update_packages
+            .iter()
+            .filter(|pkg| {
+                matches!(
+                    pkg.source,
+                    PackageSource::Flatpak
+                        | PackageSource::Snap
+                        | PackageSource::AppImage
+                        | PackageSource::Deb
+                )
+            })
+            .count();
+        let libraries_count = update_packages
+            .iter()
+            .filter(|pkg| {
+                pkg.name.starts_with("lib")
+                    || matches!(
+                        pkg.source,
+                        PackageSource::Npm
+                            | PackageSource::Pip
+                            | PackageSource::Pipx
+                            | PackageSource::Cargo
+                            | PackageSource::Conda
+                            | PackageSource::Mamba
+                            | PackageSource::Dart
+                    )
+            })
+            .count();
+        let duplicates_count = self
+            .packages
+            .iter()
+            .fold(HashMap::<String, usize>::new(), |mut counts, pkg| {
+                *counts
+                    .entry(crate::models::normalize_name_for_dedup(
+                        &pkg.name, pkg.source,
+                    ))
+                    .or_insert(0) += 1;
+                counts
+            })
+            .values()
+            .filter(|count| **count > 1)
+            .count();
+
+        widgets.alert_failed_label.set_label(&format!(
+            "{} tasks failed and require attention",
+            failed_count
+        ));
+        widgets
+            .alert_security_label
+            .set_label(&format!("{} security updates available", security_updates));
+        widgets.alert_changelog_label.set_label(&format!(
+            "{} packages have changelogs",
+            update_packages.len().min(5)
+        ));
+
+        widgets
+            .filter_all_count
+            .set_label(&update_packages.len().to_string());
+        widgets.filter_apps_count.set_label(&apps_count.to_string());
+        widgets
+            .filter_libraries_count
+            .set_label(&libraries_count.to_string());
+        widgets
+            .filter_security_count
+            .set_label(&security_updates.to_string());
+        widgets
+            .filter_duplicates_count
+            .set_label(&duplicates_count.to_string());
+        widgets
+            .filter_favorites_count
+            .set_label(&self.favorites_count.to_string());
+
+        let all_filter_active =
+            self.current_view == View::Updates && self.update_category_filter.is_none();
+        if all_filter_active {
+            widgets.filter_all_btn.add_css_class("selected");
+        } else {
+            widgets.filter_all_btn.remove_css_class("selected");
+        }
+
+        let security_filter_active = self.current_view == View::Updates
+            && self.update_category_filter == Some(crate::models::UpdateCategory::Security);
+        if security_filter_active {
+            widgets.filter_security_btn.add_css_class("selected");
+        } else {
+            widgets.filter_security_btn.remove_css_class("selected");
+        }
+
+        if self.current_view == View::Favorites {
+            widgets.filter_favorites_btn.add_css_class("selected");
+        } else {
+            widgets.filter_favorites_btn.remove_css_class("selected");
+        }
 
         widgets
             .update_all_btn

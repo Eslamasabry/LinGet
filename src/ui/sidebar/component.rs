@@ -5,6 +5,8 @@ use gtk4::{self as gtk, glib};
 use relm4::prelude::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -130,6 +132,7 @@ pub struct SidebarWidgets {
     library_count_label: gtk::Label,
     updates_count_label: gtk::Label,
     favorites_count_label: gtk::Label,
+    all_sources_count_label: gtk::Label,
     collections_list: gtk::ListBox,
     collection_rows: HashMap<String, gtk::ListBoxRow>,
     provider_rows: HashMap<PackageSource, ProviderRowWidgets>,
@@ -147,6 +150,94 @@ struct ProviderRowWidgets {
     enabled_switch: gtk::Switch,
     count_label: gtk::Label,
     status_label: gtk::Label,
+}
+
+fn source_display_label(source: PackageSource) -> &'static str {
+    match source {
+        PackageSource::Pacman => "Arch Linux [core]",
+        PackageSource::Aur => "AUR",
+        PackageSource::Flatpak => "Flathub",
+        PackageSource::Snap => "Snap Store",
+        PackageSource::Cargo => "Cargo (crates.io)",
+        PackageSource::Npm => "npm Registry",
+        PackageSource::Brew => "Homebrew",
+        PackageSource::AppImage => "AppImage",
+        PackageSource::Deb => "Local DEB",
+        _ => match source {
+            PackageSource::Apt => "APT",
+            PackageSource::Dnf => "DNF",
+            PackageSource::Zypper => "Zypper",
+            PackageSource::Pip => "pip",
+            PackageSource::Pipx => "pipx",
+            PackageSource::Conda => "conda",
+            PackageSource::Mamba => "mamba",
+            PackageSource::Dart => "Dart",
+            PackageSource::Winget => "WinGet",
+            PackageSource::Chocolatey => "Chocolatey",
+            PackageSource::Scoop => "Scoop",
+            PackageSource::Pacman
+            | PackageSource::Aur
+            | PackageSource::Flatpak
+            | PackageSource::Snap
+            | PackageSource::Cargo
+            | PackageSource::Npm
+            | PackageSource::Brew
+            | PackageSource::AppImage
+            | PackageSource::Deb => unreachable!(),
+        },
+    }
+}
+
+fn system_label() -> String {
+    fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|contents| {
+            for key in ["PRETTY_NAME", "NAME"] {
+                if let Some(value) = contents.lines().find_map(|line| {
+                    let (line_key, raw) = line.split_once('=')?;
+                    (line_key == key).then(|| raw.trim_matches('"').to_string())
+                }) {
+                    return Some(value);
+                }
+            }
+            None
+        })
+        .unwrap_or_else(|| std::env::consts::OS.to_string())
+}
+
+fn kernel_label() -> String {
+    Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn uptime_label() -> String {
+    let seconds = fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|contents| {
+            contents
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<f64>().ok())
+        })
+        .map(|value| value as u64)
+        .unwrap_or(0);
+
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
 }
 
 impl SidebarModel {
@@ -199,32 +290,33 @@ impl SidebarModel {
     ) -> ProviderRowWidgets {
         let row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
+            .spacing(12)
             .build();
         row.add_css_class("provider-row");
 
         let click_area = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
+            .spacing(12)
             .hexpand(true)
             .build();
 
-        let dot = gtk::Box::builder()
-            .width_request(10)
-            .height_request(10)
+        let source_icon = gtk::Box::builder()
+            .width_request(22)
+            .height_request(22)
             .valign(gtk::Align::Center)
             .build();
-        dot.add_css_class("source-dot");
-        dot.add_css_class(source.color_class());
+        source_icon.add_css_class("provider-icon");
+        source_icon.add_css_class("source-dot");
+        source_icon.add_css_class(source.color_class());
 
         let labels = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(2)
+            .spacing(0)
             .hexpand(true)
             .build();
 
         let title = gtk::Label::builder()
-            .label(source.to_string())
+            .label(source_display_label(source))
             .xalign(0.0)
             .build();
         title.add_css_class("provider-title");
@@ -244,7 +336,7 @@ impl SidebarModel {
         count_label.add_css_class("dim-label");
         count_label.add_css_class("caption");
 
-        click_area.append(&dot);
+        click_area.append(&source_icon);
         click_area.append(&labels);
         click_area.append(&count_label);
 
@@ -257,7 +349,10 @@ impl SidebarModel {
         });
         click_area.add_controller(gesture);
 
-        let enabled_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
+        let enabled_switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
 
         let sender_clone = sender.clone();
         enabled_switch.connect_state_set(move |_, _state| {
@@ -291,7 +386,7 @@ impl SimpleComponent for SidebarModel {
     fn init_root() -> Self::Root {
         gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .width_request(200)
+            .width_request(288)
             .css_classes(vec!["sidebar"])
             .build()
     }
@@ -319,22 +414,15 @@ impl SimpleComponent for SidebarModel {
         let header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
-            .margin_top(16)
-            .margin_bottom(8)
+            .margin_top(14)
+            .margin_bottom(10)
             .margin_start(16)
             .margin_end(16)
             .build();
 
-        let app_icon = gtk::Image::builder()
-            .icon_name("io.github.linget")
-            .pixel_size(32)
-            .build();
-        app_icon.add_css_class("app-icon");
+        let app_title = gtk::Label::builder().label("Sources").xalign(0.0).build();
+        app_title.add_css_class("ops-section-title");
 
-        let app_title = gtk::Label::builder().label("LinGet").xalign(0.0).build();
-        app_title.add_css_class("title-1");
-
-        header.append(&app_icon);
         header.append(&app_title);
         root.append(&header);
 
@@ -348,6 +436,7 @@ impl SimpleComponent for SidebarModel {
             .margin_top(16)
             .margin_start(16)
             .margin_bottom(4)
+            .visible(false)
             .build();
         nav_label.add_css_class("caption");
         nav_label.add_css_class("dim-label");
@@ -356,6 +445,7 @@ impl SimpleComponent for SidebarModel {
         let nav_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
+            .visible(false)
             .build();
 
         let home_row = Self::create_nav_row(NavItem::Home, None);
@@ -365,7 +455,11 @@ impl SimpleComponent for SidebarModel {
             .label(init.library_count.to_string())
             .css_classes(vec!["dim-label", "caption"])
             .build();
-        let library_row = Self::create_nav_row(NavItem::Library, Some(&library_count_label));
+        let library_nav_count_label = gtk::Label::builder()
+            .label(init.library_count.to_string())
+            .css_classes(vec!["dim-label", "caption"])
+            .build();
+        let library_row = Self::create_nav_row(NavItem::Library, Some(&library_nav_count_label));
         nav_list.append(&library_row);
 
         let updates_count_label = gtk::Label::builder()
@@ -408,6 +502,7 @@ impl SimpleComponent for SidebarModel {
             .margin_start(16)
             .margin_end(16)
             .margin_bottom(8)
+            .visible(false)
             .build();
 
         let collections_label = gtk::Label::builder()
@@ -438,6 +533,7 @@ impl SimpleComponent for SidebarModel {
         let collections_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
+            .visible(false)
             .build();
 
         let collection_rows = HashMap::new();
@@ -522,6 +618,7 @@ impl SimpleComponent for SidebarModel {
             .margin_start(16)
             .margin_end(16)
             .margin_bottom(4)
+            .visible(false)
             .build();
 
         let providers_label = gtk::Label::builder()
@@ -555,13 +652,49 @@ impl SimpleComponent for SidebarModel {
         let providers_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(2)
-            .margin_start(8)
-            .margin_end(8)
+            .margin_start(12)
+            .margin_end(12)
             .build();
 
         let updating_switches = Rc::new(RefCell::new(true));
 
         let mut provider_rows = HashMap::new();
+
+        let all_sources_count_label = gtk::Label::builder()
+            .label(init.library_count.to_string())
+            .css_classes(vec!["provider-count", "ops-accent-text"])
+            .build();
+
+        let all_sources_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .css_classes(vec!["provider-row", "source-all"])
+            .build();
+        let all_sources_icon = gtk::Image::builder()
+            .icon_name("drive-harddisk-symbolic")
+            .pixel_size(24)
+            .build();
+        all_sources_icon.add_css_class("provider-icon");
+
+        let all_sources_label = gtk::Label::builder()
+            .label("All Sources")
+            .xalign(0.0)
+            .hexpand(true)
+            .build();
+        all_sources_label.add_css_class("provider-title");
+
+        all_sources_row.append(&all_sources_icon);
+        all_sources_row.append(&all_sources_label);
+        all_sources_row.append(&all_sources_count_label);
+
+        let sender_all = sender.clone();
+        let all_gesture = gtk::GestureClick::new();
+        all_gesture.connect_released(move |_, _, _, _| {
+            sender_all.output(SidebarOutput::FilterBySource(None)).ok();
+        });
+        all_sources_row.add_controller(all_gesture);
+        providers_box.append(&all_sources_row);
+
         for &source in PackageSource::current_platform_sources() {
             let row_widgets = Self::create_provider_row(source, &sender, updating_switches.clone());
 
@@ -628,16 +761,56 @@ impl SimpleComponent for SidebarModel {
             .margin_start(16)
             .margin_end(16)
             .margin_bottom(16)
-            .spacing(4)
+            .spacing(8)
+            .css_classes(vec!["ops-system-panel"])
             .build();
 
-        let stats_label = gtk::Label::builder()
-            .label("Last updated: Just now")
-            .xalign(0.0)
+        let system_title = gtk::Label::builder().label("System").xalign(0.0).build();
+        system_title.add_css_class("ops-section-title");
+        stats_box.append(&system_title);
+
+        for (key, value) in [
+            ("OS", system_label()),
+            ("Kernel", kernel_label()),
+            ("Uptime", uptime_label()),
+        ] {
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(12)
+                .build();
+            let key_label = gtk::Label::builder()
+                .label(key)
+                .xalign(0.0)
+                .width_chars(8)
+                .build();
+            key_label.add_css_class("ops-muted");
+            let value_label = gtk::Label::builder()
+                .label(value)
+                .xalign(0.0)
+                .hexpand(true)
+                .build();
+            value_label.add_css_class("ops-muted");
+            row.append(&key_label);
+            row.append(&value_label);
+            stats_box.append(&row);
+        }
+
+        let package_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
             .build();
-        stats_label.add_css_class("caption");
-        stats_label.add_css_class("dim-label");
-        stats_box.append(&stats_label);
+        let package_key = gtk::Label::builder()
+            .label("Packages")
+            .xalign(0.0)
+            .width_chars(8)
+            .build();
+        package_key.add_css_class("ops-muted");
+        let package_suffix = gtk::Label::builder().label("installed").xalign(0.0).build();
+        package_suffix.add_css_class("ops-muted");
+        package_row.append(&package_key);
+        package_row.append(&library_count_label);
+        package_row.append(&package_suffix);
+        stats_box.append(&package_row);
 
         root.append(&stats_box);
 
@@ -646,6 +819,7 @@ impl SimpleComponent for SidebarModel {
             library_count_label,
             updates_count_label,
             favorites_count_label,
+            all_sources_count_label,
             collections_list,
             collection_rows,
             provider_rows,
@@ -698,6 +872,9 @@ impl SimpleComponent for SidebarModel {
 
         widgets
             .library_count_label
+            .set_label(&self.library_count.to_string());
+        widgets
+            .all_sources_count_label
             .set_label(&self.library_count.to_string());
         widgets
             .updates_count_label

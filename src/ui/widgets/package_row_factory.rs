@@ -135,19 +135,77 @@ fn is_action_suggested(status: PackageStatus) -> bool {
     )
 }
 
-fn get_update_category_classes(category: Option<UpdateCategory>) -> Vec<&'static str> {
-    match category {
-        Some(cat) => vec!["update-category-badge", cat.css_class()],
-        None => vec!["update-category-badge", "update-minor"],
-    }
-}
-
 fn get_update_category_icon(category: Option<UpdateCategory>) -> &'static str {
     category.map_or("software-update-available-symbolic", |c| c.icon_name())
 }
 
 fn get_update_category_label(category: Option<UpdateCategory>) -> &'static str {
     category.map_or("Update", |c| c.label())
+}
+
+fn current_version_label(pkg: &Package) -> String {
+    if pkg.version.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        pkg.version.clone()
+    }
+}
+
+fn available_version_label(pkg: &Package) -> String {
+    pkg.available_version
+        .clone()
+        .filter(|version| !version.trim().is_empty())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn status_label(pkg: &Package) -> &'static str {
+    if pkg.status == PackageStatus::UpdateAvailable {
+        get_update_category_label(pkg.update_category)
+    } else {
+        match pkg.status {
+            PackageStatus::Installed => "Installed",
+            PackageStatus::NotInstalled => "Install",
+            PackageStatus::Installing => "Installing",
+            PackageStatus::Removing => "Removing",
+            PackageStatus::Updating => "Updating",
+            PackageStatus::UpdateAvailable => "Update",
+        }
+    }
+}
+
+fn status_icon(pkg: &Package) -> &'static str {
+    if pkg.status == PackageStatus::UpdateAvailable {
+        get_update_category_icon(pkg.update_category)
+    } else {
+        match pkg.status {
+            PackageStatus::Installed => "emblem-ok-symbolic",
+            PackageStatus::NotInstalled => "list-add-symbolic",
+            PackageStatus::Installing | PackageStatus::Updating => "content-loading-symbolic",
+            PackageStatus::Removing => "user-trash-symbolic",
+            PackageStatus::UpdateAvailable => "software-update-available-symbolic",
+        }
+    }
+}
+
+fn status_css_classes(pkg: &Package) -> Vec<&'static str> {
+    if pkg.status == PackageStatus::UpdateAvailable {
+        match pkg.update_category {
+            Some(UpdateCategory::Security) => {
+                vec!["ops-status-col", "ops-status-badge", "ops-status-security"]
+            }
+            Some(UpdateCategory::Bugfix) => {
+                vec!["ops-status-col", "ops-status-badge", "ops-status-warning"]
+            }
+            Some(UpdateCategory::Feature) => {
+                vec!["ops-status-col", "ops-status-badge", "ops-status-info"]
+            }
+            Some(UpdateCategory::Minor) | None => {
+                vec!["ops-status-col", "ops-status-badge", "ops-status-update"]
+            }
+        }
+    } else {
+        vec!["ops-status-col", "ops-status-badge", "ops-status-muted"]
+    }
 }
 
 #[relm4::factory(pub)]
@@ -169,13 +227,13 @@ impl FactoryComponent for PackageRowModel {
             add_css_class: "pkg-row",
             #[watch]
             set_css_classes: if self.is_group_header && self.compact {
-                &["pkg-row", "compact-row", "group-first"]
+                &["pkg-row", "ops-package-row", "compact-row", "group-first"]
             } else if self.is_group_header {
-                &["pkg-row", "group-first"]
+                &["pkg-row", "ops-package-row", "group-first"]
             } else if self.compact {
-                &["pkg-row", "compact-row"]
+                &["pkg-row", "ops-package-row", "compact-row"]
             } else {
-                &["pkg-row"]
+                &["pkg-row", "ops-package-row"]
             },
 
             connect_activated[sender, pkg = self.package.clone()] => move |_| {
@@ -210,15 +268,32 @@ impl FactoryComponent for PackageRowModel {
 
             add_suffix = &gtk::Box {
                 set_orientation: gtk::Orientation::Horizontal,
-                set_spacing: 8,
+                set_spacing: 14,
                 set_valign: gtk::Align::Center,
 
                 gtk::Label {
                     #[watch]
-                    set_label: &self.package.display_version(),
-                    add_css_class: "chip",
-                    add_css_class: "chip-muted",
-                    set_max_width_chars: 18,
+                    set_label: &current_version_label(&self.package),
+                    add_css_class: "ops-current-col",
+                    add_css_class: "ops-version-label",
+                    set_xalign: 0.0,
+                    set_max_width_chars: 15,
+                    set_ellipsize: pango::EllipsizeMode::End,
+                },
+
+                gtk::Label {
+                    set_label: "→",
+                    add_css_class: "ops-arrow-col",
+                    add_css_class: "ops-muted",
+                },
+
+                gtk::Label {
+                    #[watch]
+                    set_label: &available_version_label(&self.package),
+                    add_css_class: "ops-new-col",
+                    add_css_class: "ops-version-label",
+                    set_xalign: 0.0,
+                    set_max_width_chars: 15,
                     set_ellipsize: pango::EllipsizeMode::End,
                 },
 
@@ -232,8 +307,8 @@ impl FactoryComponent for PackageRowModel {
                         &self.alternative_sources,
                     )),
                     add_css_class: "flat",
-                    add_css_class: "chip",
-                    add_css_class: "source-chip",
+                    add_css_class: "ops-source-col",
+                    add_css_class: "ops-source-pill",
                     add_css_class: self.package.source.color_class(),
                     connect_clicked[sender, pkg = self.package.clone()] => move |_| {
                         sender.output(PackageRowOutput::SourceFilterClicked(pkg.clone())).ok();
@@ -245,21 +320,19 @@ impl FactoryComponent for PackageRowModel {
                     set_spacing: 4,
                     set_valign: gtk::Align::Center,
                     #[watch]
-                    set_visible: self.package.status == PackageStatus::UpdateAvailable,
+                    set_css_classes: &status_css_classes(&self.package),
                     #[watch]
-                    set_css_classes: &get_update_category_classes(self.package.update_category),
-                    #[watch]
-                    set_tooltip_text: Some(get_update_category_label(self.package.update_category)),
+                    set_tooltip_text: Some(status_label(&self.package)),
 
                     gtk::Image {
                         #[watch]
-                        set_icon_name: Some(get_update_category_icon(self.package.update_category)),
+                        set_icon_name: Some(status_icon(&self.package)),
                         set_pixel_size: 14,
                     },
 
                     gtk::Label {
                         #[watch]
-                        set_label: get_update_category_label(self.package.update_category),
+                        set_label: status_label(&self.package),
                         add_css_class: "caption",
                     },
                 },
