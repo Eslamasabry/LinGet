@@ -698,7 +698,11 @@ impl App {
         ) {
             self.filter = filter;
             self.apply_filters();
-        } else {
+        } else if crate::cli::tui::components::workspace::filter_panel_search_hit_test(
+            regions.filter_panel,
+            col,
+            row,
+        ) {
             self.searching = true;
         }
     }
@@ -860,8 +864,8 @@ impl App {
             return None;
         }
 
-        let first_row = packages_rect.y.saturating_add(2);
-        let visible_rows = packages_rect.height.saturating_sub(5) as usize;
+        let first_row = packages_rect.y.saturating_add(3);
+        let visible_rows = packages_rect.height.saturating_sub(6) as usize;
         if visible_rows == 0 {
             return None;
         }

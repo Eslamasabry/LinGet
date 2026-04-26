@@ -6983,7 +6983,7 @@ Remove   1 Package
 
         let regions = layout_regions(&app);
         let col = regions.packages.x + 6;
-        let first_row = regions.packages.y + 2;
+        let first_row = regions.packages.y + 3;
         let third_row = first_row + 2;
 
         app.handle_mouse(
@@ -7019,7 +7019,7 @@ Remove   1 Package
         let package_id = app.packages[0].id();
         let regions = layout_regions(&app);
         let favorite_col = regions.packages.x + 4;
-        let row = regions.packages.y + 2;
+        let row = regions.packages.y + 3;
 
         app.handle_mouse(
             mouse(MouseEventKind::Down(MouseButton::Left), favorite_col, row),
@@ -7044,7 +7044,7 @@ Remove   1 Package
 
         let regions = layout_regions(&app);
         let col = regions.packages.x + 6;
-        let row = regions.packages.y + 2;
+        let row = regions.packages.y + 3;
 
         app.handle_mouse(
             mouse(MouseEventKind::Down(MouseButton::Right), col, row),

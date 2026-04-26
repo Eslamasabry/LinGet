@@ -162,14 +162,12 @@ fn workspace_vertical_regions(area: Rect) -> (Rect, Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(workspace::ATTENTION_HEIGHT),
-            Constraint::Length(workspace::WORKSPACE_GAP),
             Constraint::Length(workspace::FILTER_PANEL_HEIGHT),
             Constraint::Length(workspace::WORKSPACE_GAP),
             Constraint::Min(8),
         ])
         .split(area);
-    (chunks[2], chunks[4])
+    (chunks[0], chunks[2])
 }
 
 pub fn sources_panel_width(app: &App, area_width: u16) -> u16 {

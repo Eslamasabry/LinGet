@@ -79,11 +79,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
     frame.render_widget(block, area);
 
     let available_rows = sections[0].height.saturating_sub(2) as usize;
-    let visible_rows = if area.width >= 96 && available_rows > 9 {
-        9
-    } else {
-        available_rows
-    };
+    let visible_rows = available_rows;
     let start = window_start(app.filtered.len(), visible_rows.max(1), app.cursor);
     let end = (start + visible_rows.max(1)).min(app.filtered.len());
 

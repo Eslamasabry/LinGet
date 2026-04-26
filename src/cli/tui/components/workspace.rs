@@ -1,18 +1,17 @@
-//! Screenshot-matched package workspace.
+//! Dense package workspace.
 //!
-//! The main TUI is intentionally one dense operator surface: a Today strip,
-//! filter/search tabs, source rail, package table, and selected-package
-//! inspector are all visible at once.
+//! The main TUI is intentionally one operator surface: a compact status/search
+//! strip, source rail, package table, and selected-package inspector are all
+//! visible at once.
 
-use super::attention;
 use super::packages::draw_packages_panel;
 use super::source_rail;
 use crate::cli::tui::app::App;
 use crate::cli::tui::format::truncate_to_width;
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::theme::{
-    accent, border_focused, border_unfocused, dim, muted, palette, row_cursor, success, text,
-    warning, ROUNDED,
+    accent, border_focused, border_unfocused, dim, error, muted, palette, row_cursor, success,
+    text, warning, ROUNDED,
 };
 use crate::models::{Package, PackageStatus, UpdateCategory};
 use ratatui::{
@@ -23,9 +22,8 @@ use ratatui::{
     Frame,
 };
 
-pub const ATTENTION_HEIGHT: u16 = 3;
-pub const FILTER_PANEL_HEIGHT: u16 = 6;
-pub const WORKSPACE_GAP: u16 = 1;
+pub const FILTER_PANEL_HEIGHT: u16 = 4;
+pub const WORKSPACE_GAP: u16 = 0;
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.focus == Focus::Sources {
@@ -37,17 +35,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(ATTENTION_HEIGHT),
-            Constraint::Length(WORKSPACE_GAP),
             Constraint::Length(FILTER_PANEL_HEIGHT),
             Constraint::Length(WORKSPACE_GAP),
             Constraint::Min(8),
         ])
         .split(area);
 
-    attention::draw(frame, app, chunks[0]);
-    draw_filter_panel(frame, app, chunks[2]);
-    draw_main_columns(frame, app, chunks[4]);
+    draw_filter_panel(frame, app, chunks[0]);
+    draw_main_columns(frame, app, chunks[2]);
 }
 
 pub fn filter_panel_hit_test(
@@ -64,7 +59,8 @@ pub fn filter_panel_hit_test(
         vertical: 1,
         horizontal: 1,
     });
-    if row != inner.y || col < inner.x || col >= inner.x + inner.width {
+    let controls_row = inner.y.saturating_add(1);
+    if row != controls_row || col < inner.x || col >= inner.x + inner.width {
         return None;
     }
 
@@ -85,6 +81,18 @@ pub fn filter_panel_hit_test(
     None
 }
 
+pub fn filter_panel_search_hit_test(filter_panel_rect: Rect, col: u16, row: u16) -> bool {
+    if filter_panel_rect.width <= 2 || filter_panel_rect.height <= 2 {
+        return false;
+    }
+
+    let inner = filter_panel_rect.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    row == inner.y.saturating_add(1) && col >= inner.x && col < inner.x + inner.width
+}
+
 fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -98,45 +106,81 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(3)])
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(inner);
 
-    let mut tab_spans = vec![Span::raw(" ")];
+    frame.render_widget(
+        Paragraph::new(top_status_line(app, inner.width as usize)),
+        rows[0],
+    );
+
+    let mut control_spans = vec![Span::raw(" ")];
     for (index, spec) in filter_tab_specs(app).iter().enumerate() {
         if index > 0 {
-            tab_spans.push(Span::raw("  "));
+            control_spans.push(Span::raw("  "));
         }
-        tab_spans.extend(filter_tab_spans(
+        control_spans.extend(filter_tab_spans(
             spec.label,
             spec.count,
             app.filter == spec.filter,
             app.searching,
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(tab_spans)), rows[0]);
-
-    let search_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_unfocused());
-    let search_inner = search_block.inner(rows[1]);
-    frame.render_widget(search_block, rows[1]);
-
-    let mut search_spans = Vec::new();
+    control_spans.push(Span::styled("   |   ", dim()));
     if app.searching {
-        search_spans.push(Span::styled("/ ", accent()));
-        search_spans.push(Span::styled(app.search.clone(), text()));
-        search_spans.push(Span::styled("▌", accent()));
+        control_spans.push(Span::styled("/ ", accent()));
+        control_spans.push(Span::styled(app.search.clone(), text()));
+        control_spans.push(Span::styled("▌", accent()));
     } else if app.search.is_empty() {
-        search_spans.push(Span::styled(
+        control_spans.push(Span::styled(
             "/ Search packages (regex supported)",
             dim().add_modifier(Modifier::ITALIC),
         ));
     } else {
-        search_spans.push(Span::styled("/ ", dim()));
-        search_spans.push(Span::styled(app.search.clone(), text()));
-        search_spans.push(Span::styled("  Esc clears", dim()));
+        control_spans.push(Span::styled("/ ", dim()));
+        control_spans.push(Span::styled(app.search.clone(), text()));
+        control_spans.push(Span::styled("  Esc clears", dim()));
     }
-    frame.render_widget(Paragraph::new(Line::from(search_spans)), search_inner);
+    frame.render_widget(Paragraph::new(Line::from(control_spans)), rows[1]);
+}
+
+fn top_status_line(app: &App, width: usize) -> Line<'static> {
+    let security = app.filter_counts[4];
+    let safe_updates = app.filter_counts[2].saturating_sub(security);
+    let (_, _, _, failed, _) = app.queue_counts();
+    Line::from(vec![
+        Span::styled(" Today: ", accent()),
+        Span::styled("🔒", error()),
+        Span::styled(" Security ", muted()),
+        Span::styled(security.to_string(), error()),
+        Span::styled("   |   ", dim()),
+        Span::styled("↻", Style::default().fg(palette::ORANGE())),
+        Span::styled(" Safe updates ", muted()),
+        Span::styled(
+            safe_updates.to_string(),
+            Style::default().fg(palette::ORANGE()),
+        ),
+        Span::styled("   |   ", dim()),
+        Span::styled("✖", error()),
+        Span::styled(" Failed tasks ", muted()),
+        Span::styled(failed.to_string(), error()),
+        Span::styled("   |   ", dim()),
+        Span::styled("Recommended: ", success().add_modifier(Modifier::BOLD)),
+        Span::styled(recommended_text(app, width), text()),
+    ])
+}
+
+fn recommended_text(app: &App, width: usize) -> String {
+    let label = if let Some(package) = app.current_package() {
+        if package.status == PackageStatus::UpdateAvailable {
+            format!("Review {} update", package.name)
+        } else {
+            app.recommended_action_label()
+        }
+    } else {
+        app.recommended_action_label()
+    };
+    truncate_to_width(&label, width.saturating_sub(86))
 }
 
 fn draw_main_columns(frame: &mut Frame, app: &App, area: Rect) {
@@ -312,23 +356,8 @@ struct FilterTabSpec {
     filter: Filter,
 }
 
-fn filter_tab_specs(app: &App) -> [FilterTabSpec; 6] {
+fn filter_tab_specs(app: &App) -> [FilterTabSpec; 3] {
     [
-        FilterTabSpec {
-            label: "All",
-            count: app.filter_counts[0],
-            filter: Filter::All,
-        },
-        FilterTabSpec {
-            label: "Installed",
-            count: app.filter_counts[1],
-            filter: Filter::Installed,
-        },
-        FilterTabSpec {
-            label: "Updates",
-            count: app.filter_counts[2],
-            filter: Filter::Updates,
-        },
         FilterTabSpec {
             label: "Favorites",
             count: app.filter_counts[3],
