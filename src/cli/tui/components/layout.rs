@@ -1,4 +1,5 @@
 use crate::cli::tui::app::{App, MIN_HEIGHT, MIN_WIDTH};
+use crate::cli::tui::components::{source_rail, workspace};
 use crate::cli::tui::ui::{palette_overlay_rect, preflight_overlay_rect, source_count_label};
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use unicode_width::UnicodeWidthStr;
@@ -7,6 +8,7 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Debug, Default)]
 pub struct LayoutRegions {
     pub header_filter_row: Rect,
+    pub filter_panel: Rect,
     pub sources: Rect,
     pub packages: Rect,
     pub details: Rect,
@@ -28,23 +30,24 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
     let queue_height = app.queue_bar_height();
     let constraints = vec![
         Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(queue_height),
-        Constraint::Length(1),
+        Constraint::Length(3),
     ];
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
-    let main_area = chunks[1];
+    let main_area = chunks[2];
     let (queue_bar, _footer) = if queue_height > 0 {
-        (chunks[2], chunks[3])
+        (chunks[3], chunks[4])
     } else {
-        (Rect::default(), chunks[2])
+        (Rect::default(), chunks[4])
     };
 
-    let (sources, packages, details, expanded_queue) = if app.compact {
+    let (filter_panel, sources, packages, details, expanded_queue) = if app.compact {
         compute_compact_regions(app, main_area)
     } else {
         compute_full_regions(app, main_area)
@@ -55,6 +58,7 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
 
     LayoutRegions {
         header_filter_row: chunks[0],
+        filter_panel,
         sources,
         packages,
         details,
@@ -76,53 +80,96 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
     }
 }
 
-pub fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
-    let source_width = if app.show_sidebar {
-        sources_panel_width(app, area.width)
+pub fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
+    if app.queue_expanded {
+        return (
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            area,
+        );
+    }
+
+    let vertical = workspace_vertical_regions(area);
+    let filter_panel = vertical.0;
+    let main = vertical.1;
+
+    let source_width = if app.show_sidebar && main.width >= 92 {
+        let _adaptive_source_width = sources_panel_width(app, main.width);
+        source_rail::RAIL_WIDTH
     } else {
         0
     };
-    let gap: u16 = if source_width > 0 { 1 } else { 0 };
+    let inspector_width = if main.width >= 142 {
+        49
+    } else if main.width >= 118 {
+        42
+    } else {
+        0
+    };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(source_width),
-            Constraint::Length(gap),
-            Constraint::Min(1),
+            Constraint::Length(if source_width > 0 { 1 } else { 0 }),
+            Constraint::Min(36),
+            Constraint::Length(if inspector_width > 0 { 1 } else { 0 }),
+            Constraint::Length(inspector_width),
         ])
-        .split(area);
+        .split(main);
 
-    let sources = columns[0];
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(columns[2]);
+    (
+        filter_panel,
+        columns[0],
+        columns[2],
+        columns[4],
+        Rect::default(),
+    )
+}
 
-    let packages = right[0];
+pub fn compute_compact_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
+    let sources = Rect::default();
     if app.queue_expanded {
-        (sources, packages, Rect::default(), right[1])
+        (
+            Rect::default(),
+            sources,
+            Rect::default(),
+            Rect::default(),
+            area,
+        )
+    } else if area.height < 4 {
+        (
+            Rect::default(),
+            sources,
+            area,
+            Rect::default(),
+            Rect::default(),
+        )
     } else {
-        (sources, packages, right[1], Rect::default())
+        let vertical = workspace_vertical_regions(area);
+        (
+            vertical.0,
+            sources,
+            vertical.1,
+            Rect::default(),
+            Rect::default(),
+        )
     }
 }
 
-pub fn compute_compact_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect) {
-    let sources = Rect::default();
-    if app.queue_expanded {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(area);
-        (sources, chunks[0], Rect::default(), chunks[1])
-    } else if area.height < 4 {
-        (sources, area, Rect::default(), Rect::default())
-    } else {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(2)])
-            .split(area);
-        (sources, chunks[0], chunks[1], Rect::default())
-    }
+fn workspace_vertical_regions(area: Rect) -> (Rect, Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(workspace::ATTENTION_HEIGHT),
+            Constraint::Length(workspace::WORKSPACE_GAP),
+            Constraint::Length(workspace::FILTER_PANEL_HEIGHT),
+            Constraint::Length(workspace::WORKSPACE_GAP),
+            Constraint::Min(8),
+        ])
+        .split(area);
+    (chunks[2], chunks[4])
 }
 
 pub fn sources_panel_width(app: &App, area_width: u16) -> u16 {

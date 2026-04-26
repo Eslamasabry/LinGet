@@ -654,6 +654,8 @@ impl App {
 
                 if rect_contains(regions.header_filter_row, pos) {
                     self.handle_mouse_header(col, row, regions);
+                } else if rect_contains(regions.filter_panel, pos) {
+                    self.handle_mouse_filter_panel(col, row, regions);
                 } else if rect_contains(regions.sources, pos) {
                     self.handle_mouse_sources(row, &regions.sources);
                 } else if rect_contains(regions.packages, pos) {
@@ -681,6 +683,23 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn handle_mouse_filter_panel(&mut self, col: u16, row: u16, regions: &LayoutRegions) {
+        self.queue_expanded = false;
+        self.view_mode = ViewMode::Browse;
+        self.focus = Focus::Packages;
+        if let Some(filter) = crate::cli::tui::components::workspace::filter_panel_hit_test(
+            self,
+            regions.filter_panel,
+            col,
+            row,
+        ) {
+            self.filter = filter;
+            self.apply_filters();
+        } else {
+            self.searching = true;
         }
     }
 
@@ -769,47 +788,41 @@ impl App {
         match action {
             HeaderAction::Browse => {
                 self.queue_expanded = false;
+                self.view_mode = ViewMode::Browse;
                 self.focus = Focus::Packages;
                 self.filter = Filter::All;
                 self.apply_filters();
             }
             HeaderAction::Updates => {
                 self.queue_expanded = false;
+                self.view_mode = ViewMode::Browse;
                 self.focus = Focus::Packages;
                 self.filter = Filter::Updates;
                 self.apply_filters();
             }
             HeaderAction::Installed => {
                 self.queue_expanded = false;
+                self.view_mode = ViewMode::Browse;
                 self.focus = Focus::Packages;
                 self.filter = Filter::Installed;
                 self.apply_filters();
             }
-            HeaderAction::Favorites => {
-                self.queue_expanded = false;
-                self.focus = Focus::Packages;
-                self.filter = Filter::Favorites;
-                self.apply_filters();
-            }
-            HeaderAction::Security => {
-                self.queue_expanded = false;
-                self.focus = Focus::Packages;
-                self.filter = Filter::SecurityUpdates;
-                self.apply_filters();
-            }
-            HeaderAction::Duplicates => {
-                self.queue_expanded = false;
-                self.focus = Focus::Packages;
-                self.filter = Filter::Duplicates;
-                self.apply_filters();
-            }
             HeaderAction::Sources => {
                 self.queue_expanded = false;
+                self.view_mode = ViewMode::Browse;
                 self.focus = Focus::Sources;
             }
             HeaderAction::Queue => {
                 self.queue_expanded = true;
+                self.view_mode = ViewMode::Queue;
                 self.focus = Focus::Queue;
+            }
+            HeaderAction::Health => {
+                self.queue_expanded = false;
+                self.view_mode = ViewMode::Dashboard;
+                self.focus = Focus::Packages;
+                self.filter = Filter::SecurityUpdates;
+                self.apply_filters();
             }
         }
     }
@@ -820,7 +833,7 @@ impl App {
         }
 
         let top = sources_rect.y.saturating_add(1);
-        let visible_rows = sources_rect.height.saturating_sub(2) as usize;
+        let visible_rows = sources_rect.height.saturating_sub(5) as usize;
         if visible_rows == 0 {
             return None;
         }
@@ -848,7 +861,7 @@ impl App {
         }
 
         let first_row = packages_rect.y.saturating_add(2);
-        let visible_rows = packages_rect.height.saturating_sub(4) as usize;
+        let visible_rows = packages_rect.height.saturating_sub(5) as usize;
         if visible_rows == 0 {
             return None;
         }

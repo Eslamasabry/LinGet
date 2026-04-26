@@ -4,31 +4,22 @@ use crate::cli::tui::format::{
 };
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::theme::{
-    accent, dim, error, loading, muted, row_cursor, row_selected, scrollbar_style, scrollbar_thumb,
-    source_color, success, table_header_band, text, warning,
+    accent, dim, error, loading, muted, palette, row_cursor, scrollbar_style, scrollbar_thumb,
+    source_color, success, text, warning,
 };
 use crate::cli::tui::ui::{panel_block, window_start};
 use crate::models::{Package, PackageStatus, UpdateCategory};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
     Frame,
 };
 
-pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bool) {
+pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: bool) {
     let focused = app.focus == Focus::Packages && !app.queue_expanded;
-    let position = if app.filtered.is_empty() {
-        0
-    } else {
-        app.cursor + 1
-    };
-    let version_width = if compact { 13 } else { 16 };
-    let source_width = if compact { 8 } else { 9 };
-    let status_width = if compact { 7 } else { 10 };
-    let title = packages_panel_title(app, position);
-    let block = panel_block(title, focused, compact);
+    let block = panel_block(packages_panel_title(app), focused, true);
 
     if app.is_catalog_busy() && app.filtered.is_empty() {
         let paragraph = Paragraph::new(format!(
@@ -73,7 +64,21 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
     }
 
     let inner = block.inner(area);
-    let visible_rows = inner.height.saturating_sub(2) as usize;
+    let sections = if inner.height >= 5 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(2)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(0)])
+            .split(inner)
+    };
+
+    frame.render_widget(block, area);
+
+    let visible_rows = sections[0].height.saturating_sub(1) as usize;
     let start = window_start(app.filtered.len(), visible_rows.max(1), app.cursor);
     let end = (start + visible_rows.max(1)).min(app.filtered.len());
 
@@ -91,36 +96,25 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
         let is_selected = app.selected.contains(&package_id);
         let is_favorite = app.is_favorite_id(&package_id);
         let row_style = if is_cursor { row_cursor() } else { text() };
-
-        let marker = if is_selected { "☑" } else { " " };
-        let favorite_marker = if is_favorite { "★" } else { " " };
-        let version = format_package_version(package);
-        let source = app.package_source_badge(package);
-        let status = package_status_short(package.status);
-        let status_cell = if !compact && package.status == PackageStatus::UpdateAvailable {
-            let category = package.detect_update_category();
-            let badge_spans: Vec<Span> = match category {
-                UpdateCategory::Security => vec![
-                    Span::styled(status.0, status.1),
-                    Span::raw(" "),
-                    Span::styled("[sec]", error()),
-                ],
-                UpdateCategory::Bugfix => vec![
-                    Span::styled(status.0, status.1),
-                    Span::raw(" "),
-                    Span::styled("[fix]", warning()),
-                ],
-                UpdateCategory::Feature => vec![
-                    Span::styled(status.0, status.1),
-                    Span::raw(" "),
-                    Span::styled("[new]", success()),
-                ],
-                UpdateCategory::Minor => vec![Span::styled(status.0, status.1)],
-            };
-            Cell::from(Line::from(badge_spans))
+        let marker = if is_cursor {
+            ">"
+        } else if is_selected {
+            "x"
         } else {
-            Cell::from(Span::styled(status.0, status.1))
+            " "
         };
+        let favorite_marker = if is_favorite { " ★" } else { "" };
+        let display_version = format_package_version(package);
+        let current = if package.status == PackageStatus::UpdateAvailable {
+            package.version.clone()
+        } else {
+            display_version
+        };
+        let available = package
+            .available_version
+            .clone()
+            .unwrap_or_else(|| "-".to_string());
+        let source = app.package_source_badge(package);
 
         // In Duplicates filter, append "also: X" hint to the name
         let display_name = if app.filter == Filter::Duplicates {
@@ -129,17 +123,17 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
                     let also: Vec<String> = peers.iter().map(|s| s.to_string()).collect();
                     format!(
                         "{} · also: {}",
-                        truncate_middle_to_width(&package.name, if compact { 14 } else { 24 }),
+                        truncate_middle_to_width(&package.name, 26),
                         also.join(", ")
                     )
                 } else {
-                    truncate_middle_to_width(&package.name, if compact { 20 } else { 32 })
+                    truncate_middle_to_width(&package.name, 32)
                 }
             } else {
-                truncate_middle_to_width(&package.name, if compact { 20 } else { 32 })
+                truncate_middle_to_width(&package.name, 32)
             }
         } else {
-            truncate_middle_to_width(&package.name, if compact { 20 } else { 32 })
+            truncate_middle_to_width(&package.name, 32)
         };
 
         let match_hint = search_match_hint(package, &app.search);
@@ -153,60 +147,84 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
             name_spans.push(Span::raw(" "));
             name_spans.push(Span::styled(format!("[{}]", hint), muted()));
         }
+        if !favorite_marker.is_empty() {
+            name_spans.push(Span::styled(favorite_marker, warning()));
+        }
+
+        let (_, status_style) = package_status_short(package.status);
+        let (risk, risk_style) = risk_cell(package);
+        let (action, action_style) = action_cell(package.status);
 
         rows.push(
             Row::new(vec![
+                Cell::from(Span::styled(marker, row_style)),
+                Cell::from(Line::from(name_spans)),
+                Cell::from(Span::styled(truncate_to_width(&current, 14), row_style)),
                 Cell::from(Span::styled(
-                    marker,
-                    if is_selected { row_selected() } else { text() },
-                )),
-                Cell::from(Span::styled(
-                    favorite_marker,
-                    if is_favorite {
-                        if is_cursor {
-                            row_style
-                        } else {
-                            warning()
-                        }
-                    } else {
+                    truncate_to_width(&available, 14),
+                    if is_cursor {
                         row_style
+                    } else {
+                        Style::default().fg(palette::ORANGE())
                     },
                 )),
-                Cell::from(Line::from(name_spans)),
                 Cell::from(Span::styled(
-                    truncate_to_width(&version, version_width),
-                    row_style,
-                )),
-                Cell::from(Span::styled(
-                    truncate_to_width(&source, source_width),
+                    truncate_to_width(&source, 10),
                     if is_cursor {
                         row_style
                     } else {
                         source_color(package.source)
                     },
                 )),
-                status_cell,
+                Cell::from(Span::styled(
+                    risk,
+                    if is_cursor {
+                        row_style
+                    } else if package.status == PackageStatus::UpdateAvailable {
+                        risk_style
+                    } else {
+                        status_style
+                    },
+                )),
+                Cell::from(Span::styled(
+                    action,
+                    if is_cursor { row_style } else { action_style },
+                )),
             ])
             .style(row_style),
         );
     }
 
-    let header =
-        Row::new(vec!["", "★", "Name", "Version", "Source", "Status"]).style(table_header_band());
+    let header = Row::new(vec![
+        "",
+        "Package",
+        "Current",
+        "Available",
+        "Source",
+        "Risk",
+        "Action",
+    ])
+    .style(dim().add_modifier(Modifier::BOLD));
     let widths = [
         Constraint::Length(2),
-        Constraint::Length(2),
-        Constraint::Min(if compact { 12 } else { 24 }),
-        Constraint::Length(version_width as u16),
-        Constraint::Length(source_width as u16),
-        Constraint::Length(status_width as u16),
+        Constraint::Min(24),
+        Constraint::Length(14),
+        Constraint::Length(14),
+        Constraint::Length(11),
+        Constraint::Length(12),
+        Constraint::Length(12),
     ];
 
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(block)
-        .column_spacing(1);
-    frame.render_widget(table, area);
+    let table = Table::new(rows, widths).header(header).column_spacing(1);
+    frame.render_widget(table, sections[0]);
+
+    if sections[1].height > 0 {
+        let footer = vec![
+            Line::from(Span::styled("─".repeat(sections[1].width as usize), dim())),
+            package_footer_line(app, start, end, sections[1].width as usize, visible_rows),
+        ];
+        frame.render_widget(Paragraph::new(footer), sections[1]);
+    }
 
     if app.filtered.len() > visible_rows {
         let mut scrollbar_state = ScrollbarState::new(app.filtered.len()).position(app.cursor);
@@ -215,8 +233,8 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
             .thumb_style(scrollbar_thumb());
         frame.render_stateful_widget(
             scrollbar,
-            area.inner(ratatui::layout::Margin {
-                vertical: 1,
+            sections[0].inner(ratatui::layout::Margin {
+                vertical: 0,
                 horizontal: 0,
             }),
             &mut scrollbar_state,
@@ -224,7 +242,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, compact: bo
     }
 }
 
-fn packages_panel_title(app: &App, position: usize) -> String {
+fn packages_panel_title(app: &App) -> String {
     let label = if app.search_results.is_some() {
         app.provider_search_scope_label()
             .unwrap_or_else(|| "Provider Search".to_string())
@@ -241,11 +259,91 @@ fn packages_panel_title(app: &App, position: usize) -> String {
         }
     };
 
-    if app.filtered.is_empty() {
-        format!(" {} ", label)
-    } else {
-        format!(" {} · {}/{} ", label, position, app.filtered.len())
+    format!(
+        " {} ({} of {}) ",
+        label,
+        app.filtered.len(),
+        total_for_filter(app)
+    )
+}
+
+fn total_for_filter(app: &App) -> usize {
+    match app.filter {
+        Filter::All => app.filter_counts[0],
+        Filter::Installed => app.filter_counts[1],
+        Filter::Updates => app.filter_counts[2],
+        Filter::Favorites => app.filter_counts[3],
+        Filter::SecurityUpdates => app.filter_counts[4],
+        Filter::Duplicates => app.filter_counts[5],
     }
+}
+
+fn risk_cell(package: &Package) -> (&'static str, Style) {
+    let category = package
+        .update_category
+        .unwrap_or_else(|| package.detect_update_category());
+    match category {
+        UpdateCategory::Security => ("security", error()),
+        _ if package.status == PackageStatus::UpdateAvailable => ("routine", success()),
+        _ => ("routine", success()),
+    }
+}
+
+fn action_cell(status: PackageStatus) -> (&'static str, Style) {
+    let style = Style::default().fg(palette::ORANGE());
+    match status {
+        PackageStatus::UpdateAvailable => ("update", style),
+        PackageStatus::Installed => ("remove", style),
+        PackageStatus::NotInstalled => ("install", style),
+        PackageStatus::Installing => ("installing", warning()),
+        PackageStatus::Updating => ("updating", warning()),
+        PackageStatus::Removing => ("removing", warning()),
+    }
+}
+
+fn package_footer_line(
+    app: &App,
+    start: usize,
+    end: usize,
+    width: usize,
+    visible_rows: usize,
+) -> Line<'static> {
+    let left = if app.filtered.is_empty() {
+        "Showing 0-0 of 0 packages".to_string()
+    } else {
+        format!(
+            "Showing {}-{} of {} {}",
+            start + 1,
+            end,
+            app.filtered.len(),
+            match app.filter {
+                Filter::Updates => "updates",
+                Filter::Installed => "installed",
+                Filter::Favorites => "favorites",
+                Filter::SecurityUpdates => "security updates",
+                Filter::Duplicates => "duplicates",
+                Filter::All => "packages",
+            }
+        )
+    };
+    let pages = if visible_rows == 0 {
+        1
+    } else {
+        app.filtered.len().max(1).div_ceil(visible_rows)
+    };
+    let current_page = if visible_rows == 0 {
+        1
+    } else {
+        (app.cursor / visible_rows) + 1
+    }
+    .min(pages);
+    let right = format!("Pages: {current_page}/{pages}");
+    let gap = width.saturating_sub(left.len() + right.len());
+    Line::from(vec![
+        Span::styled(left, dim().add_modifier(Modifier::ITALIC)),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(right, dim()),
+    ])
 }
 
 fn search_match_hint(package: &Package, query: &str) -> Option<&'static str> {

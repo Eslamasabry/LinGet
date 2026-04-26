@@ -465,24 +465,6 @@ pub fn loading() -> Style {
     plain(active().cyan)
 }
 
-pub fn table_header_band() -> Style {
-    let t = active();
-    if t.monochrome {
-        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-    } else {
-        Style::default()
-            .fg(t.cyan)
-            .bg(t.header_bg)
-            .add_modifier(Modifier::BOLD)
-    }
-}
-
-pub fn italic_status() -> Style {
-    Style::default()
-        .fg(active().light_gray)
-        .add_modifier(Modifier::ITALIC)
-}
-
 pub fn footer_label() -> Style {
     plain(active().light_gray)
 }

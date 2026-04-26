@@ -4780,7 +4780,6 @@ pub async fn run() -> Result<()> {
     app.load_session_state();
     app.load_catalog_cache();
     let _ = app.start_loading();
-    app.spawn_task_executor();
 
     let result = run_app(&mut terminal, &mut app).await;
 

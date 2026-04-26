@@ -31,9 +31,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let queue_height = app.queue_bar_height();
     let constraints = vec![
         Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(queue_height),
-        Constraint::Length(1),
+        Constraint::Length(3),
     ];
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -41,14 +42,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(area);
 
     draw_filter_bar(frame, app, chunks[0]);
+    draw_horizontal_rule(frame, chunks[1]);
 
-    draw_main_content(frame, app, chunks[1]);
+    draw_main_content(frame, app, chunks[2]);
 
     let footer_chunk = if queue_height > 0 {
-        draw_queue_bar(frame, app, chunks[2]);
-        chunks[3]
+        draw_queue_bar(frame, app, chunks[3]);
+        chunks[4]
     } else {
-        chunks[2]
+        chunks[4]
     };
     draw_footer(frame, app, footer_chunk);
 
@@ -84,6 +86,17 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
         .alignment(ratatui::layout::Alignment::Center)
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, inner);
+}
+
+fn draw_horizontal_rule(frame: &mut Frame, area: Rect) {
+    let line = "─".repeat(area.width as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            line,
+            Style::default().fg(palette::INACTIVE_BORDER()),
+        ))),
+        area,
+    );
 }
 
 pub fn preflight_modal_hit_test(modal_rect: Rect, col: u16, row: u16) -> Option<bool> {
@@ -779,91 +792,94 @@ fn format_eta_seconds(total_seconds: u64) -> String {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let mut spans = Vec::new();
-
-    // Search entry has its own keymap and should override normal panel hints.
-    if app.searching {
-        push_hint(&mut spans, "Type", "filter");
-        push_hint(&mut spans, "Enter", "provider search");
-        push_hint(&mut spans, "Esc", app.search_escape_hint_label());
-        push_hint(&mut spans, "?", "help");
-    } else {
-        // Contextual footer hints based on focus
-        match app.focus {
-            Focus::Sources => {
-                push_hint(&mut spans, "↑↓", "move");
-                push_hint(&mut spans, "Tab", "panels");
-                push_hint(&mut spans, "/", app.search_query_hint_label());
-                if !app.search.is_empty() {
-                    push_hint(&mut spans, "Esc", app.search_escape_hint_label());
-                }
-                push_hint(&mut spans, "?", "help");
-            }
-            Focus::Packages => {
-                push_hint(&mut spans, "↑↓", "move");
-                push_hint(&mut spans, "Enter", "action");
-                push_hint(&mut spans, "Space", "select");
-                push_hint(&mut spans, "/", app.search_query_hint_label());
-                if !app.search.is_empty() {
-                    push_hint(&mut spans, "Esc", app.search_escape_hint_label());
-                }
-                push_hint(&mut spans, "?", "help");
-            }
-            Focus::Queue => {
-                push_hint(&mut spans, "↑↓", "move");
-                push_hint(&mut spans, "l", "close");
-                if app.queue_expanded {
-                    push_hint(&mut spans, "R", "retry");
-                    push_hint(&mut spans, "M", "fix");
-                }
-                if !app.search.is_empty() {
-                    push_hint(&mut spans, "Esc", app.search_escape_hint_label());
-                }
-                push_hint(&mut spans, "?", "help");
-            }
-        }
+    if area.height == 0 {
+        return;
     }
 
-    // Always show palette and quit
-    push_hint(&mut spans, ":", "commands");
-    push_hint(&mut spans, "q", "quit");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED)
+        .border_style(border_unfocused())
+        .style(footer_bg());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let selection = if app.hidden_selected_count() > 0 {
+    let mut left = Vec::new();
+    footer_button(&mut left, "Enter", "Queue update");
+    footer_separator(&mut left);
+    footer_button(&mut left, "Space", "Select package");
+    footer_separator(&mut left);
+    footer_button(&mut left, "C", "Release notes");
+    footer_separator(&mut left);
+    footer_button(
+        &mut left,
+        "/",
+        title_case_hint(app.search_query_hint_label()),
+    );
+    footer_separator(&mut left);
+    footer_button(&mut left, "Q", "Open queue");
+    footer_separator(&mut left);
+    footer_button(&mut left, "R", "Refresh");
+    footer_separator(&mut left);
+    footer_button(&mut left, "?", "Help");
+    footer_separator(&mut left);
+    let esc_label = if app.searching || !app.search.is_empty() {
+        app.search_escape_hint_label()
+    } else {
+        "Back"
+    };
+    footer_button(&mut left, "Esc", esc_label);
+
+    let right_label = if app.selected.is_empty() {
+        format!("{} updates available", app.filter_counts[2])
+    } else if app.hidden_selected_count() > 0 {
         format!(
-            "{} selected ({} hidden)",
-            app.selected.len(),
+            "{} updates available · {} selected ({} hidden)",
+            app.filter_counts[2],
+            app.visible_selected_count(),
             app.hidden_selected_count()
         )
     } else {
-        format!("{} selected", app.selected.len())
+        format!(
+            "{} updates available · {} selected",
+            app.filter_counts[2],
+            app.visible_selected_count()
+        )
     };
-    let mode_and_selection = format!("{} · {}", app.tui_mode_label(), selection);
-
-    let right = if app.compact && !app.status.is_empty() {
-        vec![Span::styled(
-            format!("{} · {}", app.tui_mode_label(), app.status),
-            italic_status(),
-        )]
-    } else {
-        vec![Span::styled(mode_and_selection, muted())]
-    };
-
-    let line = compose_left_right(spans, right, area.width as usize);
-
-    // Use a Block to fill the entire footer area with background
-    let footer_block = Block::default().style(footer_bg());
-    let inner = footer_block.inner(area);
-    frame.render_widget(footer_block, area);
-    frame.render_widget(Paragraph::new(line), inner);
+    let right = vec![Span::styled(
+        right_label,
+        Style::default()
+            .fg(palette::ORANGE())
+            .add_modifier(ratatui::style::Modifier::ITALIC),
+    )];
+    frame.render_widget(
+        Paragraph::new(compose_left_right(left, right, inner.width as usize)),
+        inner,
+    );
 }
 
-fn push_hint(spans: &mut Vec<Span<'static>>, key: &'static str, label: &'static str) {
-    if !spans.is_empty() {
-        spans.push(Span::raw("  "));
-    }
-    spans.push(Span::styled(key, key_hint()));
+fn footer_button(spans: &mut Vec<Span<'static>>, key: &'static str, label: impl Into<String>) {
+    spans.push(Span::styled(
+        format!("[{}]", key),
+        Style::default()
+            .fg(palette::WHITE())
+            .bg(palette::TAB_ACTIVE_BG())
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    ));
     spans.push(Span::raw(" "));
-    spans.push(Span::styled(label, footer_label()));
+    spans.push(Span::styled(label.into(), muted()));
+}
+
+fn footer_separator(spans: &mut Vec<Span<'static>>) {
+    spans.push(Span::styled("  |  ", dim()));
+}
+
+fn title_case_hint(label: &str) -> String {
+    let mut chars = label.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    format!("{}{}", first.to_uppercase(), chars.as_str())
 }
 
 fn draw_expanded_queue(frame: &mut Frame, app: &App, area: Rect) {

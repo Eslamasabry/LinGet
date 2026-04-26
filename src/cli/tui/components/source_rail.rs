@@ -1,99 +1,168 @@
-//! Thin right-rail replacement for the bordered Sources panel.
-//!
-//! Each source gets one row: a colored sigil + short name + count. The
-//! currently-filtered-through source is highlighted with a ▸ marker. The
-//! rail width is fixed (10 cells) and borderless — the list uses whitespace
-//! + accent color instead of boxes.
+//! Bordered source list for the package workspace.
 
 use crate::cli::tui::app::App;
-use crate::cli::tui::state::filters::Focus;
-use crate::cli::tui::theme::{accent, dim, muted, row_cursor, source_color};
-use crate::models::PackageSource;
+use crate::cli::tui::state::filters::{Filter, Focus};
+use crate::cli::tui::theme::{
+    accent, border_focused, border_unfocused, dim, muted, row_cursor, source_color, text, ROUNDED,
+};
 use ratatui::{
-    layout::Rect,
-    style::{Modifier, Style},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::Modifier,
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
-/// Preferred rail width. Wide enough for `APT 139` plus one-cell gutter.
-pub const RAIL_WIDTH: u16 = 12;
-
-/// Short 3–4 character label for a source. Keeps the rail narrow.
-fn short_label(source: PackageSource) -> &'static str {
-    match source {
-        PackageSource::Apt => "APT",
-        PackageSource::Dnf => "DNF",
-        PackageSource::Pacman => "Pac",
-        PackageSource::Zypper => "Zyp",
-        PackageSource::Flatpak => "Fla",
-        PackageSource::Snap => "Snp",
-        PackageSource::AppImage => "App",
-        PackageSource::Npm => "npm",
-        PackageSource::Pip => "pip",
-        PackageSource::Pipx => "pix",
-        PackageSource::Cargo => "crg",
-        PackageSource::Dart => "drt",
-        PackageSource::Brew => "brw",
-        PackageSource::Deb => "Deb",
-        PackageSource::Aur => "aur",
-        PackageSource::Conda => "cnd",
-        PackageSource::Mamba => "mmb",
-        PackageSource::Winget => "wgt",
-        PackageSource::Chocolatey => "cho",
-        PackageSource::Scoop => "scp",
-    }
-}
+pub const RAIL_WIDTH: u16 = 31;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+
     let focused = app.focus == Focus::Sources && !app.queue_expanded;
-    let visible = app.visible_sources();
-    let selected = app.source_index();
-
-    // Index into source_counts / filter_counts that matches current filter.
-    let filter_idx = filter_to_index(app);
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    // "All" entry at index 0.
-    let is_all_active = selected == 0;
-    let total = app.filter_counts[filter_idx];
-    lines.push(rail_row("All", total, accent(), is_all_active, focused));
-
-    for (i, source) in visible.iter().enumerate() {
-        let row_idx = i + 1;
-        let is_active = selected == row_idx;
-        let counts = app
-            .source_counts
-            .get(source)
-            .copied()
-            .unwrap_or([0, 0, 0, 0, 0, 0]);
-        let style = source_color(*source);
-        lines.push(rail_row(
-            short_label(*source),
-            counts[filter_idx],
-            style,
-            is_active,
-            focused,
-        ));
+    let title = format!(
+        " Sources ({}) ",
+        app.filter_counts[filter_to_index(app.filter)]
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ROUNDED)
+        .border_style(if focused {
+            border_focused()
+        } else {
+            border_unfocused()
+        })
+        .title(title)
+        .title_style(accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " source",
-        dim().add_modifier(Modifier::ITALIC),
-    )));
+    let sections = if inner.height >= 5 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(3)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(0)])
+            .split(inner)
+    };
 
-    frame.render_widget(Paragraph::new(lines), area);
+    let visible_rows = sections[0].height as usize;
+    let source_count = app.visible_sources().len() + 1;
+    let start =
+        crate::cli::tui::ui::window_start(source_count, visible_rows.max(1), app.source_index());
+    let mut rows = Vec::new();
+
+    for index in start..(start + visible_rows).min(source_count) {
+        if index == 0 {
+            rows.push(source_row(
+                "All",
+                app.filter_counts[filter_to_index(app.filter)],
+                accent(),
+                app.source_index() == index,
+                inner.width,
+            ));
+        } else if let Some(source) = app.visible_sources().get(index - 1).copied() {
+            let counts = app
+                .source_counts
+                .get(&source)
+                .copied()
+                .unwrap_or([0, 0, 0, 0, 0, 0]);
+            rows.push(source_row(
+                source_label(source),
+                counts[filter_to_index(app.filter)],
+                source_color(source),
+                app.source_index() == index,
+                inner.width,
+            ));
+        }
+    }
+    frame.render_widget(Paragraph::new(rows), sections[0]);
+
+    if sections[1].height > 0 {
+        let divider = "─".repeat(sections[1].width as usize);
+        let hints = vec![
+            Line::from(Span::styled(divider, dim())),
+            Line::from(Span::styled(
+                "↑/↓ navigate",
+                dim().add_modifier(Modifier::ITALIC),
+            )),
+            Line::from(Span::styled(
+                "Enter open source",
+                dim().add_modifier(Modifier::ITALIC),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(hints), sections[1]);
+    }
 }
 
-fn filter_to_index(app: &App) -> usize {
-    use crate::cli::tui::state::filters::Filter;
-    match app.filter {
+fn source_row(
+    label: &str,
+    count: usize,
+    style: ratatui::style::Style,
+    active: bool,
+    width: u16,
+) -> Line<'static> {
+    let available = width.saturating_sub(8) as usize;
+    let display_label = crate::cli::tui::format::truncate_to_width(label, available);
+    let count_label = if count > 9999 {
+        "9999+".to_string()
+    } else {
+        count.to_string()
+    };
+    let row_style = if active { row_cursor() } else { text() };
+    let marker = if active { "> " } else { "  " };
+    let mut line = Line::from(vec![
+        Span::styled(marker, if active { row_cursor() } else { dim() }),
+        Span::styled(display_label, if active { row_cursor() } else { style }),
+    ]);
+    let used = marker.len() + label.len();
+    let padding = width
+        .saturating_sub(1)
+        .saturating_sub(used as u16)
+        .saturating_sub(count_label.len() as u16) as usize;
+    line.spans
+        .push(Span::styled(" ".repeat(padding), row_style));
+    line.spans.push(Span::styled(
+        count_label,
+        if active { row_cursor() } else { muted() },
+    ));
+    line.style(row_style)
+}
+
+fn source_label(source: crate::models::PackageSource) -> &'static str {
+    match source {
+        crate::models::PackageSource::Apt => "APT",
+        crate::models::PackageSource::Dnf => "DNF",
+        crate::models::PackageSource::Pacman => "Pacman",
+        crate::models::PackageSource::Zypper => "Zypper",
+        crate::models::PackageSource::Flatpak => "Flatpak",
+        crate::models::PackageSource::Snap => "Snap",
+        crate::models::PackageSource::Npm => "npm",
+        crate::models::PackageSource::Pip => "pip",
+        crate::models::PackageSource::Pipx => "pipx",
+        crate::models::PackageSource::Cargo => "Cargo",
+        crate::models::PackageSource::Brew => "Brew",
+        crate::models::PackageSource::Aur => "AUR",
+        crate::models::PackageSource::Conda => "conda",
+        crate::models::PackageSource::Mamba => "mamba",
+        crate::models::PackageSource::Dart => "Dart",
+        crate::models::PackageSource::Deb => "DEB",
+        crate::models::PackageSource::AppImage => "AppImage",
+        crate::models::PackageSource::Winget => "WinGet",
+        crate::models::PackageSource::Chocolatey => "Chocolatey",
+        crate::models::PackageSource::Scoop => "Scoop",
+    }
+}
+
+fn filter_to_index(filter: Filter) -> usize {
+    match filter {
         Filter::All => 0,
         Filter::Installed => 1,
         Filter::Updates => 2,
@@ -101,36 +170,4 @@ fn filter_to_index(app: &App) -> usize {
         Filter::SecurityUpdates => 4,
         Filter::Duplicates => 5,
     }
-}
-
-fn rail_row(
-    label: &str,
-    count: usize,
-    color: Style,
-    is_active: bool,
-    focused: bool,
-) -> Line<'static> {
-    let marker = if is_active { "▸" } else { " " };
-    let name_style = if is_active {
-        if focused {
-            row_cursor().add_modifier(Modifier::BOLD)
-        } else {
-            accent().add_modifier(Modifier::BOLD)
-        }
-    } else {
-        color
-    };
-    let count_style = if count == 0 { dim() } else { muted() };
-    Line::from(vec![
-        Span::styled(format!("{} ", marker), accent()),
-        Span::styled(format!("{:<4}", label), name_style),
-        Span::styled(
-            if count > 999 {
-                "999+".to_string()
-            } else {
-                format!("{:>4}", count)
-            },
-            count_style,
-        ),
-    ])
 }

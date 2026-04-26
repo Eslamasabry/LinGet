@@ -5,16 +5,6 @@ impl App {
         self.catalog_activity.is_some()
     }
 
-    pub fn catalog_activity_label(&self) -> Option<String> {
-        match &self.catalog_activity {
-            Some(CatalogActivity::RefreshingPackages) => Some("Refreshing packages".to_string()),
-            Some(CatalogActivity::SearchingProviders { query }) => {
-                Some(format!("Searching providers for '{}'", query))
-            }
-            None => None,
-        }
-    }
-
     pub fn catalog_loading_message(&self) -> String {
         match &self.catalog_activity {
             Some(CatalogActivity::RefreshingPackages) => "Loading packages...".to_string(),
