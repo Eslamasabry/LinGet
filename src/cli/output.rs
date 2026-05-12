@@ -148,7 +148,11 @@ impl OutputWriter {
             message: message.to_string(),
             suggestion: suggestion.map(|s| s.to_string()),
         };
-        eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .expect("JSON serialization of error output should never fail")
+        );
     }
 
     /// Print a header/title
@@ -231,7 +235,11 @@ impl OutputWriter {
             packages: packages.iter().map(PackageJson::from).collect(),
         };
 
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .expect("JSON serialization of packages output should never fail")
+        );
     }
 
     fn print_sources_human(&self, available: &[PackageSource], enabled: &[PackageSource]) {
@@ -289,7 +297,11 @@ impl OutputWriter {
             .collect();
 
         let output = SourcesOutput { sources };
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .expect("JSON serialization of sources output should never fail")
+        );
     }
 
     fn print_package_info_human(&self, package: &Package) {
@@ -342,7 +354,11 @@ impl OutputWriter {
 
     fn print_package_json(&self, package: &Package) {
         let output = PackageJson::from(package);
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .expect("JSON serialization of package info should never fail")
+        );
     }
 }
 

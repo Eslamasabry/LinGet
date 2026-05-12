@@ -28,7 +28,7 @@ pub async fn run(
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
-                .unwrap(),
+                .expect("hardcoded progress template should be valid"),
         );
         pb.set_message(format!("Fetching permissions for {}...", app_id));
         pb.enable_steady_tick(std::time::Duration::from_millis(80));
@@ -260,7 +260,7 @@ pub async fn list_runtimes(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
-                .unwrap(),
+                .expect("hardcoded progress template should be valid"),
         );
         pb.set_message("Listing Flatpak runtimes...");
         pb.enable_steady_tick(std::time::Duration::from_millis(80));

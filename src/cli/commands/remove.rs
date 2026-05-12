@@ -116,7 +116,7 @@ pub async fn run(
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
-                .unwrap(),
+                .expect("hardcoded progress template should be valid"),
         );
         pb.set_message(format!("Removing {}...", package.name));
         pb.enable_steady_tick(std::time::Duration::from_millis(80));

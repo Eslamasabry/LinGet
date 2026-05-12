@@ -35,7 +35,6 @@ pub fn strip_ansi(s: &str) -> String {
                     continue;
                 }
             }
-            continue;
         }
         result.push(c);
     }
@@ -156,6 +155,14 @@ mod tests {
     fn test_strip_ansi_empty() {
         assert_eq!(strip_ansi(""), "");
         assert_eq!(strip_ansi("\x1b[0m"), "");
+    }
+
+    #[test]
+    fn test_strip_ansi_preserves_bare_esc() {
+        // Bare ESC (not part of a standard sequence) should be preserved
+        assert_eq!(strip_ansi("\x1b"), "\x1b");
+        assert_eq!(strip_ansi("before\x1bafter"), "before\x1bafter");
+        assert_eq!(strip_ansi("\x1b(0"), "\x1b(0");
     }
 
     #[tokio::test]

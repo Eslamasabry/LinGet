@@ -19,7 +19,7 @@ pub async fn run(writer: &OutputWriter, show_all: bool) -> Result<()> {
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
-                .unwrap(),
+                .expect("hardcoded progress template should be valid"),
         );
         pb.set_message("Detecting package managers...");
         pb.enable_steady_tick(std::time::Duration::from_millis(80));
@@ -124,7 +124,11 @@ fn print_providers_json(providers: &[ProviderStatus]) {
         providers: providers.to_vec(),
     };
 
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output)
+            .expect("JSON serialization of providers output should never fail")
+    );
 }
 
 #[derive(Tabled)]

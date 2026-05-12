@@ -18,15 +18,8 @@ pub mod task_queue_view;
 mod tray;
 pub mod widgets;
 
-#[allow(unused_imports)]
-pub use health_dashboard::{
-    build_health_dashboard, HealthAction, HealthData, HealthIssueData, Severity,
-};
 pub use relm_app::run_relm4_app;
 pub use tray::TrayHandle;
-
-#[allow(unused_imports)]
-pub(crate) use appearance::apply_appearance;
 pub(crate) use backup::{show_export_dialog, show_import_dialog};
 pub(crate) use empty_state::EmptyState;
 pub(crate) use preferences::{apply_theme_settings, build_preferences_window};

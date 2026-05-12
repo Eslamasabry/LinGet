@@ -31,7 +31,6 @@ pub use dart::DartBackend;
 pub use deb::DebBackend;
 pub use dnf::DnfBackend;
 pub use flatpak::FlatpakBackend;
-#[allow(unused_imports)]
 pub use history_tracker::HistoryTracker;
 pub use mamba::MambaBackend;
 pub use npm::NpmBackend;

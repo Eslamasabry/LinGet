@@ -21,6 +21,9 @@ pub enum PackageSource {
     Dart,
     Deb,
     AppImage,
+    Winget,
+    Chocolatey,
+    Scoop,
 }
 
 impl fmt::Display for PackageSource {
@@ -43,12 +46,15 @@ impl fmt::Display for PackageSource {
             PackageSource::Dart => write!(f, "dart"),
             PackageSource::Deb => write!(f, "DEB"),
             PackageSource::AppImage => write!(f, "AppImage"),
+            PackageSource::Winget => write!(f, "WinGet"),
+            PackageSource::Chocolatey => write!(f, "Chocolatey"),
+            PackageSource::Scoop => write!(f, "Scoop"),
         }
     }
 }
 
 impl PackageSource {
-    pub const ALL: [PackageSource; 17] = [
+    pub const ALL: [PackageSource; 20] = [
         PackageSource::Apt,
         PackageSource::Dnf,
         PackageSource::Pacman,
@@ -66,6 +72,9 @@ impl PackageSource {
         PackageSource::Dart,
         PackageSource::Deb,
         PackageSource::AppImage,
+        PackageSource::Winget,
+        PackageSource::Chocolatey,
+        PackageSource::Scoop,
     ];
 
     pub fn from_str(s: &str) -> Option<Self> {
@@ -87,6 +96,9 @@ impl PackageSource {
             "dart" => Some(PackageSource::Dart),
             "deb" => Some(PackageSource::Deb),
             "appimage" => Some(PackageSource::AppImage),
+            "winget" => Some(PackageSource::Winget),
+            "chocolatey" | "choco" => Some(PackageSource::Chocolatey),
+            "scoop" => Some(PackageSource::Scoop),
             _ => None,
         }
     }
@@ -110,6 +122,9 @@ impl PackageSource {
             PackageSource::Dart => "Dart/Flutter global tools (pub global)",
             PackageSource::Deb => "Local .deb packages",
             PackageSource::AppImage => "Portable AppImage applications",
+            PackageSource::Winget => "WinGet packages (Windows package manager)",
+            PackageSource::Chocolatey => "Chocolatey packages",
+            PackageSource::Scoop => "Scoop packages",
         }
     }
 
@@ -132,6 +147,9 @@ impl PackageSource {
             PackageSource::Dart => "folder-script-symbolic",
             PackageSource::Deb => "application-x-deb-symbolic",
             PackageSource::AppImage => "application-x-executable-symbolic",
+            PackageSource::Winget => "system-software-install-symbolic",
+            PackageSource::Chocolatey => "system-software-install-symbolic",
+            PackageSource::Scoop => "system-software-install-symbolic",
         }
     }
 }

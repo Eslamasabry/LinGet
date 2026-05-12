@@ -23,9 +23,9 @@ pub async fn run(
         let spinner = if !writer.is_quiet() && !writer.is_json() {
             let pb = ProgressBar::new_spinner();
             pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{spinner:.cyan} {msg}")
-                    .unwrap(),
+ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .expect("hardcoded progress template should be valid"),
             );
             pb.set_message("Checking for updates...");
             pb.enable_steady_tick(std::time::Duration::from_millis(80));
@@ -184,9 +184,9 @@ pub async fn run(
         let spinner = if !writer.is_quiet() && !writer.is_json() {
             let pb = ProgressBar::new_spinner();
             pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{spinner:.cyan} {msg}")
-                    .unwrap(),
+ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .expect("hardcoded progress template should be valid"),
             );
             pb.set_message(format!("Updating {}...", package.name));
             pb.enable_steady_tick(std::time::Duration::from_millis(80));

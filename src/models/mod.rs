@@ -19,26 +19,22 @@ pub use config::*;
 pub use enrichment::*;
 pub use flatpak_metadata::*;
 pub use health::{HealthIssue, IssueSeverity, SystemHealth};
-#[allow(unused_imports)]
 pub use history::{
-    HistoryEntry, HistoryFilter, HistoryOperation, OperationHistory, PackageSnapshot, SnapshotDiff,
+    HistoryEntry, HistoryFilter, HistoryOperation, OperationHistory, PackageSnapshot,
 };
 pub use icons::*;
 pub use insights::{guess_config_paths, guess_log_command, parse_install_date, PackageInsights};
-#[allow(unused_imports)]
 pub use package::{
-    detect_duplicates, normalize_name_for_dedup, ElevationModel, Package, PackageEnrichment,
-    PackageSource, PackageStatus, SourcePlatform, UpdateCategory,
+    detect_duplicates, normalize_name_for_dedup, Package, PackageEnrichment,
+    PackageSource, PackageStatus, UpdateCategory,
 };
 pub use package_list::{ExportedPackage, PackageListExport};
 pub use recommendations::{
     get_global_recommendations, get_package_recommendations, Recommendation,
 };
 pub use repository::*;
-#[allow(unused_imports)]
 pub use scheduler::{SchedulePreset, ScheduledOperation, ScheduledTask, SchedulerState};
 
-#[allow(unused_imports)]
 pub use appearance::{
     AppearanceConfig, BorderRadius, BorderStyle, CardSize, FontScale, GlowIntensity, GridColumns,
     ListDensity, SidebarWidth, SpacingLevel, TransitionSpeed,

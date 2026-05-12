@@ -123,7 +123,7 @@ impl StorageStats {
 
         let mut sorted_packages: Vec<Package> = packages
             .iter()
-            .filter(|p| p.size.is_some() && p.size.unwrap() > 0)
+            .filter(|p| p.size.is_some_and(|s| s > 0))
             .cloned()
             .collect();
         sorted_packages.sort_by(|a, b| b.size.cmp(&a.size));
