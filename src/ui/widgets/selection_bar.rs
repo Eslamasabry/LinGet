@@ -360,36 +360,44 @@ where
             now.date_naive()
         };
 
-        if let Some(target_time) = NaiveTime::from_hms_opt(hour, minute, 0) {
-            let local_dt = target_date.and_time(target_time);
-            if let Some(dt) = local_dt.and_local_timezone(Local).single() {
-                let scheduled_at = dt.with_timezone(&Utc);
+        let Some(target_time) = NaiveTime::from_hms_opt(hour, minute, 0) else {
+            tracing::warn!("Invalid time selected: {}:{}", hour, minute);
+            return;
+        };
+        let local_dt = target_date.and_time(target_time);
+        let Some(dt) = local_dt.and_local_timezone(Local).single() else {
+            tracing::warn!(
+                "Ambiguous or invalid local time selected (possible DST gap): {}:{}",
+                hour,
+                minute
+            );
+            return;
+        };
+        let scheduled_at = dt.with_timezone(&Utc);
 
-                if scheduled_at <= Utc::now() {
-                    return;
-                }
+        if scheduled_at <= Utc::now() {
+            return;
+        }
 
-                let packages = selected_packages_btn.borrow();
-                let tasks: Vec<ScheduledTask> = packages
-                    .iter()
-                    .map(|(id, name, source)| {
-                        ScheduledTask::new(
-                            id.clone(),
-                            name.clone(),
-                            *source,
-                            ScheduledOperation::Update,
-                            scheduled_at,
-                        )
-                    })
-                    .collect();
+        let packages = selected_packages_btn.borrow();
+        let tasks: Vec<ScheduledTask> = packages
+            .iter()
+            .map(|(id, name, source)| {
+                ScheduledTask::new(
+                    id.clone(),
+                    name.clone(),
+                    *source,
+                    ScheduledOperation::Update,
+                    scheduled_at,
+                )
+            })
+            .collect();
 
-                if let Some(ref callback) = *on_schedule.borrow() {
-                    callback(tasks);
-                }
-                if let Some(p) = popover_ref_btn.borrow().as_ref() {
-                    p.popdown();
-                }
-            }
+        if let Some(ref callback) = *on_schedule.borrow() {
+            callback(tasks);
+        }
+        if let Some(p) = popover_ref_btn.borrow().as_ref() {
+            p.popdown();
         }
     });
 

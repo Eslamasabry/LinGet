@@ -69,9 +69,19 @@ fn run_export(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, path: PathBuf
                     PackageListExport::from_installed_with_config(&packages, Some(&config));
                 let total_packages = backup.package_count();
 
+                // Export to JSON
                 match backup.to_json_pretty() {
                     Ok(json) => match std::fs::write(&path, json) {
                         Ok(_) => {
+                            // Also export to CSV
+                            let csv_path = path.with_extension("csv");
+                            if let Err(e) = export_to_csv(&packages, &csv_path) {
+                                show_error_toast(
+                                    &toast_overlay,
+                                    &format!("Failed to write CSV: {}", e),
+                                );
+                            }
+
                             if let Some(overlay) = &toast_overlay {
                                 let filename = path
                                     .file_name()
@@ -95,6 +105,39 @@ fn run_export(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, path: PathBuf
             Err(e) => show_error_toast(&toast_overlay, &format!("Failed to load packages: {}", e)),
         }
     });
+}
+
+fn export_to_csv(packages: &[crate::models::Package], path: &PathBuf) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::File::create(path)?;
+
+    // Write CSV header
+    writeln!(file, "source,name,version,export_date")?;
+
+    let export_date = chrono::Utc::now().to_rfc3339();
+
+    // Write each package as a row
+    for pkg in packages {
+        writeln!(
+            file,
+            "{},{},{},{}",
+            escape_csv_field(&pkg.source.to_string()),
+            escape_csv_field(&pkg.name),
+            escape_csv_field(&pkg.version),
+            export_date
+        )?;
+    }
+
+    Ok(())
+}
+
+fn escape_csv_field(field: &str) -> String {
+    if field.contains(',') || field.contains('"') || field.contains('\n') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
 }
 
 pub fn show_import_dialog(window: &impl IsA<gtk::Window>, pm: Arc<Mutex<PackageManager>>) {
@@ -155,7 +198,19 @@ fn show_import_diff_dialog(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, 
     glib::spawn_future_local(async move {
         let installed_packages = {
             let manager = pm_clone.lock().await;
-            manager.list_all_installed().await.unwrap_or_default()
+            match manager.list_all_installed().await {
+                Ok(pkgs) => pkgs,
+                Err(e) => {
+                    if let Some(overlay) = &toast_overlay {
+                        let toast = adw::Toast::builder()
+                            .title(format!("Failed to read installed packages: {}", e))
+                            .timeout(5)
+                            .build();
+                        overlay.add_toast(toast);
+                    }
+                    return;
+                }
+            }
         };
 
         let installed_set: HashSet<(String, PackageSource)> = installed_packages
@@ -488,7 +543,6 @@ fn run_selective_import(
     }
 
     glib::spawn_future_local(async move {
-        let manager = pm.lock().await;
         let mut installed = 0;
         let mut failed = 0;
 
@@ -500,13 +554,16 @@ fn run_selective_import(
             }
             .to_install_stub();
 
-            match manager.install(&stub_pkg).await {
+            let result = {
+                let manager = pm.lock().await;
+                manager.install(&stub_pkg).await
+            };
+
+            match result {
                 Ok(_) => installed += 1,
                 Err(_) => failed += 1,
             }
         }
-
-        drop(manager);
 
         let config_save_result = if let Some(saved_config) = backup.config.as_ref() {
             let mut config = Config::load();

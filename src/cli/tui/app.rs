@@ -2036,8 +2036,10 @@ impl App {
                     return None;
                 }
 
-                let rank = self.search_rank_for_package(package, &query)?;
-                search_ranks.insert(idx, rank);
+                if !query.is_empty() {
+                    let rank = self.search_rank_for_package(package, &query)?;
+                    search_ranks.insert(idx, rank);
+                }
                 Some(idx)
             })
             .collect();

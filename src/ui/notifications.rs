@@ -1,7 +1,6 @@
 use gtk4::gio;
 use gtk4::prelude::*;
-use parking_lot::Mutex;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationNavRequest {
@@ -12,12 +11,34 @@ pub enum NotificationNavRequest {
 static PENDING_NAV: LazyLock<Mutex<Option<NotificationNavRequest>>> =
     LazyLock::new(|| Mutex::new(None));
 
+/// Records a pending navigation request from a notification.
+///
+/// # Panics
+/// Panics if the internal mutex is poisoned.
+///
+/// # Safety
+/// This function blocks the calling thread. It must **not** be called from an
+/// async context running on the Tokio/Glib executor, or the executor thread
+/// will be blocked.
 pub fn set_pending_nav(request: NotificationNavRequest) {
-    *PENDING_NAV.lock() = Some(request);
+    let mut guard = PENDING_NAV.lock().expect("PENDING_NAV mutex poisoned");
+    *guard = Some(request);
 }
 
+/// Takes and returns any pending navigation request.
+///
+/// # Panics
+/// Panics if the internal mutex is poisoned.
+///
+/// # Safety
+/// This function blocks the calling thread. It must **not** be called from an
+/// async context running on the Tokio/Glib executor, or the executor thread
+/// will be blocked.
 pub fn take_pending_nav() -> Option<NotificationNavRequest> {
-    PENDING_NAV.lock().take()
+    PENDING_NAV
+        .lock()
+        .expect("PENDING_NAV mutex poisoned")
+        .take()
 }
 
 pub fn send_system_notification_with_action(

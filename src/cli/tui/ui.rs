@@ -2911,8 +2911,8 @@ mod tests {
             package_name: "run".to_string(),
             package_source: PackageSource::Apt,
             status: TaskQueueStatus::Running,
-            queued_at: now - Duration::seconds(50),
-            started_at: Some(now - Duration::seconds(50)),
+            queued_at: now - Duration::try_seconds(50).unwrap(),
+            started_at: Some(now - Duration::try_seconds(50).unwrap()),
             completed_at: None,
             error: None,
         };
@@ -2924,8 +2924,8 @@ mod tests {
             package_name: id.to_string(),
             package_source: PackageSource::Apt,
             status: TaskQueueStatus::Completed,
-            queued_at: now - Duration::seconds(31),
-            started_at: Some(now - Duration::seconds(30)),
+            queued_at: now - Duration::try_seconds(31).unwrap(),
+            started_at: Some(now - Duration::try_seconds(30).unwrap()),
             completed_at: Some(now),
             error: None,
         };

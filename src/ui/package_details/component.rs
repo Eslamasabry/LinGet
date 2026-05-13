@@ -978,9 +978,17 @@ impl SimpleComponent for DetailsPanelModel {
                         let icon_url = icon_url.clone();
                         let sender = sender.clone();
                         relm4::spawn(async move {
-                            if let Ok(resp) = reqwest::get(&icon_url).await {
-                                if let Ok(bytes) = resp.bytes().await {
-                                    sender.input(DetailsPanelInput::IconLoaded(bytes.to_vec()));
+                            match reqwest::get(&icon_url).await {
+                                Ok(resp) => match resp.bytes().await {
+                                    Ok(bytes) => {
+                                        sender.input(DetailsPanelInput::IconLoaded(bytes.to_vec()));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to read icon bytes: {}", e);
+                                    }
+                                },
+                                Err(e) => {
+                                    tracing::warn!("Failed to fetch icon from {}: {}", icon_url, e);
                                 }
                             }
                         });
@@ -1024,13 +1032,18 @@ impl SimpleComponent for DetailsPanelModel {
                 let bytes = glib::Bytes::from_owned(bytes);
                 let stream = gio::MemoryInputStream::from_bytes(&bytes);
                 let sender = sender.clone();
+                // NOTE: Pixbuf decoding runs on the GTK main thread. For very large
+                // or malformed images this can briefly freeze the UI. Offloading to
+                // a worker thread is not practical because Pixbuf is !Send.
                 relm4::spawn_local(async move {
-                    if let Ok(pixbuf) =
-                        gdk_pixbuf::Pixbuf::from_stream_at_scale_future(&stream, 128, 128, true)
-                            .await
+                    match gdk_pixbuf::Pixbuf::from_stream_at_scale_future(&stream, 128, 128, true)
+                        .await
                     {
-                        let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
-                        sender.input(DetailsPanelInput::IconTextureReady(texture));
+                        Ok(pixbuf) => {
+                            let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
+                            sender.input(DetailsPanelInput::IconTextureReady(texture));
+                        }
+                        Err(e) => tracing::warn!("Failed to decode icon: {}", e),
                     }
                 });
             }

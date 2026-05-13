@@ -46,7 +46,7 @@ use libadwaita as adw;
 use libadwaita::prelude::*;
 use relm4::factory::FactoryVecDeque;
 use relm4::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -346,16 +346,16 @@ pub struct AppModel {
     pub history_data: HistoryViewData,
     pub history_tracker: Arc<Mutex<Option<crate::backend::HistoryTracker>>>,
     pub alias_data: AliasViewData,
-    pub pending_alias_rebuild: RefCell<bool>,
+    pub pending_alias_rebuild: Cell<bool>,
     pub alias_search_debounce_source: RefCell<Option<glib::SourceId>>,
     pub shutdown_signal: watch::Sender<bool>,
-    pub pending_command_palette: RefCell<bool>,
+    pub pending_command_palette: Cell<bool>,
     pub home_recommendations: Vec<Recommendation>,
     pub home_recommendations_loading: bool,
-    pub pending_home_recommendations_rebuild: RefCell<bool>,
+    pub pending_home_recommendations_rebuild: Cell<bool>,
     pub focused_index: usize,
     pub tasks_data: TaskQueueViewData,
-    pub pending_tasks_rebuild: RefCell<bool>,
+    pub pending_tasks_rebuild: Cell<bool>,
 }
 
 const DEFAULT_VISIBLE_LIMIT: usize = 100;
@@ -669,6 +669,9 @@ impl AppModel {
         let config = self.config.borrow();
         let favorite_ids: HashSet<_> = config.favorite_packages.iter().cloned().collect();
 
+        // Sort by source so list-mode group headers render contiguously.
+        // This intentionally overrides the SortOrder from filtered_packages
+        // because list view groups packages by source.
         filtered.sort_by(|a, b| a.source.cmp(&b.source));
 
         let compact = config.ui_compact;
@@ -998,16 +1001,16 @@ impl SimpleComponent for AppModel {
             history_data: HistoryViewData::default(),
             history_tracker: Arc::new(Mutex::new(None)),
             alias_data: AliasViewData::default(),
-            pending_alias_rebuild: RefCell::new(true),
+            pending_alias_rebuild: Cell::new(true),
             alias_search_debounce_source: RefCell::new(None),
             shutdown_signal,
-            pending_command_palette: RefCell::new(false),
+            pending_command_palette: Cell::new(false),
             home_recommendations: Vec::new(),
             home_recommendations_loading: false,
-            pending_home_recommendations_rebuild: RefCell::new(false),
+            pending_home_recommendations_rebuild: Cell::new(false),
             focused_index: 0,
             tasks_data: TaskQueueViewData::default(),
-            pending_tasks_rebuild: RefCell::new(true),
+            pending_tasks_rebuild: Cell::new(true),
         };
 
         let header = Header::new();
@@ -2245,10 +2248,10 @@ impl SimpleComponent for AppModel {
                 }
                 if view == View::Tasks {
                     self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
-                    *self.pending_tasks_rebuild.borrow_mut() = true;
+                    self.pending_tasks_rebuild.set(true);
                 }
                 if view == View::Aliases {
-                    *self.pending_alias_rebuild.borrow_mut() = true;
+                    self.pending_alias_rebuild.set(true);
                     sender.input(AppMsg::LoadAliases);
                     sender.input(AppMsg::LoadPackageCommands);
                 }
@@ -2368,7 +2371,7 @@ impl SimpleComponent for AppModel {
 
                 if self.current_view == View::Aliases {
                     sender.input(AppMsg::PopulateLazyPackages);
-                    *self.pending_alias_rebuild.borrow_mut() = true;
+                    self.pending_alias_rebuild.set(true);
                 }
             }
 
@@ -3087,31 +3090,38 @@ impl SimpleComponent for AppModel {
                 let sender = sender.clone();
 
                 relm4::spawn(async move {
-                    let manager = pm.lock().await;
                     let mut stats = CleanupStats::default();
 
                     for source in enabled_sources {
-                        if let Some(backend) = manager.get_backend(source) {
-                            if let Ok(cache_size) = backend.get_cache_size().await {
-                                if cache_size > 0 {
-                                    stats.cache_sizes.insert(source, cache_size);
-                                    stats.total_recoverable += cache_size;
-                                }
+                        let manager = pm.lock().await;
+                        let Some(backend) = manager.get_backend(source) else {
+                            continue;
+                        };
+                        let cache_size = backend.get_cache_size().await.ok();
+                        let can_list_orphans = manager
+                            .source_capability_status(
+                                source,
+                                BackendCapability::ListOrphanedPackages,
+                            )
+                            .is_supported();
+                        let orphans = if can_list_orphans {
+                            backend.get_orphaned_packages().await.ok()
+                        } else {
+                            None
+                        };
+                        drop(manager);
+
+                        if let Some(size) = cache_size {
+                            if size > 0 {
+                                stats.cache_sizes.insert(source, size);
+                                stats.total_recoverable += size;
                             }
-                            if manager
-                                .source_capability_status(
-                                    source,
-                                    BackendCapability::ListOrphanedPackages,
-                                )
-                                .is_supported()
-                            {
-                                if let Ok(orphans) = backend.get_orphaned_packages().await {
-                                    let count = orphans.len();
-                                    if count > 0 {
-                                        stats.total_orphaned += count;
-                                        stats.orphaned_packages.insert(source, orphans);
-                                    }
-                                }
+                        }
+                        if let Some(orphan_list) = orphans {
+                            let count = orphan_list.len();
+                            if count > 0 {
+                                stats.total_orphaned += count;
+                                stats.orphaned_packages.insert(source, orphan_list);
                             }
                         }
                     }
@@ -3796,7 +3806,7 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::OpenCommandPalette => {
-                *self.pending_command_palette.borrow_mut() = true;
+                self.pending_command_palette.set(true);
             }
 
             AppMsg::ExecutePaletteCommand(cmd) => {
@@ -3886,7 +3896,7 @@ impl SimpleComponent for AppModel {
             AppMsg::HomeRecommendationsLoaded(recs) => {
                 self.home_recommendations = recs;
                 self.home_recommendations_loading = false;
-                *self.pending_home_recommendations_rebuild.borrow_mut() = true;
+                self.pending_home_recommendations_rebuild.set(true);
             }
 
             AppMsg::InstallHomeRecommendation(name) => {
@@ -3906,7 +3916,7 @@ impl SimpleComponent for AppModel {
                     }
                 }
                 self.home_recommendations.retain(|r| r.name != name);
-                *self.pending_home_recommendations_rebuild.borrow_mut() = true;
+                self.pending_home_recommendations_rebuild.set(true);
             }
 
             AppMsg::NavigateList(delta) => {
@@ -3987,7 +3997,7 @@ impl SimpleComponent for AppModel {
 
             AppMsg::LoadAliases => {
                 self.alias_data.is_loading = true;
-                *self.pending_alias_rebuild.borrow_mut() = true;
+                self.pending_alias_rebuild.set(true);
                 let sender = sender.clone();
 
                 std::thread::spawn(move || {
@@ -4009,7 +4019,7 @@ impl SimpleComponent for AppModel {
                 self.alias_data.manager.package_commands = existing_package_commands;
 
                 self.alias_data.is_loading = false;
-                *self.pending_alias_rebuild.borrow_mut() = true;
+                self.pending_alias_rebuild.set(true);
             }
 
             AppMsg::LoadPackageCommands => {
@@ -4047,7 +4057,7 @@ impl SimpleComponent for AppModel {
                         loaded: false,
                     })
                     .collect();
-                *self.pending_alias_rebuild.borrow_mut() = true;
+                self.pending_alias_rebuild.set(true);
             }
 
             AppMsg::ExpandPackage { name, source } => {
@@ -4076,7 +4086,7 @@ impl SimpleComponent for AppModel {
                 self.alias_data
                     .manager
                     .set_package_loading(&name, source, true);
-                *self.pending_alias_rebuild.borrow_mut() = true;
+                self.pending_alias_rebuild.set(true);
 
                 let pm = self.package_manager.clone();
                 let pkg_name = name.clone();
@@ -4155,7 +4165,7 @@ impl SimpleComponent for AppModel {
                 self.alias_data
                     .manager
                     .set_package_commands(&name, source, commands);
-                *self.pending_alias_rebuild.borrow_mut() = true;
+                self.pending_alias_rebuild.set(true);
             }
 
             AppMsg::PackageCommandsLoaded(package_commands) => {
@@ -4248,17 +4258,17 @@ impl SimpleComponent for AppModel {
             }
 
             AppMsg::DebouncedAliasSearchTrigger(_query) => {
-                *self.pending_alias_rebuild.borrow_mut() = true;
+                self.pending_alias_rebuild.set(true);
             }
 
             AppMsg::ToggleShowExistingAliases => {
                 self.alias_data.show_existing = !self.alias_data.show_existing;
-                *self.pending_alias_rebuild.borrow_mut() = true;
+                self.pending_alias_rebuild.set(true);
             }
 
             AppMsg::FilterAliasesByShell(shell) => {
                 self.alias_data.filter_shell = shell;
-                *self.pending_alias_rebuild.borrow_mut() = true;
+                self.pending_alias_rebuild.set(true);
             }
 
             AppMsg::ScheduleTask(task) => {
@@ -4272,7 +4282,7 @@ impl SimpleComponent for AppModel {
                     tracing::error!("Failed to save scheduled task: {}", e);
                 }
                 self.tasks_data.scheduler = config.scheduler.clone();
-                *self.pending_tasks_rebuild.borrow_mut() = true;
+                self.pending_tasks_rebuild.set(true);
                 drop(config);
 
                 if show_notif {
@@ -4296,7 +4306,7 @@ impl SimpleComponent for AppModel {
                         tracing::error!("Failed to save bulk scheduled tasks: {}", e);
                     }
                     self.tasks_data.scheduler = config.scheduler.clone();
-                    *self.pending_tasks_rebuild.borrow_mut() = true;
+                    self.pending_tasks_rebuild.set(true);
                 }
 
                 if show_notif {
@@ -4415,7 +4425,7 @@ impl SimpleComponent for AppModel {
                     };
 
                     self.tasks_data.running_task_id = Some(task_id.clone());
-                    *self.pending_tasks_rebuild.borrow_mut() = true;
+                    self.pending_tasks_rebuild.set(true);
 
                     let pm = self.package_manager.clone();
                     let config = self.config.clone();
@@ -4482,7 +4492,7 @@ impl SimpleComponent for AppModel {
                 if self.tasks_data.running_task_id.as_deref() == Some(task_id.as_str()) {
                     self.tasks_data.running_task_id = None;
                 }
-                *self.pending_tasks_rebuild.borrow_mut() = true;
+                self.pending_tasks_rebuild.set(true);
 
                 if self.config.borrow().show_notifications {
                     notifications::send_task_completed_notification(&package_name);
@@ -4509,7 +4519,7 @@ impl SimpleComponent for AppModel {
                 if self.tasks_data.running_task_id.as_deref() == Some(task_id.as_str()) {
                     self.tasks_data.running_task_id = None;
                 }
-                *self.pending_tasks_rebuild.borrow_mut() = true;
+                self.pending_tasks_rebuild.set(true);
 
                 if self.config.borrow().show_notifications {
                     notifications::send_task_failed_notification(&package_name, &error);
@@ -4535,7 +4545,7 @@ impl SimpleComponent for AppModel {
                 if self.tasks_data.running_task_id.as_deref() == Some(task_id.as_str()) {
                     self.tasks_data.running_task_id = None;
                 }
-                *self.pending_tasks_rebuild.borrow_mut() = true;
+                self.pending_tasks_rebuild.set(true);
                 sender.input(AppMsg::CheckScheduledTasks);
                 sender.input(AppMsg::SyncSchedulerRuntime {
                     notify_if_fallback: false,
@@ -4548,7 +4558,7 @@ impl SimpleComponent for AppModel {
                 }
                 TaskQueueAction::Refresh => {
                     self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
-                    *self.pending_tasks_rebuild.borrow_mut() = true;
+                    self.pending_tasks_rebuild.set(true);
                     sender.input(AppMsg::CheckScheduledTasks);
                 }
                 TaskQueueAction::RunNow(task_id) => {
@@ -4566,7 +4576,7 @@ impl SimpleComponent for AppModel {
                         }
                         self.tasks_data.scheduler = config.scheduler.clone();
                     }
-                    *self.pending_tasks_rebuild.borrow_mut() = true;
+                    self.pending_tasks_rebuild.set(true);
 
                     if self.tasks_data.running_task_id.is_none() {
                         sender.input(AppMsg::ExecuteScheduledTask(task_id));
@@ -4611,7 +4621,7 @@ impl SimpleComponent for AppModel {
                         retried
                     };
 
-                    *self.pending_tasks_rebuild.borrow_mut() = true;
+                    self.pending_tasks_rebuild.set(true);
                     let queue_state = if self.tasks_data.running_task_id.is_some() {
                         " They will run after the current task."
                     } else {
@@ -4654,7 +4664,7 @@ impl SimpleComponent for AppModel {
                         }
 
                         self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
-                        *self.pending_tasks_rebuild.borrow_mut() = true;
+                        self.pending_tasks_rebuild.set(true);
 
                         if self.tasks_data.running_task_id.is_none() {
                             sender.input(AppMsg::ExecuteScheduledTask(task.id));
@@ -4717,7 +4727,7 @@ impl SimpleComponent for AppModel {
                     }
                 }
                 self.tasks_data.scheduler = self.config.borrow().scheduler.clone();
-                *self.pending_tasks_rebuild.borrow_mut() = true;
+                self.pending_tasks_rebuild.set(true);
                 sender.input(AppMsg::ShowToast(
                     "Cleared completed tasks".to_string(),
                     ToastType::Success,
@@ -4986,18 +4996,18 @@ impl SimpleComponent for AppModel {
             widgets.history_clamp.set_child(Some(&history_content));
             widgets.content_stack.set_visible_child_name("history");
         } else if self.current_view == View::Tasks {
-            if *self.pending_tasks_rebuild.borrow() {
+            if self.pending_tasks_rebuild.get() {
                 let tasks_data = self.tasks_data.clone();
                 let sender_clone = _sender.clone();
                 let tasks_content = build_task_queue_view(&tasks_data, move |action| {
                     sender_clone.input(AppMsg::TaskQueueAction(action));
                 });
                 widgets.tasks_clamp.set_child(Some(&tasks_content));
-                *self.pending_tasks_rebuild.borrow_mut() = false;
+                self.pending_tasks_rebuild.set(false);
             }
             widgets.content_stack.set_visible_child_name("tasks");
         } else if self.current_view == View::Aliases {
-            if *self.pending_alias_rebuild.borrow() {
+            if self.pending_alias_rebuild.get() {
                 let alias_data = self.alias_data.clone();
                 let sender_clone = _sender.clone();
                 crate::ui::alias_view::update_alias_view(
@@ -5038,7 +5048,7 @@ impl SimpleComponent for AppModel {
                         }
                     },
                 );
-                *self.pending_alias_rebuild.borrow_mut() = false;
+                self.pending_alias_rebuild.set(false);
             }
             widgets.content_stack.set_visible_child_name("aliases");
         } else if self.current_view == View::Storage {
@@ -5194,8 +5204,8 @@ impl SimpleComponent for AppModel {
             .home_recommendations_group
             .set_visible(show_home_recs);
 
-        if *self.pending_home_recommendations_rebuild.borrow() {
-            *self.pending_home_recommendations_rebuild.borrow_mut() = false;
+        if self.pending_home_recommendations_rebuild.get() {
+            self.pending_home_recommendations_rebuild.set(false);
 
             while let Some(child) = widgets.home_recommendations_box.first_child() {
                 widgets.home_recommendations_box.remove(&child);
@@ -5576,8 +5586,8 @@ impl SimpleComponent for AppModel {
             dialog.present();
         }
 
-        if *self.pending_command_palette.borrow() {
-            *self.pending_command_palette.borrow_mut() = false;
+        if self.pending_command_palette.get() {
+            self.pending_command_palette.set(false);
 
             let palette = crate::ui::command_palette::CommandPalette::new(&widgets.split_view);
             palette.set_commands(self.command_palette_entries());

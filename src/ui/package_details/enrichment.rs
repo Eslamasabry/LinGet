@@ -161,31 +161,44 @@ pub fn build_section(
             let (tx, rx) = async_channel::bounded::<Vec<u8>>(1);
 
             relm4::spawn(async move {
-                if let Ok(bytes) = load_image_bytes(&url).await {
-                    let _ = tx.send(bytes).await;
+                match load_image_bytes(&url).await {
+                    Ok(bytes) => {
+                        let _ = tx.send(bytes).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load screenshot from {}: {}", url, e);
+                    }
                 }
             });
 
             let sender_clone = sender.clone();
+            // NOTE: Pixbuf decoding runs on the GTK main thread. For very large
+            // or malformed images this can briefly freeze the UI. Offloading to
+            // a worker thread is not practical because Pixbuf is !Send.
             glib::spawn_future_local(async move {
-                if let Ok(bytes) = rx.recv().await {
-                    let bytes = glib::Bytes::from_owned(bytes);
-                    let stream = gio::MemoryInputStream::from_bytes(&bytes);
-                    if let Ok(pixbuf) =
-                        Pixbuf::from_stream_at_scale_future(&stream, 800, 450, true).await
-                    {
-                        let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
-                        image_clone.set_paintable(Some(&texture));
+                match rx.recv().await {
+                    Ok(bytes) => {
+                        let bytes = glib::Bytes::from_owned(bytes);
+                        let stream = gio::MemoryInputStream::from_bytes(&bytes);
+                        match Pixbuf::from_stream_at_scale_future(&stream, 800, 450, true).await {
+                            Ok(pixbuf) => {
+                                let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
+                                image_clone.set_paintable(Some(&texture));
 
-                        let click = gtk::GestureClick::new();
-                        let texture_clone = texture.clone();
-                        let s_clone = sender_clone.clone();
-                        click.connect_released(move |_, _, _, _| {
-                            s_clone
-                                .input(DetailsPanelInput::PreviewScreenshot(texture_clone.clone()));
-                        });
-                        image_clone.add_controller(click);
+                                let click = gtk::GestureClick::new();
+                                let texture_clone = texture.clone();
+                                let s_clone = sender_clone.clone();
+                                click.connect_released(move |_, _, _, _| {
+                                    s_clone.input(DetailsPanelInput::PreviewScreenshot(
+                                        texture_clone.clone(),
+                                    ));
+                                });
+                                image_clone.add_controller(click);
+                            }
+                            Err(e) => tracing::warn!("Failed to decode screenshot: {}", e),
+                        }
                     }
+                    Err(e) => tracing::warn!("Screenshot channel receive failed: {}", e),
                 }
             });
 
