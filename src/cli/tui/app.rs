@@ -665,6 +665,10 @@ pub struct App {
 
     pub view_mode: ViewMode,
     pub show_sidebar: bool,
+    /// The full terminal area of the most recent frame; lets key handlers
+    /// derive viewport sizes (e.g. page-jump distances) from the same layout
+    /// the renderer uses. Zero until the first frame.
+    pub terminal_area: Rect,
     pub focus: Focus,
     pub active_details_tab: DetailsTab,
     pub compact: bool,
@@ -772,6 +776,7 @@ impl App {
             queue_completion_digest_emitted: false,
             view_mode: ViewMode::Browse,
             show_sidebar: true,
+            terminal_area: Rect::default(),
             focus: Focus::Sources,
             active_details_tab: DetailsTab::Info,
             compact: false,
@@ -3538,24 +3543,72 @@ impl App {
         self.set_package_cursor(self.cursor.saturating_sub(1));
     }
 
+    /// Layout regions for the most recent frame — used to derive viewport
+    /// sizes for paging so a "page" matches what is actually on screen.
+    fn frame_regions(&self) -> LayoutRegions {
+        compute_layout(self, self.terminal_area)
+    }
+
+    /// How many rows a PageUp/PageDown jump covers in the packages table:
+    /// the visible row count minus one line of overlap, so the row at the
+    /// old page edge stays visible for continuity. Falls back to a fixed
+    /// step before the first frame (or when the table isn't laid out).
+    fn package_page_step(&self) -> usize {
+        let table = self.frame_regions().packages;
+        // Same accounting as package_index_from_mouse_row: border + header +
+        // separator above, footer rows + border below.
+        let visible = table.height.saturating_sub(6) as usize;
+        if visible == 0 {
+            HALF_PAGE
+        } else {
+            visible.saturating_sub(1).max(1)
+        }
+    }
+
+    fn source_page_step(&self) -> usize {
+        let rail = self.frame_regions().sources;
+        let visible = rail.height.saturating_sub(2) as usize;
+        if visible == 0 {
+            HALF_PAGE
+        } else {
+            visible.saturating_sub(1).max(1)
+        }
+    }
+
+    fn queue_page_step(&self) -> usize {
+        let lanes = self.frame_regions().expanded_queue_tasks;
+        // Tasks render as 2-4-row blocks; a third of the lane height
+        // approximates the number of task entries visible per page.
+        let visible = (lanes.height / 3) as usize;
+        if visible == 0 {
+            HALF_PAGE
+        } else {
+            visible.max(1)
+        }
+    }
+
     fn page_down(&mut self) {
         if self.filtered.is_empty() {
             return;
         }
-        self.set_package_cursor(self.cursor.saturating_add(HALF_PAGE));
+        self.set_package_cursor(self.cursor.saturating_add(self.package_page_step()));
     }
 
     fn page_up(&mut self) {
-        self.set_package_cursor(self.cursor.saturating_sub(HALF_PAGE));
+        self.set_package_cursor(self.cursor.saturating_sub(self.package_page_step()));
     }
 
     fn source_page_down(&mut self) {
         let last = self.source_count().saturating_sub(1);
-        self.set_source_by_index(self.source_index().saturating_add(HALF_PAGE).min(last));
+        self.set_source_by_index(
+            self.source_index()
+                .saturating_add(self.source_page_step())
+                .min(last),
+        );
     }
 
     fn source_page_up(&mut self) {
-        self.set_source_by_index(self.source_index().saturating_sub(HALF_PAGE));
+        self.set_source_by_index(self.source_index().saturating_sub(self.source_page_step()));
     }
 
     fn top(&mut self) {
@@ -3608,7 +3661,7 @@ impl App {
             return;
         }
         let position = self.queue_visible_cursor_position(&visible);
-        let next = (position + HALF_PAGE).min(visible.len() - 1);
+        let next = (position + self.queue_page_step()).min(visible.len() - 1);
         self.set_task_cursor(visible[next]);
     }
 
@@ -3618,7 +3671,7 @@ impl App {
             return;
         }
         let position = self.queue_visible_cursor_position(&visible);
-        let previous = position.saturating_sub(HALF_PAGE);
+        let previous = position.saturating_sub(self.queue_page_step());
         self.set_task_cursor(visible[previous]);
     }
 
@@ -4951,6 +5004,7 @@ async fn run_app(
 
         let size = terminal.size()?;
         app.compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
+        app.terminal_area = Rect::new(0, 0, size.width, size.height);
 
         app.poll_loading();
         app.poll_search();
@@ -7071,6 +7125,49 @@ Remove   1 Package
 
         app.handle_key(key(KeyCode::Tab)).await;
         assert_eq!(app.focus, Focus::Sources);
+    }
+
+    #[tokio::test]
+    async fn paging_jumps_by_viewport_height() {
+        let mut app = test_app();
+        app.packages = (0..200)
+            .map(|i| {
+                make_pkg(
+                    &format!("pkg{:03}", i),
+                    PackageSource::Apt,
+                    PackageStatus::Installed,
+                )
+            })
+            .collect();
+        app.local_packages = app.packages.clone();
+        app.apply_filters();
+        app.focus = Focus::Packages;
+
+        // Before the first frame there is no layout; paging falls back to
+        // the fixed step.
+        app.handle_key(key(KeyCode::PageDown)).await;
+        assert_eq!(app.cursor, HALF_PAGE);
+
+        // Once a frame area is known, a page equals the visible table rows
+        // minus one line of overlap.
+        app.terminal_area = Rect::new(0, 0, 120, 40);
+        let table_rows =
+            compute_layout(&app, app.terminal_area).packages.height as usize - 6;
+        let step = app.package_page_step();
+        assert_eq!(step, table_rows - 1);
+        assert!(step > HALF_PAGE, "a 40-row terminal pages more than 10 rows");
+
+        let before = app.cursor;
+        app.handle_key(key(KeyCode::PageDown)).await;
+        assert_eq!(app.cursor, before + step);
+        app.handle_key(key(KeyCode::PageUp)).await;
+        assert_eq!(app.cursor, before);
+
+        // Ctrl+d/Ctrl+u take the same viewport-sized step.
+        app.handle_key(ctrl('d')).await;
+        assert_eq!(app.cursor, before + step);
+        app.handle_key(ctrl('u')).await;
+        assert_eq!(app.cursor, before);
     }
 
     #[tokio::test]
