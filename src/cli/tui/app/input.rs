@@ -211,7 +211,7 @@ impl App {
             CommandId::Update => self.prepare_action(TaskQueueAction::Update),
             CommandId::RunRecommended => self.run_recommended_action().await,
             CommandId::ViewChangelog => self.open_changelog_overlay(false).await,
-            CommandId::Search => self.searching = true,
+            CommandId::Search => self.enter_search_mode(),
             CommandId::Refresh => {
                 if !self.start_loading() {
                     self.set_status(self.catalog_busy_reason(), true);
@@ -234,11 +234,15 @@ impl App {
     }
 
     async fn handle_palette_key(&mut self, key: KeyEvent) {
+        use crate::cli::tui::line_edit;
+
         // Ctrl+C closes palette, never quits app
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.close_palette();
             return;
         }
+
+        self.palette_edit_cursor = line_edit::clamp(&self.palette_query, self.palette_edit_cursor);
 
         match key.code {
             KeyCode::Esc => self.close_palette(),
@@ -257,10 +261,12 @@ impl App {
                 self.close_palette();
                 self.execute_command(entry.id).await;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            // List navigation uses the arrow keys only — plain j/k must
+            // insert into the query (command labels contain them).
+            KeyCode::Up => {
                 self.palette_cursor = self.palette_cursor.saturating_sub(1);
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 let len = self.palette_entries().len();
                 if len > 0 {
                     self.palette_cursor = (self.palette_cursor + 1).min(len - 1);
@@ -284,24 +290,38 @@ impl App {
                     self.palette_cursor = (self.palette_cursor + 5).min(len - 1);
                 }
             }
-            KeyCode::Backspace | KeyCode::Delete => {
-                self.palette_query.pop();
+            KeyCode::Left => line_edit::move_left(&mut self.palette_edit_cursor),
+            KeyCode::Right => {
+                line_edit::move_right(&self.palette_query, &mut self.palette_edit_cursor);
+            }
+            KeyCode::Backspace => {
+                line_edit::backspace(&mut self.palette_query, &mut self.palette_edit_cursor);
+                self.clamp_palette_cursor();
+            }
+            KeyCode::Delete => {
+                line_edit::delete_forward(&mut self.palette_query, &mut self.palette_edit_cursor);
                 self.clamp_palette_cursor();
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.palette_query.clear();
+                line_edit::clear(&mut self.palette_query, &mut self.palette_edit_cursor);
                 self.clamp_palette_cursor();
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                super::delete_last_word(&mut self.palette_query);
+                line_edit::delete_word_back(&mut self.palette_query, &mut self.palette_edit_cursor);
                 self.clamp_palette_cursor();
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                line_edit::move_home(&mut self.palette_edit_cursor);
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                line_edit::move_end(&self.palette_query, &mut self.palette_edit_cursor);
             }
             KeyCode::Char(ch)
                 if !ch.is_control()
                     && !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                self.palette_query.push(ch);
+                line_edit::insert(&mut self.palette_query, &mut self.palette_edit_cursor, ch);
                 self.clamp_palette_cursor();
             }
             _ => {}
@@ -502,6 +522,7 @@ impl App {
                     self.set_status("Provider results hidden; local filter kept", true);
                 } else if !self.search.is_empty() {
                     self.search.clear();
+                    self.search_cursor = 0;
                     self.apply_filters();
                     self.set_status("Search cleared", true);
                 } else if !self.selected.is_empty() {
@@ -790,7 +811,7 @@ impl App {
             col,
             row,
         ) {
-            self.searching = true;
+            self.enter_search_mode();
         }
     }
 
@@ -869,7 +890,7 @@ impl App {
         }
 
         if !self.searching {
-            self.searching = true;
+            self.enter_search_mode();
         }
     }
 

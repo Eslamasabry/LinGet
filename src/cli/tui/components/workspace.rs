@@ -131,8 +131,7 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     control_spans.push(Span::styled("   |   ", dim()));
     if app.searching {
         control_spans.push(Span::styled("/ ", accent()));
-        control_spans.push(Span::styled(app.search.clone(), text()));
-        control_spans.push(Span::styled("▌", accent()));
+        control_spans.extend(caret_spans(&app.search, app.search_cursor));
     } else if app.search.is_empty() {
         control_spans.push(Span::styled(
             "/ Search packages (regex supported)",
@@ -144,6 +143,25 @@ fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
         control_spans.push(Span::styled("  Esc clears", dim()));
     }
     frame.render_widget(Paragraph::new(Line::from(control_spans)), rows[1]);
+}
+
+/// Render editable text with a block caret: the char under the cursor is
+/// reversed; a cursor at the end shows as a reversed space.
+pub(crate) fn caret_spans(input: &str, cursor: usize) -> Vec<Span<'static>> {
+    let (before, under, after) = crate::cli::tui::line_edit::split_at_cursor(input, cursor);
+    let caret_style = text().add_modifier(Modifier::REVERSED);
+    let mut spans = Vec::with_capacity(3);
+    if !before.is_empty() {
+        spans.push(Span::styled(before, text()));
+    }
+    spans.push(Span::styled(
+        under.map_or_else(|| " ".to_string(), |ch| ch.to_string()),
+        caret_style,
+    ));
+    if !after.is_empty() {
+        spans.push(Span::styled(after, text()));
+    }
+    spans
 }
 
 fn top_status_line(app: &App, width: usize) -> Line<'static> {

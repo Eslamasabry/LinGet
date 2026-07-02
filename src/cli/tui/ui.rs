@@ -1324,16 +1324,20 @@ fn draw_palette_overlay(frame: &mut Frame, app: &App) {
         .split(inner);
 
     let query_line = if app.palette_query.is_empty() {
-        Line::from(vec![
-            Span::styled("> ", key_hint()),
-            Span::styled("Type to filter commands", dim()),
-        ])
+        let mut spans = vec![Span::styled("> ", key_hint())];
+        spans.extend(crate::cli::tui::components::workspace::caret_spans(
+            &app.palette_query,
+            app.palette_edit_cursor,
+        ));
+        spans.push(Span::styled("Type to filter commands", dim()));
+        Line::from(spans)
     } else {
-        Line::from(vec![
-            Span::styled("> ", key_hint()),
-            Span::styled(app.palette_query.clone(), text()),
-            Span::styled("█", accent()),
-        ])
+        let mut spans = vec![Span::styled("> ", key_hint())];
+        spans.extend(crate::cli::tui::components::workspace::caret_spans(
+            &app.palette_query,
+            app.palette_edit_cursor,
+        ));
+        Line::from(spans)
     };
     frame.render_widget(Paragraph::new(query_line), sections[0]);
 
@@ -1800,6 +1804,9 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
             "  Enter runs provider search   Esc {}",
             app.search_escape_hint_label()
         )));
+        lines.push(Line::from(
+            "  ←→ move caret   Home/End or ^a/^e jump   ^w delete word   ^u clear",
+        ));
     }
 
     lines.push(Line::from(""));

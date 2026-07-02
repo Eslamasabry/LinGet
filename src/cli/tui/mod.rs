@@ -1,6 +1,7 @@
 mod app;
 pub mod components;
 pub(crate) mod format;
+pub(crate) mod line_edit;
 pub mod state;
 mod theme;
 mod ui;

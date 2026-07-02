@@ -670,6 +670,11 @@ pub struct App {
     pub compact: bool,
     pub confirming: Option<PendingAction>,
     pub showing_help: bool,
+    /// Caret position (char index) inside the search query.
+    pub search_cursor: usize,
+    /// Caret position (char index) inside the palette query. Distinct from
+    /// `palette_cursor`, which is the selected list entry.
+    pub palette_edit_cursor: usize,
     /// Scroll offset (in lines) for the help overlay.
     pub help_scroll: usize,
     /// Scroll offset (in rows) for the import-preview overlay.
@@ -772,6 +777,8 @@ impl App {
             compact: false,
             confirming: None,
             showing_help: false,
+            search_cursor: 0,
+            palette_edit_cursor: 0,
             help_scroll: 0,
             import_preview_scroll: 0,
             quit_armed_at: None,
@@ -1065,6 +1072,7 @@ impl App {
         self.filter = Filter::from_config_value(config.tui_last_filter.as_deref());
         self.focus = Focus::from_config_value(config.tui_last_focus.as_deref());
         self.search = config.tui_last_search.clone();
+        self.search_cursor = crate::cli::tui::line_edit::end(&self.search);
         self.source = config
             .last_source_filter
             .as_deref()
@@ -4002,17 +4010,26 @@ impl App {
         }
     }
 
+    /// Enter search-input mode with the caret at the end of the current
+    /// query. All entry points must go through this so the caret is placed.
+    pub(crate) fn enter_search_mode(&mut self) {
+        self.searching = true;
+        self.search_cursor = crate::cli::tui::line_edit::end(&self.search);
+    }
+
     fn open_palette(&mut self) {
         self.showing_help = false;
         self.searching = false;
         self.showing_palette = true;
         self.palette_query.clear();
+        self.palette_edit_cursor = 0;
         self.palette_cursor = 0;
     }
 
     fn close_palette(&mut self) {
         self.showing_palette = false;
         self.palette_query.clear();
+        self.palette_edit_cursor = 0;
         self.palette_cursor = 0;
     }
 
@@ -4085,6 +4102,14 @@ impl App {
     }
 
     fn handle_search_key(&mut self, key: KeyEvent) {
+        use crate::cli::tui::line_edit;
+
+        self.search_cursor = line_edit::clamp(&self.search, self.search_cursor);
+
+        // Editing (as opposed to caret movement) invalidates any provider
+        // results and re-filters the local catalog.
+        let mut edited = false;
+
         match key.code {
             KeyCode::Esc => {
                 self.searching = false;
@@ -4109,41 +4134,46 @@ impl App {
                     self.start_search();
                 }
             }
-            KeyCode::Backspace | KeyCode::Delete => {
-                if self.search_results.is_some() {
-                    self.restore_local_catalog_with_current_search();
-                }
-                self.search.pop();
-                self.apply_filters();
+            KeyCode::Left => line_edit::move_left(&mut self.search_cursor),
+            KeyCode::Right => line_edit::move_right(&self.search, &mut self.search_cursor),
+            KeyCode::Home => line_edit::move_home(&mut self.search_cursor),
+            KeyCode::End => line_edit::move_end(&self.search, &mut self.search_cursor),
+            KeyCode::Backspace => {
+                edited = line_edit::backspace(&mut self.search, &mut self.search_cursor);
             }
-            // Ctrl+U clears the query, Ctrl+W deletes the last word — the
-            // readline conventions users reach for in any text field.
+            KeyCode::Delete => {
+                edited = line_edit::delete_forward(&mut self.search, &mut self.search_cursor);
+            }
+            // Readline conventions: Ctrl+U clears the line, Ctrl+W deletes
+            // the word before the caret, Ctrl+A/Ctrl+E jump to the ends.
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.search_results.is_some() {
-                    self.restore_local_catalog_with_current_search();
-                }
-                self.search.clear();
-                self.apply_filters();
+                edited = line_edit::clear(&mut self.search, &mut self.search_cursor);
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.search_results.is_some() {
-                    self.restore_local_catalog_with_current_search();
-                }
-                delete_last_word(&mut self.search);
-                self.apply_filters();
+                edited = line_edit::delete_word_back(&mut self.search, &mut self.search_cursor);
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                line_edit::move_home(&mut self.search_cursor);
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                line_edit::move_end(&self.search, &mut self.search_cursor);
             }
             KeyCode::Char(ch)
                 if !ch.is_control()
                     && !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                if self.search_results.is_some() {
-                    self.restore_local_catalog_with_current_search();
-                }
-                self.search.push(ch);
-                self.apply_filters();
+                line_edit::insert(&mut self.search, &mut self.search_cursor, ch);
+                edited = true;
             }
             _ => {}
+        }
+
+        if edited {
+            if self.search_results.is_some() {
+                self.restore_local_catalog_with_current_search();
+            }
+            self.apply_filters();
         }
     }
 
@@ -4666,21 +4696,6 @@ impl App {
     pub fn pulse_frame(&self) -> char {
         const FRAMES: [char; 8] = ['·', '•', '●', '⬤', '●', '•', '·', ' '];
         FRAMES[(self.tick as usize / 2) % FRAMES.len()]
-    }
-}
-
-/// Remove the trailing word (and the whitespace before it) from a text
-/// input, matching the readline Ctrl+W behavior.
-pub(crate) fn delete_last_word(text: &mut String) {
-    while text.ends_with(char::is_whitespace) {
-        text.pop();
-    }
-    while text
-        .chars()
-        .last()
-        .is_some_and(|ch| !ch.is_whitespace())
-    {
-        text.pop();
     }
 }
 
@@ -6048,7 +6063,7 @@ Remove   1 Package
             }],
         };
         app.apply_provider_search_catalog(catalog, false);
-        app.searching = true;
+        app.enter_search_mode();
 
         app.handle_key(key(KeyCode::Backspace)).await;
 
@@ -7056,6 +7071,69 @@ Remove   1 Package
 
         app.handle_key(key(KeyCode::Tab)).await;
         assert_eq!(app.focus, Focus::Sources);
+    }
+
+    #[tokio::test]
+    async fn search_input_supports_caret_editing() {
+        let mut app = test_app();
+        app.execute_command(CommandId::Search).await;
+        assert!(app.searching);
+
+        for ch in "vm".chars() {
+            app.handle_key(key(KeyCode::Char(ch))).await;
+        }
+        // Move the caret between 'v' and 'm' and insert the missing 'i'.
+        app.handle_key(key(KeyCode::Left)).await;
+        app.handle_key(key(KeyCode::Char('i'))).await;
+        assert_eq!(app.search, "vim");
+        assert_eq!(app.search_cursor, 2);
+
+        // Forward delete removes the char under the caret.
+        app.handle_key(key(KeyCode::Delete)).await;
+        assert_eq!(app.search, "vi");
+        assert_eq!(app.search_cursor, 2);
+
+        // Home + Delete removes the first char; End restores the caret.
+        app.handle_key(key(KeyCode::Home)).await;
+        app.handle_key(key(KeyCode::Delete)).await;
+        assert_eq!(app.search, "i");
+        app.handle_key(key(KeyCode::End)).await;
+        assert_eq!(app.search_cursor, 1);
+
+        // Ctrl+W from mid-query deletes the word before the caret only.
+        app.search = "foo bar".to_string();
+        app.search_cursor = 3;
+        app.handle_key(ctrl('w')).await;
+        assert_eq!(app.search, " bar");
+        assert_eq!(app.search_cursor, 0);
+
+        // Ctrl+U clears the line.
+        app.handle_key(ctrl('u')).await;
+        assert_eq!(app.search, "");
+        assert_eq!(app.search_cursor, 0);
+    }
+
+    #[tokio::test]
+    async fn palette_query_supports_caret_editing_and_typing_jk() {
+        let mut app = test_app();
+        app.execute_command(CommandId::OpenPalette).await;
+        assert!(app.showing_palette);
+
+        // j and k must insert into the query, not move the list selection.
+        for ch in "jk".chars() {
+            app.handle_key(key(KeyCode::Char(ch))).await;
+        }
+        assert_eq!(app.palette_query, "jk");
+
+        // Caret editing mirrors the search box.
+        app.handle_key(key(KeyCode::Left)).await;
+        app.handle_key(key(KeyCode::Char('x'))).await;
+        assert_eq!(app.palette_query, "jxk");
+        app.handle_key(key(KeyCode::Backspace)).await;
+        assert_eq!(app.palette_query, "jk");
+        app.handle_key(ctrl('u')).await;
+        assert_eq!(app.palette_query, "");
+        assert_eq!(app.palette_edit_cursor, 0);
     }
 
     #[tokio::test]
