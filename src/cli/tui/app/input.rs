@@ -1055,61 +1055,27 @@ impl App {
         self.prepare_default_action_for_cursor();
     }
 
-    fn task_index_from_mouse_row(&self, row: u16, task_rect: &Rect) -> Option<usize> {
-        if task_rect.width == 0 || task_rect.height == 0 || self.tasks.is_empty() {
-            return None;
-        }
-        if row < task_rect.y || row >= task_rect.y + task_rect.height {
-            return None;
-        }
-
-        let visible_indices = self.queue_visible_task_indices();
-        if visible_indices.is_empty() {
-            return None;
-        }
-
-        let visible = task_rect.height as usize;
-        let cursor_pos = self.queue_visible_cursor_position(&visible_indices);
-        let start = ui::window_start(visible_indices.len(), visible.max(1), cursor_pos);
-        let clicked = start + row.saturating_sub(task_rect.y) as usize;
-        visible_indices.get(clicked).copied()
-    }
-
     async fn handle_mouse_expanded_queue_click(
         &mut self,
         col: u16,
         row: u16,
         regions: &LayoutRegions,
     ) {
-        if let Some(action) = ui::queue_hint_hit_test(
-            regions.expanded_queue_hints,
-            regions.expanded_queue_logs.width > 0,
-            col,
-            row,
-        ) {
-            self.focus = Focus::Queue;
-            match action {
-                ui::QueueHintAction::Retry => self.execute_command(CommandId::QueueRetry).await,
-                ui::QueueHintAction::RetrySafe => {
-                    self.execute_command(CommandId::QueueRetrySafe).await;
-                }
-                ui::QueueHintAction::Remediate => {
-                    self.execute_command(CommandId::QueueRemediate).await;
+        use crate::cli::tui::components::queue_board::{queue_click_target, RowTarget};
+
+        // Any click inside the queue panel focuses it.
+        self.focus = Focus::Queue;
+
+        match queue_click_target(self, regions.expanded_queue_tasks, col, row) {
+            Some(RowTarget::Task(id)) => {
+                if let Some(index) = self.tasks.iter().position(|task| task.id == id) {
+                    self.set_task_cursor(index);
                 }
             }
-            return;
-        }
-
-        if let Some(clicked_index) =
-            self.task_index_from_mouse_row(row, &regions.expanded_queue_tasks)
-        {
-            self.focus = Focus::Queue;
-            self.set_task_cursor(clicked_index);
-            return;
-        }
-
-        if rect_contains(regions.expanded_queue_logs, (col, row)) {
-            self.focus = Focus::Queue;
+            Some(RowTarget::RetrySafeAll) => {
+                self.execute_command(CommandId::QueueRetrySafe).await;
+            }
+            None => {}
         }
     }
 

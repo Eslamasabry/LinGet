@@ -7408,43 +7408,150 @@ Remove   1 Package
         assert_eq!(app.task_log_scroll, 1);
     }
 
+    /// The x-columns of the three kanban lanes, mirroring
+    /// queue_board's Ratio(1,3)+gutter split of the lanes area.
+    fn kanban_lane_columns(lanes: Rect) -> [Rect; 3] {
+        let cols = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Ratio(1, 3),
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Ratio(1, 3),
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Ratio(1, 3),
+            ])
+            .split(lanes);
+        [cols[0], cols[2], cols[4]]
+    }
+
     #[tokio::test]
-    async fn mouse_queue_hint_clicks_retry() {
+    async fn mouse_click_selects_task_in_kanban_attention_lane() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
         app.queue_expanded = true;
         app.focus = Focus::Queue;
 
-        let mut failed = TaskQueueEntry::new(
+        let mut first = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        first.mark_failed("err-a".into());
+        let mut second = TaskQueueEntry::new(
             TaskQueueAction::Update,
             "APT:b".into(),
             "b".into(),
             PackageSource::Apt,
         );
-        failed.mark_failed("err".into());
-        app.tasks = vec![failed];
+        second.mark_failed("err-b".into());
+        app.tasks = vec![first, second];
+        app.task_cursor = 0;
 
         let regions = layout_regions(&app);
-        let hint_row = regions.expanded_queue_hints.y;
-        let before = app.tasks.len();
-        let retry_col = (regions.expanded_queue_hints.x
-            ..regions.expanded_queue_hints.x + regions.expanded_queue_hints.width)
-            .find(|col| {
-                ui::queue_hint_hit_test(
-                    regions.expanded_queue_hints,
-                    regions.expanded_queue_logs.width > 0,
-                    *col,
-                    hint_row,
-                ) == Some(ui::QueueHintAction::Retry)
-            })
-            .expect("retry area");
+        let lanes = regions.expanded_queue_tasks;
+        assert!(lanes.width > 0 && lanes.height > 0);
+        let attention = kanban_lane_columns(lanes)[1];
+
+        // Lane rows: title(0), blank(1), then each failed task's 4-row block
+        // (name, source, error, chips). Click the second task's name row.
         app.handle_mouse(
-            mouse(MouseEventKind::Down(MouseButton::Left), retry_col, hint_row),
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                attention.x + 2,
+                lanes.y + 6,
+            ),
             &regions,
         )
         .await;
-        assert_eq!(app.tasks.len(), before + 1);
-        assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
+        assert_eq!(app.task_cursor, 1);
+
+        // Clicking a chips row of the first task selects that task too.
+        app.handle_mouse(
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                attention.x + 2,
+                lanes.y + 5,
+            ),
+            &regions,
+        )
+        .await;
+        assert_eq!(app.task_cursor, 0);
+
+        // Clicking the blank row under the lane title selects nothing.
+        app.set_task_cursor(1);
+        app.handle_mouse(
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                attention.x + 2,
+                lanes.y + 1,
+            ),
+            &regions,
+        )
+        .await;
+        assert_eq!(app.task_cursor, 1);
+    }
+
+    #[test]
+    fn kanban_click_targets_match_rendered_rows() {
+        use crate::cli::tui::components::queue_board::{queue_click_target, RowTarget};
+
+        let mut app = test_app();
+        let mut running = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:run".into(),
+            "run".into(),
+            PackageSource::Apt,
+        );
+        running.mark_running();
+        let running_id = running.id.clone();
+        let mut failed_a = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:fa".into(),
+            "fa".into(),
+            PackageSource::Apt,
+        );
+        failed_a.mark_failed("err".into());
+        let mut failed_b = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "APT:fb".into(),
+            "fb".into(),
+            PackageSource::Apt,
+        );
+        failed_b.mark_failed("err".into());
+        app.tasks = vec![running, failed_a, failed_b];
+
+        let lanes = Rect::new(0, 5, 90, 14);
+        let cols = kanban_lane_columns(lanes);
+
+        // Running lane: title(0), blank(1), task name row(2) + source row(3).
+        assert_eq!(
+            queue_click_target(&app, lanes, cols[0].x + 1, lanes.y + 2),
+            Some(RowTarget::Task(running_id.clone()))
+        );
+        assert_eq!(
+            queue_click_target(&app, lanes, cols[0].x + 1, lanes.y + 3),
+            Some(RowTarget::Task(running_id))
+        );
+
+        // Attention lane with two 4-row failure blocks ends with the
+        // "[A] retry all" bulk row at offset 2 + 4 + 4 = 10.
+        assert_eq!(
+            queue_click_target(&app, lanes, cols[1].x + 1, lanes.y + 10),
+            Some(RowTarget::RetrySafeAll)
+        );
+
+        // Gutter between lanes hits nothing.
+        assert_eq!(
+            queue_click_target(&app, lanes, cols[0].x + cols[0].width, lanes.y + 2),
+            None
+        );
+
+        // Below the last rendered row hits nothing.
+        assert_eq!(
+            queue_click_target(&app, lanes, cols[1].x + 1, lanes.y + 12),
+            None
+        );
     }
 
     #[tokio::test]

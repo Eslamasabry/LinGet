@@ -17,7 +17,6 @@ pub struct LayoutRegions {
     pub expanded_queue: Rect,
     pub expanded_queue_tasks: Rect,
     pub expanded_queue_logs: Rect,
-    pub expanded_queue_hints: Rect,
     pub palette: Rect,
     pub preflight_modal: Rect,
 }
@@ -61,8 +60,7 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         compute_full_regions(app, workspace_area)
     };
 
-    let (expanded_queue_tasks, expanded_queue_logs, expanded_queue_hints) =
-        expanded_queue_sections(expanded_queue);
+    let (expanded_queue_tasks, expanded_queue_logs) = expanded_queue_sections(expanded_queue);
 
     LayoutRegions {
         header_filter_row: chunks[0],
@@ -74,7 +72,6 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         expanded_queue,
         expanded_queue_tasks,
         expanded_queue_logs,
-        expanded_queue_hints,
         palette: if app.showing_palette {
             palette_overlay_rect(area)
         } else {
@@ -236,9 +233,12 @@ pub fn sources_panel_content_width(app: &App) -> usize {
     max_width
 }
 
-pub fn expanded_queue_sections(area: Rect) -> (Rect, Rect, Rect) {
+/// Mouse regions of the expanded queue: (lanes, details strip). Derived from
+/// the kanban board's own geometry (`queue_board::board_regions`) so click
+/// mapping always matches what is drawn.
+pub fn expanded_queue_sections(area: Rect) -> (Rect, Rect) {
     if area.width <= 2 || area.height <= 2 {
-        return (Rect::default(), Rect::default(), Rect::default());
+        return (Rect::default(), Rect::default());
     }
 
     let inner = area.inner(Margin {
@@ -246,24 +246,12 @@ pub fn expanded_queue_sections(area: Rect) -> (Rect, Rect, Rect) {
         horizontal: 1,
     });
     if inner.width == 0 || inner.height == 0 {
-        return (Rect::default(), Rect::default(), Rect::default());
+        return (Rect::default(), Rect::default());
     }
 
-    if inner.height >= 8 {
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(55),
-                Constraint::Percentage(35),
-                Constraint::Length(1),
-            ])
-            .split(inner);
-        (sections[0], sections[1], sections[2])
-    } else {
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(inner);
-        (sections[0], Rect::default(), sections[1])
+    match crate::cli::tui::components::queue_board::board_regions(inner) {
+        Some((lanes, details)) => (lanes, details),
+        // Summary-only fallback: no per-task rows to click.
+        None => (Rect::default(), Rect::default()),
     }
 }

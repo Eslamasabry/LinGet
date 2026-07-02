@@ -5,7 +5,6 @@ use super::app::{
 use super::format::truncate_to_width;
 use super::theme::*;
 use crate::cli::tui::components::header::draw_filter_bar;
-pub use crate::cli::tui::components::header::QueueHintAction;
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::models::history::{TaskQueueEntry, TaskQueueStatus};
 use crate::models::{Package, PackageSource, PackageStatus};
@@ -151,43 +150,6 @@ pub fn header_filter_hit_test(
     crate::cli::tui::components::header::header_action_hit_test(app, header_filter_row, col, row)
 }
 
-pub fn queue_hint_hit_test(
-    hint_rect: Rect,
-    _has_log_actions: bool,
-    col: u16,
-    row: u16,
-) -> Option<QueueHintAction> {
-    const REMEDIATE_HINT: &str = "M apply filtered fixes";
-    const RETRY_SAFE_HINT: &str = "A retry safe";
-
-    if hint_rect.width == 0 || hint_rect.height == 0 || row != hint_rect.y {
-        return None;
-    }
-    if col < hint_rect.x || col >= hint_rect.x + hint_rect.width {
-        return None;
-    }
-
-    let rel_col = (col - hint_rect.x) as usize;
-    let retry_start = 0usize;
-    let retry_width = UnicodeWidthStr::width("R retry selected");
-    if rel_col >= retry_start && rel_col < retry_start + retry_width {
-        return Some(QueueHintAction::Retry);
-    }
-
-    let remediate_start = UnicodeWidthStr::width("R retry selected  ");
-    let remediate_width = UnicodeWidthStr::width(REMEDIATE_HINT);
-    if rel_col >= remediate_start && rel_col < remediate_start + remediate_width {
-        return Some(QueueHintAction::Remediate);
-    }
-
-    let retry_safe_start = UnicodeWidthStr::width("R retry selected  M apply filtered fixes  ");
-    let retry_safe_width = UnicodeWidthStr::width(RETRY_SAFE_HINT);
-    if rel_col >= retry_safe_start && rel_col < retry_safe_start + retry_safe_width {
-        return Some(QueueHintAction::RetrySafe);
-    }
-
-    None
-}
 pub fn compose_left_right<'a>(
     mut left: Vec<Span<'a>>,
     right: Vec<Span<'a>>,

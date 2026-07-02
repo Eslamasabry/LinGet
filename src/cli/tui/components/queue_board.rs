@@ -38,17 +38,32 @@ use ratatui::{
     Frame,
 };
 
-/// Entry point. Given the inner area of the queue container (no outer border
-/// drawn here), renders the three-lane board plus a details strip.
-pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
-    if area.height < 8 {
-        // Too small for the full board; fall back to a one-line summary.
-        draw_summary_only(frame, app, area);
-        return;
-    }
+/// What a mouse click on a lane row refers to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowTarget {
+    /// A specific task; the payload is the task id.
+    Task(String),
+    /// The "[A] retry all" bulk action in the attention lane.
+    RetrySafeAll,
+}
 
-    // Split: legend (1) + recommended action (2) + lanes (min) + divider (1) + details strip (2).
-    let rows = Layout::default()
+/// One rendered lane row plus what it refers to, so mouse hit-testing reads
+/// from exactly the rows that were drawn.
+struct LaneRow {
+    line: Line<'static>,
+    target: Option<RowTarget>,
+}
+
+impl LaneRow {
+    fn plain(line: Line<'static>) -> Self {
+        LaneRow { line, target: None }
+    }
+}
+
+/// The board's vertical split: legend (1) + recommended action (2) +
+/// lanes (min) + divider (1) + details strip (2).
+fn board_rows(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
@@ -57,7 +72,29 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(1),
             Constraint::Length(2),
         ])
-        .split(area);
+        .split(area)
+}
+
+/// The (lanes, details-strip) rects for a board drawn into `area`, or `None`
+/// when the board falls back to the one-line summary. Mouse hit-testing must
+/// use this so it can never disagree with the draw path.
+pub fn board_regions(area: Rect) -> Option<(Rect, Rect)> {
+    if area.height < 8 {
+        return None;
+    }
+    let rows = board_rows(area);
+    Some((rows[2], rows[4]))
+}
+
+/// Entry point. Given the inner area of the queue container (no outer border
+/// drawn here), renders the three-lane board plus a details strip.
+pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
+    if board_regions(area).is_none() {
+        // Too small for the full board; fall back to a one-line summary.
+        draw_summary_only(frame, app, area);
+        return;
+    }
+    let rows = board_rows(area);
 
     draw_legend(frame, app, rows[0]);
     draw_recommendation_strip(frame, app, rows[1]);
@@ -226,8 +263,9 @@ fn draw_divider(frame: &mut Frame, area: Rect) {
     );
 }
 
-fn draw_lanes(frame: &mut Frame, app: &App, area: Rect) {
-    // Three columns, with 1-cell gutters between.
+/// The three lane columns (with their 1-cell gutters skipped) for a lanes
+/// area. Index 0/1/2 → Running / Needs attention / Done.
+fn lane_columns(area: Rect) -> [Rect; 3] {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -238,15 +276,19 @@ fn draw_lanes(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Ratio(1, 3),
         ])
         .split(area);
+    [cols[0], cols[2], cols[4]]
+}
 
+/// Build the three lane specs and hand each to `visit`, in lane order.
+/// Single source of truth for lane composition — used by both the draw path
+/// and mouse hit-testing.
+fn with_lane_specs(app: &App, mut visit: impl FnMut(usize, &LaneSpec)) {
     let (running, pending, failed, done) = partition_tasks(app);
 
     // LANE: Running (+ pending folded in after a subtle break).
-    draw_lane(
-        frame,
-        app,
-        cols[0],
-        LaneSpec {
+    visit(
+        0,
+        &LaneSpec {
             title: "RUNNING",
             title_glyph: "◉",
             title_style: loading().add_modifier(Modifier::BOLD),
@@ -265,11 +307,9 @@ fn draw_lanes(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         None
     };
-    draw_lane(
-        frame,
-        app,
-        cols[2],
-        LaneSpec {
+    visit(
+        1,
+        &LaneSpec {
             title: "NEEDS ATTENTION",
             title_glyph: "⚠",
             title_style: warning().add_modifier(Modifier::BOLD),
@@ -287,11 +327,9 @@ fn draw_lanes(frame: &mut Frame, app: &App, area: Rect) {
     // LANE: Done.
     let done_visible: Vec<&TaskQueueEntry> = done.iter().take(10).copied().collect();
     let done_overflow = done.len().saturating_sub(done_visible.len());
-    draw_lane(
-        frame,
-        app,
-        cols[4],
-        LaneSpec {
+    visit(
+        2,
+        &LaneSpec {
             title: "DONE",
             title_glyph: "✓",
             title_style: success().add_modifier(Modifier::BOLD),
@@ -309,6 +347,43 @@ fn draw_lanes(frame: &mut Frame, app: &App, area: Rect) {
             },
         },
     );
+}
+
+fn draw_lanes(frame: &mut Frame, app: &App, area: Rect) {
+    let columns = lane_columns(area);
+    with_lane_specs(app, |index, spec| {
+        draw_lane(frame, app, columns[index], spec);
+    });
+}
+
+/// The task or bulk action under a mouse position inside the lanes area,
+/// derived from the same rows the draw path renders.
+pub fn queue_click_target(app: &App, lanes: Rect, col: u16, row: u16) -> Option<RowTarget> {
+    if lanes.width == 0 || lanes.height == 0 {
+        return None;
+    }
+    if row < lanes.y
+        || row >= lanes.y.saturating_add(lanes.height)
+        || col < lanes.x
+        || col >= lanes.x.saturating_add(lanes.width)
+    {
+        return None;
+    }
+
+    let columns = lane_columns(lanes);
+    let lane_index = columns
+        .iter()
+        .position(|c| c.width > 0 && col >= c.x && col < c.x.saturating_add(c.width))?;
+    let rel_row = (row - lanes.y) as usize;
+
+    let mut target = None;
+    with_lane_specs(app, |index, spec| {
+        if index == lane_index {
+            let rows = lane_rows(app, spec, columns[lane_index].width as usize);
+            target = rows.into_iter().nth(rel_row).and_then(|r| r.target);
+        }
+    });
+    target
 }
 
 fn partition_tasks(
@@ -346,70 +421,88 @@ struct LaneSpec<'a> {
     bulk_action: Option<(&'a str, String)>,
 }
 
-fn draw_lane(frame: &mut Frame, app: &App, area: Rect, spec: LaneSpec) {
-    let inner_width = area.width as usize;
-    let mut lines: Vec<Line<'static>> = Vec::new();
+fn draw_lane(frame: &mut Frame, app: &App, area: Rect, spec: &LaneSpec) {
+    let rows = lane_rows(app, spec, area.width as usize);
+    let lines: Vec<Line<'static>> = rows.into_iter().map(|row| row.line).collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Compose one lane's rows. Every visual row is emitted here, tagged with
+/// what it refers to, so `queue_click_target` sees the same geometry that
+/// gets drawn.
+fn lane_rows(app: &App, spec: &LaneSpec, inner_width: usize) -> Vec<LaneRow> {
+    let mut rows: Vec<LaneRow> = Vec::new();
 
     // Title row
-    lines.push(Line::from(vec![
+    rows.push(LaneRow::plain(Line::from(vec![
         Span::styled(format!(" {} ", spec.title_glyph), spec.title_style),
         Span::styled(spec.title.to_string(), spec.title_style),
-    ]));
-    lines.push(Line::from(""));
+    ])));
+    rows.push(LaneRow::plain(Line::from("")));
 
     // Primary task list
     if spec.primary.is_empty() && spec.secondary.is_none_or(|(s, _)| s.is_empty()) {
-        lines.push(Line::from(vec![Span::styled("   empty", dim())]));
+        rows.push(LaneRow::plain(Line::from(vec![Span::styled(
+            "   empty",
+            dim(),
+        )])));
     } else {
         for task in spec.primary {
-            append_task_rows(&mut lines, app, task, inner_width);
+            append_task_rows(&mut rows, app, task, inner_width);
         }
 
         if let Some((secondary, label)) = spec.secondary {
             if !secondary.is_empty() {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
+                rows.push(LaneRow::plain(Line::from("")));
+                rows.push(LaneRow::plain(Line::from(vec![
                     Span::styled("   ", dim()),
                     Span::styled(format!("{} {}", secondary.len(), label), muted()),
-                ]));
+                ])));
                 for task in secondary.iter().take(3) {
-                    append_task_rows(&mut lines, app, task, inner_width);
+                    append_task_rows(&mut rows, app, task, inner_width);
                 }
                 if secondary.len() > 3 {
-                    lines.push(Line::from(vec![
+                    rows.push(LaneRow::plain(Line::from(vec![
                         Span::styled("   ", dim()),
                         Span::styled(format!("…+{} more", secondary.len() - 3), dim()),
-                    ]));
+                    ])));
                 }
             }
         }
     }
 
-    if let Some(note) = spec.more_note {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
+    if let Some(note) = &spec.more_note {
+        rows.push(LaneRow::plain(Line::from("")));
+        rows.push(LaneRow::plain(Line::from(vec![
             Span::styled(" ", dim()),
             Span::styled(format!("({})", note), dim().add_modifier(Modifier::ITALIC)),
-        ]));
+        ])));
     }
 
-    if let Some((key, label)) = spec.bulk_action {
-        lines.push(Line::from(vec![
-            Span::styled(" › ", dim()),
-            Span::styled(format!("[{}]", key), accent().add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {}", label), text()),
-        ]));
+    if let Some((key, label)) = &spec.bulk_action {
+        // Only the attention lane's "[A] retry all" is a click target.
+        let target = (*key == "A").then_some(RowTarget::RetrySafeAll);
+        rows.push(LaneRow {
+            line: Line::from(vec![
+                Span::styled(" › ", dim()),
+                Span::styled(format!("[{}]", key), accent().add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {}", label), text()),
+            ]),
+            target,
+        });
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    rows
 }
 
 fn append_task_rows(
-    lines: &mut Vec<Line<'static>>,
+    rows: &mut Vec<LaneRow>,
     app: &App,
     task: &TaskQueueEntry,
     width: usize,
 ) {
+    // Every row this task emits is a click target for the whole task block.
+    let mut lines: Vec<Line<'static>> = Vec::new();
     let is_cursor = app.tasks.get(app.task_cursor).map(|t| &t.id) == Some(&task.id);
     let (cursor_prefix, name_style) = if is_cursor {
         ("▌", accent().add_modifier(Modifier::BOLD))
@@ -495,6 +588,11 @@ fn append_task_rows(
     } else {
         lines.push(Line::from(sub_spans));
     }
+
+    rows.extend(lines.into_iter().map(|line| LaneRow {
+        line,
+        target: Some(RowTarget::Task(task.id.clone())),
+    }));
 }
 
 fn format_elapsed(secs: i64) -> String {

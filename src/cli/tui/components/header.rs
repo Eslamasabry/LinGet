@@ -215,13 +215,6 @@ fn uptime_label() -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueueHintAction {
-    Retry,
-    RetrySafe,
-    Remediate,
-}
-
 pub fn header_action_hit_test(
     app: &App,
     header_filter_row: Rect,
