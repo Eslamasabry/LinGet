@@ -85,10 +85,13 @@ impl App {
 
         match command {
             CommandId::Quit => {
-                if self.has_active_queue_tasks() && !self.quit_armed {
-                    self.quit_armed = true;
+                let armed_recently = self
+                    .quit_armed_at
+                    .is_some_and(|at| at.elapsed() < super::QUIT_CONFIRM_WINDOW);
+                if self.has_active_queue_tasks() && !armed_recently {
+                    self.quit_armed_at = Some(Instant::now());
                     self.set_status(
-                        "Tasks are still running — press q again to quit anyway",
+                        "Tasks are still running — quit again within 3s to quit anyway",
                         true,
                     );
                 } else {
@@ -225,7 +228,7 @@ impl App {
             CommandId::ImportPackages => self.import_packages().await,
             CommandId::CycleTheme => {
                 let name = crate::cli::tui::theme::cycle_theme();
-                self.set_status(format!("Theme: {}", name), false);
+                self.set_status(format!("Theme: {}", name), true);
             }
         }
     }
@@ -530,11 +533,6 @@ impl App {
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
         self.clear_status_if_needed();
-
-        // Any key other than a repeated `q` disarms the pending-quit state.
-        if key.code != KeyCode::Char('q') {
-            self.quit_armed = false;
-        }
 
         if self.showing_import_preview {
             self.handle_import_preview_key(key).await;

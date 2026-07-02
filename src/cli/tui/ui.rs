@@ -323,20 +323,15 @@ fn draw_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // The Health view stacks the dashboard summary above the workspace so
-    // the tab actually changes the screen instead of only highlighting.
-    if app.view_mode == crate::cli::tui::state::filters::ViewMode::Dashboard {
-        let dashboard_height = (app.visible_sources().len() as u16 + 6)
-            .min(area.height / 2)
-            .max(6);
-        if area.height > dashboard_height + 8 {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(dashboard_height), Constraint::Min(8)])
-                .split(area);
-            crate::cli::tui::components::dashboard::draw_dashboard(frame, app, chunks[0]);
-            crate::cli::tui::components::workspace::draw(frame, app, chunks[1]);
-            return;
-        }
+    // the tab actually changes the screen instead of only highlighting. The
+    // split comes from layout::dashboard_split so mouse hit-testing stays in
+    // sync with what is drawn.
+    if let Some((dashboard_area, workspace_area)) =
+        crate::cli::tui::components::layout::dashboard_split(app, area)
+    {
+        crate::cli::tui::components::dashboard::draw_dashboard(frame, app, dashboard_area);
+        crate::cli::tui::components::workspace::draw(frame, app, workspace_area);
+        return;
     }
 
     crate::cli::tui::components::workspace::draw(frame, app, area);
@@ -589,7 +584,7 @@ fn build_idle_queue_label(
             text_value.push_str(" · ");
             text_value.push_str(hint);
         }
-        text_value.push_str(" · press W for best action or l to review");
+        text_value.push_str(" · press w for best action or l to review");
         return (text_value, QueueBarState::Failed);
     }
 
@@ -2820,7 +2815,7 @@ mod tests {
         assert_eq!(failed_state, QueueBarState::Failed);
         assert_eq!(
             failed_line,
-            "⚠ 3 done, 1 failed · 1.0 t/m · ETA 1m00s · press W for best action or l to review"
+            "⚠ 3 done, 1 failed · 1.0 t/m · ETA 1m00s · press w for best action or l to review"
         );
 
         let (done_line, done_state) = build_idle_queue_label(0, 3, 0, 0, 3, 3, None);

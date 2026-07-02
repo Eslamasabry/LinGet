@@ -55,6 +55,9 @@ const FILTER_FAVORITES_INDEX: usize = 3;
 const FILTER_SECURITY_INDEX: usize = 4;
 const FILTER_DUPLICATES_INDEX: usize = 5;
 const QUEUE_AUTO_HIDE_AFTER: Duration = Duration::from_secs(10);
+/// How long a first quit attempt (with tasks still running) stays armed; a
+/// second attempt within this window quits.
+const QUIT_CONFIRM_WINDOW: Duration = Duration::from_secs(3);
 const SEARCH_CACHE_LIMIT: usize = 5;
 const TUI_CATALOG_CACHE_FILE: &str = "tui-catalog-cache.json";
 const TUI_CATALOG_CACHE_VERSION: u32 = 1;
@@ -671,9 +674,11 @@ pub struct App {
     pub help_scroll: usize,
     /// Scroll offset (in rows) for the import-preview overlay.
     pub import_preview_scroll: usize,
-    /// Set after the first `q` while tasks are still running; the second `q`
-    /// actually quits.
-    quit_armed: bool,
+    /// Set by a quit attempt while tasks are still running; a second attempt
+    /// within [`QUIT_CONFIRM_WINDOW`] actually quits. Time-based rather than
+    /// key-based so no intervening keystroke (palette typing, `:` prefix)
+    /// can accidentally reset or preserve it.
+    quit_armed_at: Option<Instant>,
     pub showing_palette: bool,
     pub showing_changelog: bool,
     pub changelog_diff_only: bool,
@@ -769,7 +774,7 @@ impl App {
             showing_help: false,
             help_scroll: 0,
             import_preview_scroll: 0,
-            quit_armed: false,
+            quit_armed_at: None,
             showing_palette: false,
             showing_changelog: false,
             changelog_diff_only: false,
@@ -4635,6 +4640,12 @@ impl App {
             || self.search_rx.is_some()
             || self.executor_running.load(Ordering::SeqCst)
             || self.source_management.loading
+            // Changelog overlay may be showing its fetch spinner.
+            || self.showing_changelog
+            // Health view pulses the security chip while issues are pending.
+            || (self.view_mode == ViewMode::Dashboard
+                && !self.queue_expanded
+                && self.filter_counts[4] > 0)
             || self
                 .tasks
                 .iter()
@@ -7045,6 +7056,51 @@ Remove   1 Package
 
         app.handle_key(key(KeyCode::Tab)).await;
         assert_eq!(app.focus, Focus::Sources);
+    }
+
+    #[tokio::test]
+    async fn quit_with_active_tasks_requires_second_attempt() {
+        let mut app = test_app();
+        let task = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![task];
+
+        // First q warns instead of quitting.
+        app.handle_key(key(KeyCode::Char('q'))).await;
+        assert!(!app.should_quit);
+        assert!(app.status.contains("quit again"));
+
+        // Second q inside the confirm window quits.
+        app.handle_key(key(KeyCode::Char('q'))).await;
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn quit_guard_expires_and_works_through_the_palette() {
+        let mut app = test_app();
+        let task = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "APT:a".into(),
+            "a".into(),
+            PackageSource::Apt,
+        );
+        app.tasks = vec![task];
+
+        // A stale arm (older than the confirm window) warns again instead of
+        // quitting instantly.
+        app.quit_armed_at = Some(Instant::now() - QUIT_CONFIRM_WINDOW * 2);
+        app.execute_command(CommandId::Quit).await;
+        assert!(!app.should_quit);
+
+        // Quit → palette → Quit: intervening keystrokes must not defeat the
+        // guard — the second attempt within the window succeeds.
+        app.execute_command(CommandId::OpenPalette).await;
+        app.handle_key(key(KeyCode::Enter)).await; // palette top entry is Quit
+        assert!(app.should_quit);
     }
 
     #[tokio::test]

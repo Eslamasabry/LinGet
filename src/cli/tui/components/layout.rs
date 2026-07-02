@@ -1,5 +1,6 @@
 use crate::cli::tui::app::{App, MIN_HEIGHT, MIN_WIDTH};
 use crate::cli::tui::components::{source_rail, workspace};
+use crate::cli::tui::state::filters::ViewMode;
 use crate::cli::tui::ui::{palette_overlay_rect, preflight_overlay_rect, source_count_label};
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use unicode_width::UnicodeWidthStr;
@@ -47,10 +48,17 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         (Rect::default(), chunks[4])
     };
 
+    // The Health dashboard shifts the workspace down; hit-testing must use
+    // the same shifted area as the draw path or every click lands offset.
+    let workspace_area = match dashboard_split(app, main_area) {
+        Some((_, rest)) => rest,
+        None => main_area,
+    };
+
     let (filter_panel, sources, packages, details, expanded_queue) = if app.compact {
-        compute_compact_regions(app, main_area)
+        compute_compact_regions(app, workspace_area)
     } else {
-        compute_full_regions(app, main_area)
+        compute_full_regions(app, workspace_area)
     };
 
     let (expanded_queue_tasks, expanded_queue_logs, expanded_queue_hints) =
@@ -78,6 +86,27 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
             Rect::default()
         },
     }
+}
+
+/// The vertical split for the Health view: dashboard strip above, workspace
+/// below. `None` when the dashboard isn't shown (other views, expanded
+/// queue, or not enough height). Shared by the draw path and `compute_layout`
+/// so rendering and mouse hit-testing can never disagree.
+pub fn dashboard_split(app: &App, area: Rect) -> Option<(Rect, Rect)> {
+    if app.view_mode != ViewMode::Dashboard || app.queue_expanded {
+        return None;
+    }
+    let dashboard_height = (app.visible_sources().len() as u16 + 6)
+        .min(area.height / 2)
+        .max(6);
+    if area.height <= dashboard_height + 8 {
+        return None;
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(dashboard_height), Constraint::Min(8)])
+        .split(area);
+    Some((chunks[0], chunks[1]))
 }
 
 pub fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
