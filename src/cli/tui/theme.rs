@@ -554,8 +554,11 @@ pub fn badge_update() -> Style {
     if t.monochrome {
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
+        // Orange, matching the Available-version column, action text, and
+        // footer count — "update available" reads as one color everywhere
+        // (yellow stays reserved for generic warnings).
         Style::default()
-            .fg(t.yellow)
+            .fg(t.orange)
             .bg(t.badge_update_bg)
             .add_modifier(Modifier::BOLD)
     }
@@ -566,8 +569,10 @@ pub fn badge_not_installed() -> Style {
     if t.monochrome {
         Style::default().add_modifier(Modifier::DIM)
     } else {
+        // light_gray, not dark_gray: dark-on-dark drops below readable
+        // contrast on the near-black badge backgrounds.
         Style::default()
-            .fg(t.dark_gray)
+            .fg(t.light_gray)
             .bg(t.badge_not_installed_bg)
     }
 }

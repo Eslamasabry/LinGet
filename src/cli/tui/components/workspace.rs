@@ -6,6 +6,7 @@
 
 use super::packages::draw_packages_panel;
 use super::source_rail;
+use crate::backend::{BackendCapability, SourceCapabilityContext};
 use crate::cli::tui::app::App;
 use crate::cli::tui::format::truncate_to_width;
 use crate::cli::tui::state::filters::{Filter, Focus};
@@ -21,6 +22,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 pub const FILTER_PANEL_HEIGHT: u16 = 4;
 pub const WORKSPACE_GAP: u16 = 0;
@@ -148,10 +150,17 @@ fn top_status_line(app: &App, width: usize) -> Line<'static> {
     let security = app.filter_counts[4];
     let safe_updates = app.filter_counts[2].saturating_sub(security);
     let (_, _, _, failed, _) = app.queue_counts();
-    let (tail_label, tail_value, tail_style) = top_status_tail(app, width);
-    Line::from(vec![
+    let (tail_label, tail_style) = if app.is_catalog_busy() {
+        ("Loading: ", accent())
+    } else {
+        ("Recommended: ", success())
+    };
+
+    // Single-width glyphs only — emoji here render double-width in most
+    // terminals and shove the rest of the row out of alignment.
+    let mut spans = vec![
         Span::styled(" Today: ", accent()),
-        Span::styled("🔒", error()),
+        Span::styled("⚠", error()),
         Span::styled(" Security ", muted()),
         Span::styled(security.to_string(), error()),
         Span::styled("   |   ", dim()),
@@ -162,38 +171,41 @@ fn top_status_line(app: &App, width: usize) -> Line<'static> {
             Style::default().fg(palette::ORANGE()),
         ),
         Span::styled("   |   ", dim()),
-        Span::styled("✖", error()),
+        Span::styled("✗", error()),
         Span::styled(" Failed tasks ", muted()),
         Span::styled(failed.to_string(), error()),
         Span::styled("   |   ", dim()),
         Span::styled(tail_label, tail_style.add_modifier(Modifier::BOLD)),
-        Span::styled(tail_value, text()),
-    ])
-}
+    ];
 
-fn top_status_tail(app: &App, width: usize) -> (&'static str, String, Style) {
-    if app.is_catalog_busy() {
-        return (
-            "Loading: ",
-            truncate_to_width(&app.catalog_loading_message(), width.saturating_sub(82)),
-            accent(),
-        );
-    }
-
-    ("Recommended: ", recommended_text(app, width), success())
-}
-
-fn recommended_text(app: &App, width: usize) -> String {
-    let label = if let Some(package) = app.current_package() {
-        if package.status == PackageStatus::UpdateAvailable {
-            format!("Review {} update", package.name)
-        } else {
-            app.recommended_action_label()
-        }
+    // Truncate the tail against the width actually consumed by the prefix,
+    // not a hardcoded offset — magic offsets blank the message entirely on
+    // narrower terminals.
+    let used: usize = spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum();
+    let remaining = width.saturating_sub(used);
+    let tail_value = if app.is_catalog_busy() {
+        app.catalog_loading_message()
     } else {
-        app.recommended_action_label()
+        recommended_text(app)
     };
-    truncate_to_width(&label, width.saturating_sub(86))
+    spans.push(Span::styled(
+        truncate_to_width(&tail_value, remaining),
+        text(),
+    ));
+
+    Line::from(spans)
+}
+
+fn recommended_text(app: &App) -> String {
+    if let Some(package) = app.current_package() {
+        if package.status == PackageStatus::UpdateAvailable {
+            return format!("Review {} update", package.name);
+        }
+    }
+    app.recommended_action_label()
 }
 
 fn draw_main_columns(frame: &mut Frame, app: &App, area: Rect) {
@@ -297,8 +309,8 @@ fn draw_inspector(frame: &mut Frame, app: &App, area: Rect) {
         status_label(package.status),
         warning(),
     );
-    let (risk, risk_style) = risk_label(package);
-    push_fact_line(&mut lines, "Risk", risk, risk_style);
+    let (risk, risk_style) = release_date_label(package);
+    push_fact_line(&mut lines, "Released", &risk, risk_style);
     push_fact_line(
         &mut lines,
         "Installed",
@@ -314,15 +326,7 @@ fn draw_inspector(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     lines.push(separator_line(content_width));
-    lines.push(Line::from(Span::styled("Recommended action", success())));
-    lines.push(Line::from(Span::styled(
-        package_action_label(package.status),
-        text(),
-    )));
-    lines.push(Line::from(Span::styled(
-        recommendation_detail(package),
-        success(),
-    )));
+    append_action_guidance(&mut lines, package, content_width);
 
     lines.push(separator_line(content_width));
     lines.push(Line::from(Span::styled(
@@ -370,7 +374,7 @@ fn draw_inspector(frame: &mut Frame, app: &App, area: Rect) {
         let mut buttons = Vec::new();
         inspector_button(&mut buttons, "Enter", package_action_label(package.status));
         buttons.push(Span::raw("  "));
-        inspector_button(&mut buttons, "C", "Notes");
+        inspector_button(&mut buttons, "c", "Changelog");
         buttons.push(Span::raw("  "));
         inspector_button(&mut buttons, "Space", "Select");
         frame.render_widget(Paragraph::new(Line::from(buttons)), chunks[1]);
@@ -439,10 +443,7 @@ fn spans_width(spans: &[Span<'_>]) -> usize {
 }
 
 fn separator_line(width: usize) -> Line<'static> {
-    Line::from(Span::styled(
-        "─".repeat(width),
-        Style::default().fg(palette::DARK_GRAY()),
-    ))
+    Line::from(Span::styled("─".repeat(width), dim()))
 }
 
 fn push_fact_line(lines: &mut Vec<Line<'static>>, label: &str, value: &str, style: Style) {
@@ -477,37 +478,125 @@ fn status_label(status: PackageStatus) -> &'static str {
     }
 }
 
+fn append_action_guidance(lines: &mut Vec<Line<'static>>, package: &Package, width: usize) {
+    let capability = action_capability(package.status);
+    let capability_status =
+        SourceCapabilityContext::available(package.source).package_status(package, capability);
+    let supported = capability_status.is_supported();
+    let (priority, priority_style) = package_priority(package);
+
+    lines.push(Line::from(vec![
+        Span::styled("Next action", success()),
+        Span::styled(" · ", dim()),
+        Span::styled(priority, priority_style),
+    ]));
+
+    if supported {
+        lines.push(Line::from(Span::styled(
+            truncate_to_width(
+                &format!("Enter: {}", package_action_label(package.status)),
+                width,
+            ),
+            text().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            truncate_to_width(&action_explainer(package), width),
+            muted(),
+        )));
+    } else {
+        let reason = capability_status
+            .reason()
+            .unwrap_or("This action is not available for the selected package.");
+        lines.push(Line::from(Span::styled(
+            "No direct action available",
+            warning(),
+        )));
+        lines.push(Line::from(Span::styled(
+            truncate_to_width(reason, width),
+            muted(),
+        )));
+    }
+}
+
+fn action_capability(status: PackageStatus) -> BackendCapability {
+    match status {
+        PackageStatus::UpdateAvailable | PackageStatus::Updating => BackendCapability::Update,
+        PackageStatus::Installed | PackageStatus::Removing => BackendCapability::Remove,
+        PackageStatus::NotInstalled | PackageStatus::Installing => BackendCapability::Install,
+    }
+}
+
+fn package_priority(package: &Package) -> (&'static str, Style) {
+    match package.status {
+        PackageStatus::UpdateAvailable
+            if package.detect_update_category() == UpdateCategory::Security =>
+        {
+            ("security update", error())
+        }
+        PackageStatus::UpdateAvailable => ("update available", warning()),
+        PackageStatus::Installed => ("installed", muted()),
+        PackageStatus::NotInstalled => ("available", muted()),
+        PackageStatus::Installing | PackageStatus::Updating | PackageStatus::Removing => {
+            ("operation running", warning())
+        }
+    }
+}
+
 fn source_detail_label(package: &Package) -> String {
     package.source.to_string().to_lowercase()
 }
 
-fn risk_label(package: &Package) -> (&'static str, Style) {
-    match package
-        .update_category
-        .unwrap_or_else(|| package.detect_update_category())
-    {
-        UpdateCategory::Security => ("security review", warning()),
-        _ if package.status == PackageStatus::UpdateAvailable => ("routine update", success()),
-        _ => ("routine", success()),
-    }
+fn release_date_label(package: &Package) -> (String, Style) {
+    let date_str = package
+        .enrichment
+        .as_ref()
+        .and_then(|e| e.last_updated.as_ref())
+        .map(|d| d.as_str())
+        .unwrap_or("-");
+
+    let formatted = if date_str == "-" {
+        "-".to_string()
+    } else {
+        let date_part = date_str.split('T').next().unwrap_or(date_str);
+        if let Ok(parsed) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+            parsed.format("%b %d, %Y").to_string()
+        } else {
+            date_part.to_string()
+        }
+    };
+    (formatted, muted())
 }
 
 fn package_action_label(status: PackageStatus) -> &'static str {
     match status {
-        PackageStatus::UpdateAvailable => "Queue update",
-        PackageStatus::Installed => "Remove",
-        PackageStatus::NotInstalled => "Install",
+        PackageStatus::UpdateAvailable => "review and queue update",
+        PackageStatus::Installed => "review removal",
+        PackageStatus::NotInstalled => "review and install",
         PackageStatus::Installing => "Installing",
         PackageStatus::Updating => "Updating",
         PackageStatus::Removing => "Removing",
     }
 }
 
-fn recommendation_detail(package: &Package) -> &'static str {
-    if package.status == PackageStatus::UpdateAvailable {
-        "This update is safe to apply."
-    } else {
-        "No update action is required."
+fn action_explainer(package: &Package) -> String {
+    match package.status {
+        PackageStatus::UpdateAvailable
+            if package.detect_update_category() == UpdateCategory::Security =>
+        {
+            "Preflight will check privilege and dependency impact before queueing.".to_string()
+        }
+        PackageStatus::UpdateAvailable => {
+            "Preflight will summarize source, privilege, and dependency impact.".to_string()
+        }
+        PackageStatus::Installed => {
+            "Removal is destructive; preflight will ask for confirmation first.".to_string()
+        }
+        PackageStatus::NotInstalled => {
+            "Install opens preflight before anything is queued.".to_string()
+        }
+        PackageStatus::Installing | PackageStatus::Updating | PackageStatus::Removing => {
+            "This package already has an operation in progress.".to_string()
+        }
     }
 }
 
@@ -523,10 +612,7 @@ fn release_notes_title(package: &Package) -> String {
 fn inspector_button(spans: &mut Vec<Span<'static>>, key: &'static str, label: &'static str) {
     spans.push(Span::styled(
         format!("[{}]", key),
-        Style::default()
-            .fg(palette::WHITE())
-            .bg(palette::TAB_ACTIVE_BG())
-            .add_modifier(Modifier::BOLD),
+        crate::cli::tui::theme::tab_active(),
     ));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(label.to_string(), muted()));

@@ -72,9 +72,16 @@ fn primary_tab_specs(app: &App) -> Vec<PrimaryTabSpec> {
     let (queued, running, _completed, failed, _cancelled) = app.queue_counts();
     let queue_count = queued + running;
     let health_count = failed + app.filter_counts[4];
+    // Full words when there's room; consistent short forms in compact mode.
+    // A mix of full and cryptic abbreviations ("Upd", "Q") reads as noise.
+    let (browse, updates, installed, sources, queue, health) = if app.compact {
+        ("Brw", "Upd", "Ins", "Src", "Que", "Hlth")
+    } else {
+        ("Browse", "Updates", "Installed", "Sources", "Queue", "Health")
+    };
     vec![
         PrimaryTabSpec {
-            label: format!("Browse {}", compact_count(app.filter_counts[0])),
+            label: format!("{} {}", browse, compact_count(app.filter_counts[0])),
             active: app.focus == Focus::Packages
                 && app.filter == Filter::All
                 && !app.queue_expanded
@@ -82,27 +89,31 @@ fn primary_tab_specs(app: &App) -> Vec<PrimaryTabSpec> {
             action: HeaderAction::Browse,
         },
         PrimaryTabSpec {
-            label: format!("Upd {}", compact_count(app.filter_counts[2])),
+            label: format!("{} {}", updates, compact_count(app.filter_counts[2])),
             active: app.filter == Filter::Updates && !app.queue_expanded,
             action: HeaderAction::Updates,
         },
         PrimaryTabSpec {
-            label: format!("Inst {}", compact_count(app.filter_counts[1])),
+            label: format!("{} {}", installed, compact_count(app.filter_counts[1])),
             active: app.filter == Filter::Installed && !app.queue_expanded,
             action: HeaderAction::Installed,
         },
         PrimaryTabSpec {
-            label: format!("Src {}", compact_count(app.visible_sources().len() + 1)),
+            label: format!(
+                "{} {}",
+                sources,
+                compact_count(app.visible_sources().len() + 1)
+            ),
             active: app.focus == Focus::Sources && !app.queue_expanded,
             action: HeaderAction::Sources,
         },
         PrimaryTabSpec {
-            label: format!("Q {}", compact_count(queue_count)),
+            label: format!("{} {}", queue, compact_count(queue_count)),
             active: app.queue_expanded,
             action: HeaderAction::Queue,
         },
         PrimaryTabSpec {
-            label: format!("Health {}", compact_count(health_count)),
+            label: format!("{} {}", health, compact_count(health_count)),
             active: app.view_mode == ViewMode::Dashboard && !app.queue_expanded,
             action: HeaderAction::Health,
         },

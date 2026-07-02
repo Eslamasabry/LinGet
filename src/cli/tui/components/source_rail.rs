@@ -11,6 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 pub const RAIL_WIDTH: u16 = 31;
 
@@ -88,16 +89,19 @@ fn source_row(
         count.to_string()
     };
     let row_style = if active { row_cursor() } else { text() };
-    let marker = if active { "> " } else { "  " };
+    let marker = if active { "▸ " } else { "  " };
+    // Pad using the display width of what is actually rendered — the full
+    // label's byte length drifts once truncation or wide chars are involved.
+    let used = 2 + UnicodeWidthStr::width(display_label.as_str());
     let mut line = Line::from(vec![
         Span::styled(marker, if active { row_cursor() } else { dim() }),
         Span::styled(display_label, if active { row_cursor() } else { style }),
     ]);
-    let used = marker.len() + label.len();
     let padding = width
         .saturating_sub(1)
         .saturating_sub(used as u16)
-        .saturating_sub(count_label.len() as u16) as usize;
+        .saturating_sub(count_label.len() as u16)
+        .max(1) as usize;
     line.spans
         .push(Span::styled(" ".repeat(padding), row_style));
     line.spans.push(Span::styled(

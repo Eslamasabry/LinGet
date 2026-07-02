@@ -26,7 +26,7 @@
 use crate::cli::tui::app::App;
 use crate::cli::tui::state::queue::QueueJourneyLane;
 use crate::cli::tui::theme::{
-    accent, dim, error, loading, muted, palette, source_color, success, text, warning,
+    accent, dim, error, loading, muted, source_color, success, text, warning,
 };
 use crate::models::history::{TaskQueueAction, TaskQueueEntry, TaskQueueStatus};
 use chrono::Local;
@@ -41,17 +41,18 @@ use ratatui::{
 /// Entry point. Given the inner area of the queue container (no outer border
 /// drawn here), renders the three-lane board plus a details strip.
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
-    if area.height < 6 {
+    if area.height < 8 {
         // Too small for the full board; fall back to a one-line summary.
         draw_summary_only(frame, app, area);
         return;
     }
 
-    // Split: legend (1) + lanes (min) + divider (1) + details strip (2).
+    // Split: legend (1) + recommended action (2) + lanes (min) + divider (1) + details strip (2).
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
+            Constraint::Length(2),
             Constraint::Min(4),
             Constraint::Length(1),
             Constraint::Length(2),
@@ -59,9 +60,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     draw_legend(frame, app, rows[0]);
-    draw_lanes(frame, app, rows[1]);
-    draw_divider(frame, rows[2]);
-    draw_details_strip(frame, app, rows[3]);
+    draw_recommendation_strip(frame, app, rows[1]);
+    draw_lanes(frame, app, rows[2]);
+    draw_divider(frame, rows[3]);
+    draw_details_strip(frame, app, rows[4]);
 }
 
 fn draw_summary_only(frame: &mut Frame, app: &App, area: Rect) {
@@ -101,16 +103,125 @@ fn draw_legend(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+fn draw_recommendation_strip(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+
+    let actionability = app.queue_clinic_actionability();
+    let recommendation = queue_recommendation(app, actionability);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" Recommended ", success().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                truncate(
+                    &recommendation.title,
+                    area.width.saturating_sub(14) as usize,
+                ),
+                text().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" ", dim()),
+            Span::styled(
+                truncate(
+                    &recommendation.prompt,
+                    area.width.saturating_sub(1) as usize,
+                ),
+                recommendation.style,
+            ),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+struct QueueRecommendation {
+    title: String,
+    prompt: String,
+    style: Style,
+}
+
+fn queue_recommendation(
+    app: &App,
+    actionability: crate::cli::tui::state::queue::QueueClinicActionability,
+) -> QueueRecommendation {
+    let scope = app.queue_failure_filter_label();
+    if actionability.safe_retry_count > 0 {
+        return QueueRecommendation {
+            title: format!(
+                "Retry {} safe {} failure{}",
+                actionability.safe_retry_count,
+                scope,
+                if actionability.safe_retry_count == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            prompt: "Press A to queue the safe retry bundle now.".to_string(),
+            style: success(),
+        };
+    }
+
+    let fix_count = actionability.remediation_actionable_count();
+    if fix_count > 0 {
+        return QueueRecommendation {
+            title: format!(
+                "Fix {} {} failure{}",
+                fix_count,
+                scope,
+                if fix_count == 1 { "" } else { "s" }
+            ),
+            prompt: "Press M to apply the filtered fixes or guidance.".to_string(),
+            style: warning(),
+        };
+    }
+
+    if actionability.failed_in_scope > 0 {
+        return QueueRecommendation {
+            title: format!(
+                "Review {} {} failure{}",
+                actionability.failed_in_scope,
+                scope,
+                if actionability.failed_in_scope == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            prompt: "Move to a failed task, then press R to retry or M to inspect fixes."
+                .to_string(),
+            style: warning(),
+        };
+    }
+
+    let (running, pending, _attention, done) = app.queue_lane_counts();
+    if running > 0 || pending > 0 {
+        QueueRecommendation {
+            title: format!("Monitor {} running and {} queued", running, pending),
+            prompt: "Keep the queue open for progress; failed tasks will surface here.".to_string(),
+            style: muted(),
+        }
+    } else {
+        QueueRecommendation {
+            title: format!(
+                "Queue clear: {} task{} resolved",
+                done,
+                if done == 1 { "" } else { "s" }
+            ),
+            prompt: "Press l or Esc to return to packages.".to_string(),
+            style: success(),
+        }
+    }
+}
+
 fn draw_divider(frame: &mut Frame, area: Rect) {
     if area.width == 0 {
         return;
     }
     let line = "─".repeat(area.width as usize);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            line,
-            Style::default().fg(palette::DARK_GRAY()),
-        ))),
+        Paragraph::new(Line::from(Span::styled(line, dim()))),
         area,
     );
 }
@@ -259,10 +370,7 @@ fn draw_lane(frame: &mut Frame, app: &App, area: Rect, spec: LaneSpec) {
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
                     Span::styled("   ", dim()),
-                    Span::styled(
-                        format!("{} {}", secondary.len(), label),
-                        muted().add_modifier(Modifier::ITALIC),
-                    ),
+                    Span::styled(format!("{} {}", secondary.len(), label), muted()),
                 ]));
                 for task in secondary.iter().take(3) {
                     append_task_rows(&mut lines, app, task, inner_width);
@@ -344,10 +452,15 @@ fn append_task_rows(
         Span::styled(right, meta_style(task)),
     ]));
 
-    // Line 2: "   source verb  elapsed/error"
+    // Line 2: "   source verb  elapsed/error" — bounded to the lane width so
+    // long content is ellipsized instead of clipped at the lane edge.
     let verb = action_verb(task.action);
-    let source = task.package_source.to_string();
+    let source = truncate(&task.package_source.to_string(), width.saturating_sub(4));
     let timing = task_timing(task);
+
+    let mut used = 3 + source.chars().count();
+    let verb = truncate(verb, width.saturating_sub(used + 1));
+    used += 1 + verb.chars().count();
 
     let mut sub_spans = vec![
         Span::styled("   ", dim()),
@@ -355,7 +468,7 @@ fn append_task_rows(
         Span::styled(" ", dim()),
         Span::styled(verb, muted()),
     ];
-    if !timing.is_empty() {
+    if !timing.is_empty() && used + 2 + timing.chars().count() <= width {
         sub_spans.push(Span::styled("  ", dim()));
         sub_spans.push(Span::styled(timing, dim()));
     }
@@ -367,7 +480,7 @@ fn append_task_rows(
             let short = truncate(&short_error(err), width.saturating_sub(4));
             lines.push(Line::from(vec![
                 Span::styled("   ", dim()),
-                Span::styled(short, error().add_modifier(Modifier::ITALIC)),
+                Span::styled(short, error()),
             ]));
         }
         lines.push(Line::from(vec![
@@ -522,7 +635,7 @@ fn draw_details_strip(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" last: ", dim()),
             Span::styled(
                 truncate(&short_error(err), area.width.saturating_sub(8) as usize),
-                error().add_modifier(Modifier::ITALIC),
+                error(),
             ),
         ])
     } else if let Some(parent) = app.retry_parent_for_task(&task.id) {

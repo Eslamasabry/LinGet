@@ -84,8 +84,21 @@ impl App {
         }
 
         match command {
-            CommandId::Quit => self.should_quit = true,
-            CommandId::ShowHelp => self.showing_help = true,
+            CommandId::Quit => {
+                if self.has_active_queue_tasks() && !self.quit_armed {
+                    self.quit_armed = true;
+                    self.set_status(
+                        "Tasks are still running — press q again to quit anyway",
+                        true,
+                    );
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            CommandId::ShowHelp => {
+                self.showing_help = true;
+                self.help_scroll = 0;
+            }
             CommandId::OpenPalette => self.open_palette(),
             CommandId::CycleFocus => {
                 self.focus = if self.queue_expanded {
@@ -146,6 +159,8 @@ impl App {
             CommandId::PageUp => {
                 if self.queue_focus_active() {
                     self.queue_page_up();
+                } else if self.focus == Focus::Sources {
+                    self.source_page_up();
                 } else {
                     self.page_up();
                 }
@@ -153,6 +168,8 @@ impl App {
             CommandId::PageDown => {
                 if self.queue_focus_active() {
                     self.queue_page_down();
+                } else if self.focus == Focus::Sources {
+                    self.source_page_down();
                 } else {
                     self.page_down();
                 }
@@ -255,8 +272,25 @@ impl App {
                     self.palette_cursor = len - 1;
                 }
             }
+            KeyCode::PageUp => {
+                self.palette_cursor = self.palette_cursor.saturating_sub(5);
+            }
+            KeyCode::PageDown => {
+                let len = self.palette_entries().len();
+                if len > 0 {
+                    self.palette_cursor = (self.palette_cursor + 5).min(len - 1);
+                }
+            }
             KeyCode::Backspace | KeyCode::Delete => {
                 self.palette_query.pop();
+                self.clamp_palette_cursor();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.palette_query.clear();
+                self.clamp_palette_cursor();
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                super::delete_last_word(&mut self.palette_query);
                 self.clamp_palette_cursor();
             }
             KeyCode::Char(ch)
@@ -286,8 +320,10 @@ impl App {
 
             if can_cancel {
                 self.execute_command(CommandId::QueueCancel).await;
+            } else {
+                // Never a silent dead-end: tell the user what quits the app.
+                self.set_status("Nothing to cancel — press q to quit LinGet", true);
             }
-            // If can't cancel, do nothing (don't quit)
             return;
         }
 
@@ -392,17 +428,17 @@ impl App {
                 Focus::Sources => self.set_source_by_index(self.source_count().saturating_sub(1)),
                 Focus::Packages | Focus::Queue => self.bottom(),
             },
-            KeyCode::PageDown => self.page_down(),
-            KeyCode::PageUp => self.page_up(),
+            KeyCode::PageDown => self.execute_command(CommandId::PageDown).await,
+            KeyCode::PageUp => self.execute_command(CommandId::PageUp).await,
             _ if key.code == KeyCode::Char('d')
                 && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                self.page_down()
+                self.execute_command(CommandId::PageDown).await;
             }
             _ if key.code == KeyCode::Char('u')
                 && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                self.page_up()
+                self.execute_command(CommandId::PageUp).await;
             }
             _ if key.code == KeyCode::Char('b')
                 && key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -412,6 +448,9 @@ impl App {
             KeyCode::Enter => {
                 if self.focus == Focus::Packages {
                     self.prepare_default_action_for_cursor();
+                } else if self.focus == Focus::Sources {
+                    // "Open" the highlighted source: jump into its package list.
+                    self.focus = Focus::Packages;
                 }
             }
             KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -492,6 +531,11 @@ impl App {
     pub async fn handle_key(&mut self, key: KeyEvent) {
         self.clear_status_if_needed();
 
+        // Any key other than a repeated `q` disarms the pending-quit state.
+        if key.code != KeyCode::Char('q') {
+            self.quit_armed = false;
+        }
+
         if self.showing_import_preview {
             self.handle_import_preview_key(key).await;
             return;
@@ -520,11 +564,26 @@ impl App {
     }
 
     async fn handle_import_preview_key(&mut self, key: KeyEvent) {
+        const PREVIEW_PAGE: usize = 10;
         match key.code {
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 self.showing_import_preview = false;
                 self.import_preview.clear();
+                self.import_preview_scroll = 0;
             }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.import_preview_scroll = self.import_preview_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.import_preview_scroll = self.import_preview_scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                self.import_preview_scroll = self.import_preview_scroll.saturating_add(PREVIEW_PAGE);
+            }
+            KeyCode::PageUp => {
+                self.import_preview_scroll = self.import_preview_scroll.saturating_sub(PREVIEW_PAGE);
+            }
+            KeyCode::Char('g') | KeyCode::Home => self.import_preview_scroll = 0,
             KeyCode::Enter => {
                 use crate::models::history::TaskQueueAction;
 
@@ -592,6 +651,46 @@ impl App {
             return;
         }
 
+        // While a modal overlay is up, no mouse input may leak through to the
+        // lists underneath — scrolling a hidden list is disorienting.
+        if self.showing_help {
+            match event.kind {
+                MouseEventKind::ScrollUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(SCROLL_STEP);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.help_scroll = self.help_scroll.saturating_add(SCROLL_STEP);
+                }
+                MouseEventKind::Down(_) => {
+                    self.showing_help = false;
+                    self.help_scroll = 0;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if self.confirming.is_some() {
+            if let MouseEventKind::Down(MouseButton::Left) = event.kind {
+                self.handle_mouse_confirm(event.column, event.row, &regions.preflight_modal)
+                    .await;
+            }
+            return;
+        }
+
+        if self.showing_import_preview {
+            match event.kind {
+                MouseEventKind::ScrollUp => {
+                    self.import_preview_scroll = self.import_preview_scroll.saturating_sub(1);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.import_preview_scroll = self.import_preview_scroll.saturating_add(1);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match event.kind {
             MouseEventKind::ScrollUp => {
                 if rect_contains(regions.expanded_queue_logs, pos) {
@@ -641,16 +740,6 @@ impl App {
                     lc == col && lr == row && lt.elapsed().as_millis() < DOUBLE_CLICK_MS
                 });
                 self.last_click = Some((col, row, Instant::now()));
-
-                if self.showing_help {
-                    self.showing_help = false;
-                    return;
-                }
-                if self.confirming.is_some() {
-                    self.handle_mouse_confirm(col, row, &regions.preflight_modal)
-                        .await;
-                    return;
-                }
 
                 if rect_contains(regions.header_filter_row, pos) {
                     self.handle_mouse_header(col, row, regions);
@@ -912,12 +1001,14 @@ impl App {
         self.cursor = clicked_index;
         self.drag_select_anchor = Some(clicked_index);
 
+        // Column zones: marker (selection toggle), then the status badge
+        // (favorite toggle); clicks on the name only move the cursor.
         let inner_col = col.saturating_sub(packages_rect.x.saturating_add(1));
         if inner_col < 2 {
             self.toggle_selection_on_cursor();
             return;
         }
-        if (3..5).contains(&inner_col) {
+        if (2..=5).contains(&inner_col) {
             self.toggle_favorite_on_cursor();
             return;
         }

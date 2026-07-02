@@ -667,6 +667,13 @@ pub struct App {
     pub compact: bool,
     pub confirming: Option<PendingAction>,
     pub showing_help: bool,
+    /// Scroll offset (in lines) for the help overlay.
+    pub help_scroll: usize,
+    /// Scroll offset (in rows) for the import-preview overlay.
+    pub import_preview_scroll: usize,
+    /// Set after the first `q` while tasks are still running; the second `q`
+    /// actually quits.
+    quit_armed: bool,
     pub showing_palette: bool,
     pub showing_changelog: bool,
     pub changelog_diff_only: bool,
@@ -760,6 +767,9 @@ impl App {
             compact: false,
             confirming: None,
             showing_help: false,
+            help_scroll: 0,
+            import_preview_scroll: 0,
+            quit_armed: false,
             showing_palette: false,
             showing_changelog: false,
             changelog_diff_only: false,
@@ -972,6 +982,7 @@ impl App {
             Ok((missing, warnings)) => {
                 self.import_preview = missing;
                 self.showing_import_preview = true;
+                self.import_preview_scroll = 0;
                 if !warnings.is_empty() {
                     self.set_status(
                         format!("Import preview ready; {}", warnings.join("; ")),
@@ -3525,6 +3536,15 @@ impl App {
         self.set_package_cursor(self.cursor.saturating_sub(HALF_PAGE));
     }
 
+    fn source_page_down(&mut self) {
+        let last = self.source_count().saturating_sub(1);
+        self.set_source_by_index(self.source_index().saturating_add(HALF_PAGE).min(last));
+    }
+
+    fn source_page_up(&mut self) {
+        self.set_source_by_index(self.source_index().saturating_sub(HALF_PAGE));
+    }
+
     fn top(&mut self) {
         self.set_package_cursor(0);
     }
@@ -4004,8 +4024,25 @@ impl App {
     }
 
     async fn handle_help_key(&mut self, key: KeyEvent) {
+        const HELP_PAGE: usize = 10;
         match key.code {
-            KeyCode::Esc | KeyCode::Char('?') => self.showing_help = false,
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                self.showing_help = false;
+                self.help_scroll = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.help_scroll = self.help_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.help_scroll = self.help_scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                self.help_scroll = self.help_scroll.saturating_add(HELP_PAGE);
+            }
+            KeyCode::PageUp => {
+                self.help_scroll = self.help_scroll.saturating_sub(HELP_PAGE);
+            }
+            KeyCode::Char('g') | KeyCode::Home => self.help_scroll = 0,
             _ => {}
         }
     }
@@ -4049,12 +4086,11 @@ impl App {
                 if self.search_results.is_some() {
                     self.restore_local_catalog_with_current_search();
                     self.set_status("Provider results hidden; local filter kept", true);
-                } else {
-                    self.search.clear();
-                    self.clear_provider_search_state();
-                    self.packages = self.local_packages.clone();
-                    self.apply_filters();
-                    self.set_status("Search cleared", true);
+                } else if !self.search.is_empty() {
+                    // Keep the typed filter; a second Esc from normal mode
+                    // clears it. Discarding it here punishes the vim reflex
+                    // of Esc-to-leave-insert-mode.
+                    self.set_status("Filter kept — press Esc again to clear", true);
                 }
             }
             KeyCode::Enter => {
@@ -4075,7 +4111,27 @@ impl App {
                 self.search.pop();
                 self.apply_filters();
             }
-            KeyCode::Char(ch) if !ch.is_control() => {
+            // Ctrl+U clears the query, Ctrl+W deletes the last word — the
+            // readline conventions users reach for in any text field.
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.search_results.is_some() {
+                    self.restore_local_catalog_with_current_search();
+                }
+                self.search.clear();
+                self.apply_filters();
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.search_results.is_some() {
+                    self.restore_local_catalog_with_current_search();
+                }
+                delete_last_word(&mut self.search);
+                self.apply_filters();
+            }
+            KeyCode::Char(ch)
+                if !ch.is_control()
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
                 if self.search_results.is_some() {
                     self.restore_local_catalog_with_current_search();
                 }
@@ -4569,6 +4625,22 @@ impl App {
         0
     }
 
+    /// True while any spinner or pulse is on screen, i.e. the UI must keep
+    /// redrawing at animation rate. When false the event loop relaxes to a
+    /// slow idle cadence.
+    pub fn has_active_animation(&self) -> bool {
+        self.catalog_activity.is_some()
+            || self.searching
+            || self.load_rx.is_some()
+            || self.search_rx.is_some()
+            || self.executor_running.load(Ordering::SeqCst)
+            || self.source_management.loading
+            || self
+                .tasks
+                .iter()
+                .any(|task| task.status == TaskQueueStatus::Running)
+    }
+
     pub fn spinner_frame(&self) -> char {
         // A braille-dot spinner reads smoother than block-circles on most
         // monospace fonts and keeps a consistent vertical footprint.
@@ -4583,6 +4655,21 @@ impl App {
     pub fn pulse_frame(&self) -> char {
         const FRAMES: [char; 8] = ['·', '•', '●', '⬤', '●', '•', '·', ' '];
         FRAMES[(self.tick as usize / 2) % FRAMES.len()]
+    }
+}
+
+/// Remove the trailing word (and the whitespace before it) from a text
+/// input, matching the readline Ctrl+W behavior.
+pub(crate) fn delete_last_word(text: &mut String) {
+    while text.ends_with(char::is_whitespace) {
+        text.pop();
+    }
+    while text
+        .chars()
+        .last()
+        .is_some_and(|ch| !ch.is_whitespace())
+    {
+        text.pop();
     }
 }
 
@@ -4809,24 +4896,32 @@ pub async fn run() -> Result<()> {
         error!(error = %error, "Failed to persist TUI session state");
     }
 
+    // Best-effort teardown: never let one failed restore step skip the rest,
+    // or the terminal is left half-broken (raw mode without alt screen, etc).
     let _ = std::panic::take_hook();
-    disable_raw_mode()?;
-    execute!(
+    let _ = disable_raw_mode();
+    let _ = execute!(
         terminal.backend_mut(),
         DisableMouseCapture,
         LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
+    );
+    let _ = terminal.show_cursor();
 
     result
 }
+
+/// Milliseconds per spinner animation frame. Animations are driven by
+/// wall-clock time, not loop iterations, so their speed stays constant
+/// regardless of how fast events arrive.
+const ANIMATION_FRAME_MS: u128 = 80;
 
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
 ) -> Result<()> {
+    let animation_epoch = Instant::now();
     loop {
-        app.tick = app.tick.wrapping_add(1);
+        app.tick = (animation_epoch.elapsed().as_millis() / ANIMATION_FRAME_MS) as u64;
 
         let size = terminal.size()?;
         app.compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
@@ -4841,16 +4936,33 @@ async fn run_app(
 
         terminal.draw(|frame| ui::draw(frame, app))?;
 
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    app.handle_key(key).await;
+        // Redraw quickly while something is animating; relax when idle so an
+        // untouched TUI doesn't burn CPU rebuilding identical frames.
+        let poll_timeout = if app.has_active_animation() {
+            Duration::from_millis(ANIMATION_FRAME_MS as u64)
+        } else {
+            Duration::from_millis(250)
+        };
+
+        if event::poll(poll_timeout)? {
+            // Drain every buffered event before redrawing once, so pastes,
+            // held keys, and scroll bursts don't pay a full render per event.
+            loop {
+                match event::read()? {
+                    Event::Key(key)
+                        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                    {
+                        app.handle_key(key).await;
+                    }
+                    Event::Mouse(mouse) if !matches!(mouse.kind, MouseEventKind::Moved) => {
+                        let regions = compute_layout(app, Rect::new(0, 0, size.width, size.height));
+                        app.handle_mouse(mouse, &regions).await;
+                    }
+                    _ => {}
                 }
-                Event::Mouse(mouse) => {
-                    let regions = compute_layout(app, Rect::new(0, 0, size.width, size.height));
-                    app.handle_mouse(mouse, &regions).await;
+                if app.should_quit || !event::poll(Duration::ZERO)? {
+                    break;
                 }
-                _ => {}
             }
         }
 

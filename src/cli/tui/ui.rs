@@ -201,6 +201,31 @@ pub fn compose_left_right<'a>(
     }
 
     if left_width + right_width + 1 > width {
+        // Not enough room for both sides: keep the left content but trim it
+        // to the area so it ends with an ellipsis instead of being hard-cut
+        // by the non-wrapping paragraph.
+        if left_width > width {
+            let mut used = 0usize;
+            let mut trimmed: Vec<Span<'a>> = Vec::new();
+            for span in left {
+                let span_width = UnicodeWidthStr::width(span.content.as_ref());
+                if used + span_width <= width {
+                    used += span_width;
+                    trimmed.push(span);
+                } else {
+                    let remaining = width.saturating_sub(used);
+                    if remaining > 0 {
+                        let cut = crate::cli::tui::format::truncate_to_width(
+                            span.content.as_ref(),
+                            remaining,
+                        );
+                        trimmed.push(Span::styled(cut, span.style));
+                    }
+                    break;
+                }
+            }
+            return Line::from(trimmed);
+        }
         return Line::from(left);
     }
 
@@ -296,6 +321,24 @@ fn draw_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         draw_expanded_queue(frame, app, area);
         return;
     }
+
+    // The Health view stacks the dashboard summary above the workspace so
+    // the tab actually changes the screen instead of only highlighting.
+    if app.view_mode == crate::cli::tui::state::filters::ViewMode::Dashboard {
+        let dashboard_height = (app.visible_sources().len() as u16 + 6)
+            .min(area.height / 2)
+            .max(6);
+        if area.height > dashboard_height + 8 {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(dashboard_height), Constraint::Min(8)])
+                .split(area);
+            crate::cli::tui::components::dashboard::draw_dashboard(frame, app, chunks[0]);
+            crate::cli::tui::components::workspace::draw(frame, app, chunks[1]);
+            return;
+        }
+    }
+
     crate::cli::tui::components::workspace::draw(frame, app, area);
 }
 
@@ -546,6 +589,7 @@ fn build_idle_queue_label(
             text_value.push_str(" · ");
             text_value.push_str(hint);
         }
+        text_value.push_str(" · press W for best action or l to review");
         return (text_value, QueueBarState::Failed);
     }
 
@@ -804,30 +848,54 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Transient feedback ("Search cleared", "Queued 3 updates", …) replaces
+    // the key chips until the next keypress — set_status is pointless if
+    // nothing on screen ever shows it, and the right-hand slot gets dropped
+    // on narrow terminals.
+    if !app.status.trim().is_empty() {
+        let line = compose_left_right(
+            vec![
+                Span::raw(" "),
+                Span::styled(app.status.clone(), accent()),
+            ],
+            vec![Span::styled(
+                format!("{} updates available", app.filter_counts[2]),
+                Style::default().fg(palette::ORANGE()),
+            )],
+            inner.width as usize,
+        );
+        frame.render_widget(Paragraph::new(line), inner);
+        return;
+    }
+
     let left = footer_commands(app);
 
-    let right_label = if app.selected.is_empty() {
-        format!("{} updates available", app.filter_counts[2])
+    let (right_label, right_style) = if app.selected.is_empty() {
+        (
+            format!("{} updates available", app.filter_counts[2]),
+            Style::default().fg(palette::ORANGE()),
+        )
     } else if app.hidden_selected_count() > 0 {
-        format!(
-            "{} updates available · {} selected ({} hidden)",
-            app.filter_counts[2],
-            app.visible_selected_count(),
-            app.hidden_selected_count()
+        (
+            format!(
+                "{} updates available · {} selected ({} hidden)",
+                app.filter_counts[2],
+                app.visible_selected_count(),
+                app.hidden_selected_count()
+            ),
+            Style::default().fg(palette::ORANGE()),
         )
     } else {
-        format!(
-            "{} updates available · {} selected",
-            app.filter_counts[2],
-            app.visible_selected_count()
+        (
+            format!(
+                "{} updates available · {} selected",
+                app.filter_counts[2],
+                app.visible_selected_count()
+            ),
+            Style::default().fg(palette::ORANGE()),
         )
     };
-    let right = vec![Span::styled(
-        right_label,
-        Style::default()
-            .fg(palette::ORANGE())
-            .add_modifier(ratatui::style::Modifier::ITALIC),
-    )];
+    let right = vec![Span::styled(right_label, right_style)];
     frame.render_widget(
         Paragraph::new(compose_left_right(left, right, inner.width as usize)),
         inner,
@@ -865,8 +933,10 @@ fn footer_commands(app: &App) -> Vec<Span<'static>> {
     }
 
     if app.queue_expanded || app.focus == Focus::Queue {
-        push(&mut spans, "Q", "Collapse queue".to_string());
-        push(&mut spans, "R", "Refresh".to_string());
+        push(&mut spans, "l", "Collapse queue".to_string());
+        push(&mut spans, "R", "Retry selected".to_string());
+        push(&mut spans, "A", "Retry safe".to_string());
+        push(&mut spans, "M", "Fix filtered".to_string());
         push(&mut spans, "?", "Help".to_string());
         push(&mut spans, "Esc", "Back".to_string());
         return spans;
@@ -876,7 +946,7 @@ fn footer_commands(app: &App) -> Vec<Span<'static>> {
         Focus::Sources => {
             push(&mut spans, "Enter", "Open source".to_string());
             push(&mut spans, "/", "Search".to_string());
-            push(&mut spans, "R", "Refresh".to_string());
+            push(&mut spans, "r", "Refresh".to_string());
             push(&mut spans, "?", "Help".to_string());
         }
         Focus::Packages => {
@@ -887,16 +957,18 @@ fn footer_commands(app: &App) -> Vec<Span<'static>> {
                     footer_package_action_label(package.status),
                 );
                 push(&mut spans, "Space", "Select".to_string());
-                push(&mut spans, "C", "Notes".to_string());
+                push(&mut spans, "c", "Changelog".to_string());
             }
             push(&mut spans, "/", "Search".to_string());
-            push(&mut spans, "Q", "Queue".to_string());
-            push(&mut spans, "R", "Refresh".to_string());
+            push(&mut spans, "l", "Queue".to_string());
+            push(&mut spans, "r", "Refresh".to_string());
             push(&mut spans, "?", "Help".to_string());
         }
         Focus::Queue => {
-            push(&mut spans, "Q", "Collapse queue".to_string());
-            push(&mut spans, "R", "Refresh".to_string());
+            push(&mut spans, "l", "Collapse queue".to_string());
+            push(&mut spans, "R", "Retry selected".to_string());
+            push(&mut spans, "A", "Retry safe".to_string());
+            push(&mut spans, "M", "Fix filtered".to_string());
             push(&mut spans, "?", "Help".to_string());
         }
     }
@@ -919,10 +991,7 @@ fn footer_package_action_label(status: PackageStatus) -> String {
 fn footer_button(spans: &mut Vec<Span<'static>>, key: &'static str, label: impl Into<String>) {
     spans.push(Span::styled(
         format!("[{}]", key),
-        Style::default()
-            .fg(palette::WHITE())
-            .bg(palette::TAB_ACTIVE_BG())
-            .add_modifier(ratatui::style::Modifier::BOLD),
+        crate::cli::tui::theme::tab_active(),
     ));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(label.into(), muted()));
@@ -1336,9 +1405,11 @@ fn draw_palette_overlay(frame: &mut Frame, app: &App) {
             } else {
                 dim()
             };
+            // The arrow shares the row's cursor style — mixing two highlight
+            // styles in one row reads as two different selections.
             let mut left = vec![Span::styled(
                 if selected { "▸ " } else { "  " },
-                row_selected(),
+                if selected { row_cursor() } else { dim() },
             )];
             left.push(Span::styled(format!("[{}] ", entry.group), dim()));
             left.push(Span::styled(entry.label.to_string(), label_style));
@@ -1685,7 +1756,13 @@ fn draw_changelog_overlay(frame: &mut Frame, app: &App) {
 
     if max_scroll > 0 {
         let mut scrollbar_state = ScrollbarState::new(lines.len()).position(scroll);
+        // Same scrollbar treatment as the packages table so related panels
+        // don't render two different scrollbar designs.
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("║"))
+            .thumb_symbol("█")
             .style(scrollbar_style())
             .thumb_style(scrollbar_thumb());
         frame.render_stateful_widget(scrollbar, sections[1], &mut scrollbar_state);
@@ -1716,7 +1793,7 @@ fn draw_changelog_overlay(frame: &mut Frame, app: &App) {
     );
 }
 
-fn draw_help_overlay(frame: &mut Frame, app: &App) {
+fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
     let area = centered_rect(frame.area(), 60, 88, 64, 22);
     frame.render_widget(Clear, area);
 
@@ -1724,7 +1801,6 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_set(ROUNDED)
         .border_style(border_focused())
-        .title(" Help ")
         .title_style(accent());
 
     let focus_label = match app.focus {
@@ -1768,9 +1844,13 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("Navigation", section_header())));
     lines.push(Line::from(
-        "  ↑↓/jk move   g/G top/bottom   ^d/^u half-page",
+        "  ↑↓/jk move   g/G top/bottom   PgUp/PgDn or ^d/^u page",
     ));
     lines.push(Line::from("  Tab cycle panels   Ctrl+b toggle sidebar"));
+    lines.push(Line::from("  F1 Health   F2 Browse   F3 Queue"));
+    lines.push(Line::from(
+        "  Alt+1/2/3 details tabs (Info / Dependencies / Changelog)",
+    ));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("Filters", section_header())));
     lines.push(Line::from(
@@ -1791,7 +1871,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
             "  1 permissions   2 network   3 conflict   4 other   0 all",
         ));
         lines.push(Line::from("  [ ] scroll selected task log"));
-        lines.push(Line::from("  l close queue"));
+        lines.push(Line::from("  C or Ctrl+C cancel running task   l close queue"));
     } else {
         lines.push(Line::from(Span::styled("Packages", section_header())));
         lines.push(Line::from("  Space select   f favorite   F bulk favorite"));
@@ -1802,6 +1882,10 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
         lines.push(Line::from(
             "  c changelog (apt/dnf/pip/npm/cargo/conda/mamba sources)",
         ));
+        lines.push(Line::from(
+            "  D dismiss duplicate (Duplicates filter)   C clear failed tasks",
+        ));
+        lines.push(Line::from("  R retry failure   A retry safe   M remediate"));
     }
 
     lines.push(Line::from(""));
@@ -1809,21 +1893,44 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
     lines.push(Line::from(
         "  : or Ctrl+P command palette   / search   r refresh",
     ));
+    lines.push(Line::from("  E export packages   I import packages"));
     lines.push(Line::from("  ? help   q quit   T cycle theme"));
     lines.push(Line::from(format!(
         "  Theme: {}   (env: LINGET_THEME, NO_COLOR)",
         crate::cli::tui::theme::current_theme_name()
     )));
     lines.push(Line::from(
+        "  Confirm dialogs: y/Enter accept   n/Esc cancel",
+    ));
+    lines.push(Line::from(
         "  Changelog: u update   i install   d/x remove   v mode   c/Esc close",
     ));
     lines.push(Line::from(""));
-    lines.push(Line::from("  ? or Esc to close"));
+    lines.push(Line::from("  jk/↑↓ scroll help   ? or Esc to close"));
 
-    frame.render_widget(Paragraph::new(lines).block(block).style(text()), area);
+    // Scroll the overlay when the content outgrows the box, keeping the
+    // offset clamped so the user can never scroll into blank space.
+    let visible = area.height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(visible);
+    app.help_scroll = app.help_scroll.min(max_scroll);
+    let scroll = app.help_scroll;
+
+    let mut title = " Help ".to_string();
+    if max_scroll > 0 {
+        title = format!(" Help ({}/{}) ", scroll + 1, max_scroll + 1);
+    }
+    let block = block.title(title);
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .style(text())
+            .scroll((scroll as u16, 0)),
+        area,
+    );
 }
 
-fn draw_import_preview_overlay(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_import_preview_overlay(frame: &mut Frame, app: &mut App, area: Rect) {
     let n = app.import_preview.len();
     let height = (n as u16 + 4).min(20);
     let popup_area = centered_rect(area, 80, 90, 60, height);
@@ -1839,40 +1946,68 @@ fn draw_import_preview_overlay(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let list_height = inner.height.saturating_sub(1) as usize;
-    let mut lines: Vec<Line> = app
-        .import_preview
-        .iter()
-        .take(list_height)
-        .map(|ep| {
-            Line::from(vec![
-                Span::raw("  • "),
-                Span::styled(ep.name.clone(), accent()),
-                Span::styled(format!("  ({})  ", ep.source), muted()),
-                Span::styled(ep.version.clone(), dim()),
-            ])
-        })
-        .collect();
+
+    // Window the list by the scroll offset instead of silently dropping
+    // everything past the first page. Overflow indicators get their own
+    // rows so every counted item is actually visible.
+    let max_scroll = if n > list_height {
+        n.saturating_sub(list_height.saturating_sub(1))
+    } else {
+        0
+    };
+    app.import_preview_scroll = app.import_preview_scroll.min(max_scroll);
+    let start = app.import_preview_scroll;
+
+    let top_indicator = start > 0;
+    let mut item_rows = list_height.saturating_sub(top_indicator as usize);
+    let mut end = (start + item_rows).min(n);
+    if end < n {
+        item_rows = item_rows.saturating_sub(1);
+        end = (start + item_rows).min(n);
+    }
+    let hidden_below = n.saturating_sub(end);
+
+    let mut lines: Vec<Line> = Vec::with_capacity(list_height + 1);
+    if top_indicator {
+        lines.push(Line::from(Span::styled(
+            format!("  ↑ {} more above", start),
+            dim(),
+        )));
+    }
+    for ep in app.import_preview.iter().take(end).skip(start) {
+        lines.push(Line::from(vec![
+            Span::raw("  • "),
+            Span::styled(ep.name.clone(), accent()),
+            Span::styled(format!("  ({})  ", ep.source), muted()),
+            Span::styled(ep.version.clone(), dim()),
+        ]));
+    }
+    if hidden_below > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  ↓ {} more below", hidden_below),
+            dim(),
+        )));
+    }
 
     while lines.len() < list_height {
         lines.push(Line::from(""));
     }
 
-    lines.push(Line::from(vec![
+    let footer_line = Line::from(vec![
         Span::styled("  Enter", key_hint()),
         Span::styled(" install all   ", footer_label()),
+        Span::styled("jk", key_hint()),
+        Span::styled(" scroll   ", footer_label()),
         Span::styled("Esc", key_hint()),
         Span::styled(" cancel", footer_label()),
-    ]));
+    ]);
 
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    let list_lines: Vec<Line> = lines[..lines.len().saturating_sub(1)].to_vec();
-    let footer_line = lines.last().cloned().unwrap_or_default();
-
-    frame.render_widget(Paragraph::new(list_lines).style(text()), sections[0]);
+    frame.render_widget(Paragraph::new(lines).style(text()), sections[0]);
     frame.render_widget(Paragraph::new(vec![footer_line]), sections[1]);
 }
 
@@ -2679,7 +2814,10 @@ mod tests {
         let (failed_line, failed_state) =
             build_idle_queue_label(0, 2, 1, 1, 4, 5, Some("1.0 t/m · ETA 1m00s"));
         assert_eq!(failed_state, QueueBarState::Failed);
-        assert_eq!(failed_line, "⚠ 3 done, 1 failed · 1.0 t/m · ETA 1m00s");
+        assert_eq!(
+            failed_line,
+            "⚠ 3 done, 1 failed · 1.0 t/m · ETA 1m00s · press W for best action or l to review"
+        );
 
         let (done_line, done_state) = build_idle_queue_label(0, 3, 0, 0, 3, 3, None);
         assert_eq!(done_state, QueueBarState::Complete);

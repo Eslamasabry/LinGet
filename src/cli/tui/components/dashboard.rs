@@ -134,14 +134,16 @@ fn accent_style() -> Style {
 /// Danger pulse — used only when unaddressed security updates exist. The
 /// subtle alpha-breathing effect nudges the eye without burning cycles.
 fn pulse_danger_style(app: &App) -> Style {
-    let pulse = (app.tick as u8).wrapping_mul(12);
-    let intensity = 160u8.saturating_add(pulse / 3);
     let active_theme = active();
     if active_theme.monochrome {
         return error();
     }
+    // Breathe the theme's red toward white and back, so the pulse stays
+    // on-palette for every theme instead of a hardcoded RGB.
+    let phase = (app.tick % 16) as f32 / 16.0 * std::f32::consts::TAU;
+    let t = (phase.sin() * 0.5 + 0.5) * 0.3;
     Style::default()
-        .fg(Color::Rgb(intensity.max(200), 90, 100))
+        .fg(blend(palette::RED(), palette::WHITE(), t))
         .add_modifier(Modifier::BOLD)
 }
 
@@ -198,8 +200,11 @@ fn build_source_bars(app: &App, width: usize) -> Vec<Line<'static>> {
     let label_width = 10usize;
     let count_width = 4usize;
     let gutter = 4usize; // leading + trailing padding
+    // "  (NNNN installed)" suffix must fit inside the row too, or the bar
+    // pushes it past the border and it renders clipped.
+    let installed_suffix_width = 18usize;
     let bar_width = width
-        .saturating_sub(label_width + count_width + gutter)
+        .saturating_sub(label_width + count_width + gutter + installed_suffix_width)
         .max(4);
 
     let max_updates = sources
@@ -224,7 +229,11 @@ fn build_source_bars(app: &App, width: usize) -> Vec<Line<'static>> {
         let mut spans = vec![
             Span::raw("  "),
             Span::styled(
-                format!("{:<width$}", source.to_string(), width = label_width - 2),
+                format!(
+                    "{:<width$}",
+                    crate::cli::tui::format::truncate_to_width(&source.to_string(), label_width - 2),
+                    width = label_width - 2
+                ),
                 source_style.add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),

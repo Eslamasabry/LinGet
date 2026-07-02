@@ -4,11 +4,11 @@ use crate::cli::tui::format::{
 };
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::theme::{
-    accent, dim, error, loading, muted, palette, row_cursor, scrollbar_style, scrollbar_thumb,
-    source_color, success, text, warning,
+    accent, dim, loading, muted, palette, row_cursor, row_selected, scrollbar_style,
+    scrollbar_thumb, source_color, success, text, warning,
 };
 use crate::cli::tui::ui::{panel_block, window_start};
-use crate::models::{Package, PackageStatus, UpdateCategory};
+use crate::models::{Package, PackageStatus};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -83,6 +83,13 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
     let start = window_start(app.filtered.len(), visible_rows.max(1), app.cursor);
     let end = (start + visible_rows.max(1)).min(app.filtered.len());
 
+    // The column set adapts to the panel width: fixed-width tables silently
+    // clip their right-hand columns on narrow terminals, so we drop the
+    // least important columns first instead.
+    let table_width = sections[0].width as usize;
+    let mode = TableMode::for_width(table_width);
+    let name_width = mode.name_width(table_width);
+
     let mut rows = Vec::new();
     for row_index in start..end {
         let Some(package_index) = app.filtered.get(row_index).copied() else {
@@ -96,12 +103,20 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
         let is_cursor = row_index == app.cursor;
         let is_selected = app.selected.contains(&package_id);
         let is_favorite = app.is_favorite_id(&package_id);
-        let row_style = if is_cursor { row_cursor() } else { text() };
+        // Cursor gets the background highlight; other selected rows keep a
+        // distinct tint so a bulk selection is visible at a glance.
+        let row_style = if is_cursor {
+            row_cursor()
+        } else if is_selected {
+            row_selected()
+        } else {
+            text()
+        };
         let quiet_style = if is_cursor { row_style } else { dim() };
         let marker = if is_cursor {
-            ">"
+            "▸"
         } else if is_selected {
-            "x"
+            "✓"
         } else {
             " "
         };
@@ -110,7 +125,7 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
         let current = if package.status == PackageStatus::UpdateAvailable {
             package.version.clone()
         } else {
-            display_version
+            display_version.clone()
         };
         let available = package
             .available_version
@@ -125,17 +140,17 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
                     let also: Vec<String> = peers.iter().map(|s| s.to_string()).collect();
                     format!(
                         "{} · also: {}",
-                        truncate_middle_to_width(&package.name, 26),
+                        truncate_middle_to_width(&package.name, name_width.saturating_sub(6).max(8)),
                         also.join(", ")
                     )
                 } else {
-                    truncate_middle_to_width(&package.name, 32)
+                    truncate_middle_to_width(&package.name, name_width)
                 }
             } else {
-                truncate_middle_to_width(&package.name, 32)
+                truncate_middle_to_width(&package.name, name_width)
             }
         } else {
-            truncate_middle_to_width(&package.name, 32)
+            truncate_middle_to_width(&package.name, name_width)
         };
 
         let match_hint = search_match_hint(package, &app.search);
@@ -153,78 +168,84 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
             name_spans.push(Span::styled(favorite_marker, warning()));
         }
 
-        let (_, status_style) = package_status_short(package.status);
-        let (risk, risk_style) = risk_cell(package);
+        let (status_glyph, status_style) = package_status_short(package.status);
+        let (released, _) = release_date_cell(package);
         let (action, action_style) = action_cell(package.status);
 
-        rows.push(
-            Row::new(vec![
-                Cell::from(Span::styled(marker, row_style)),
-                Cell::from(Line::from(name_spans)),
-                Cell::from(Span::styled(truncate_to_width(&current, 14), row_style)),
-                Cell::from(Span::styled(
+        let mut cells = vec![
+            Cell::from(Span::styled(marker, row_style)),
+            Cell::from(Span::styled(
+                status_glyph,
+                if is_cursor { row_style } else { status_style },
+            )),
+            Cell::from(Line::from(name_spans)),
+        ];
+
+        match mode {
+            TableMode::Full => {
+                cells.push(Cell::from(Span::styled(
+                    truncate_to_width(&current, 14),
+                    row_style,
+                )));
+                cells.push(Cell::from(Span::styled(
                     truncate_to_width(&available, 14),
                     if is_cursor {
                         row_style
                     } else {
                         Style::default().fg(palette::ORANGE())
                     },
-                )),
-                Cell::from(Span::styled(
-                    truncate_to_width(&source, 10),
-                    if is_cursor {
+                )));
+            }
+            TableMode::Medium | TableMode::Narrow => {
+                cells.push(Cell::from(Span::styled(
+                    truncate_to_width(&display_version, mode.version_width()),
+                    if is_cursor || package.status != PackageStatus::UpdateAvailable {
                         row_style
                     } else {
-                        source_color(package.source)
+                        Style::default().fg(palette::ORANGE())
                     },
-                )),
-                Cell::from(Span::styled(
-                    risk,
-                    if is_cursor {
-                        row_style
-                    } else if risk == "routine" {
-                        quiet_style
-                    } else if package.status == PackageStatus::UpdateAvailable {
-                        risk_style
-                    } else {
-                        status_style
-                    },
-                )),
-                Cell::from(Span::styled(
-                    action,
-                    if is_cursor {
-                        row_style
-                    } else if action == "update" {
-                        quiet_style
-                    } else {
-                        action_style
-                    },
-                )),
-            ])
-            .style(row_style),
-        );
+                )));
+            }
+        }
+
+        cells.push(Cell::from(Span::styled(
+            truncate_to_width(&source, mode.source_width()),
+            if is_cursor {
+                row_style
+            } else {
+                source_color(package.source)
+            },
+        )));
+
+        if mode == TableMode::Full {
+            // The release date is informational — render it neutrally rather
+            // than repainting the status badge background behind a date.
+            cells.push(Cell::from(Span::styled(
+                truncate_to_width(&released, 12),
+                quiet_style,
+            )));
+        }
+
+        if mode != TableMode::Narrow {
+            cells.push(Cell::from(Span::styled(
+                action,
+                if is_cursor {
+                    row_style
+                } else if action == "update" {
+                    quiet_style
+                } else {
+                    action_style
+                },
+            )));
+        }
+
+        rows.push(Row::new(cells).style(row_style));
     }
 
-    let header = Row::new(vec![
-        "",
-        "Package",
-        "Current",
-        "Available",
-        "Source",
-        "Risk",
-        "Action",
-    ])
-    .style(dim().add_modifier(Modifier::BOLD))
-    .bottom_margin(1);
-    let widths = [
-        Constraint::Length(1),
-        Constraint::Min(24),
-        Constraint::Length(14),
-        Constraint::Length(14),
-        Constraint::Length(11),
-        Constraint::Length(12),
-        Constraint::Length(12),
-    ];
+    let header = Row::new(mode.header_cells())
+        .style(dim().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+    let widths = mode.constraints();
 
     let table = Table::new(rows, widths).header(header).column_spacing(1);
     frame.render_widget(table, sections[0]);
@@ -271,6 +292,100 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
     }
 }
 
+/// Which columns fit at the current panel width. Ordered from most to least
+/// spacious; columns are dropped right-to-left as the panel narrows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TableMode {
+    /// Marker · Status · Package · Current · Available · Source · Released · Action
+    Full,
+    /// Marker · Status · Package · Version · Source · Action
+    Medium,
+    /// Marker · Status · Package · Version · Source
+    Narrow,
+}
+
+impl TableMode {
+    fn for_width(width: usize) -> Self {
+        if width >= 100 {
+            TableMode::Full
+        } else if width >= 76 {
+            TableMode::Medium
+        } else {
+            TableMode::Narrow
+        }
+    }
+
+    fn version_width(self) -> usize {
+        match self {
+            TableMode::Full => 14,
+            TableMode::Medium => 20,
+            TableMode::Narrow => 16,
+        }
+    }
+
+    fn source_width(self) -> usize {
+        match self {
+            TableMode::Full => 10,
+            TableMode::Medium => 10,
+            TableMode::Narrow => 8,
+        }
+    }
+
+    /// Width left over for the Package column after fixed columns and the
+    /// 1-cell spacings are accounted for.
+    fn name_width(self, table_width: usize) -> usize {
+        let consumed = match self {
+            // 1 + 3 + 14 + 14 + 11 + 12 + 12 fixed + 7 spacings
+            TableMode::Full => 74,
+            // 1 + 3 + 20 + 10 + 10 fixed + 5 spacings
+            TableMode::Medium => 49,
+            // 1 + 3 + 16 + 8 fixed + 4 spacings
+            TableMode::Narrow => 32,
+        };
+        table_width.saturating_sub(consumed).max(12)
+    }
+
+    fn header_cells(self) -> Vec<&'static str> {
+        match self {
+            TableMode::Full => vec![
+                "", "", "Package", "Current", "Available", "Source", "Released", "Action",
+            ],
+            TableMode::Medium => vec!["", "", "Package", "Version", "Source", "Action"],
+            TableMode::Narrow => vec!["", "", "Package", "Version", "Source"],
+        }
+    }
+
+    fn constraints(self) -> Vec<Constraint> {
+        match self {
+            TableMode::Full => vec![
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Min(24),
+                Constraint::Length(14),
+                Constraint::Length(14),
+                Constraint::Length(11),
+                Constraint::Length(12),
+                Constraint::Length(12),
+            ],
+            TableMode::Medium => vec![
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Min(20),
+                Constraint::Length(20),
+                Constraint::Length(10),
+                Constraint::Length(10),
+            ],
+            TableMode::Narrow => vec![
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Min(14),
+                Constraint::Length(16),
+                Constraint::Length(8),
+            ],
+        }
+    }
+}
+
 fn source_table_label(app: &App, package: &Package) -> String {
     app.package_source_badge(package).to_lowercase()
 }
@@ -311,15 +426,25 @@ fn total_for_filter(app: &App) -> usize {
     }
 }
 
-fn risk_cell(package: &Package) -> (&'static str, Style) {
-    let category = package
-        .update_category
-        .unwrap_or_else(|| package.detect_update_category());
-    match category {
-        UpdateCategory::Security => ("security", error()),
-        _ if package.status == PackageStatus::UpdateAvailable => ("routine", dim()),
-        _ => ("routine", dim()),
-    }
+fn release_date_cell(package: &Package) -> (String, Style) {
+    let date_str = package
+        .enrichment
+        .as_ref()
+        .and_then(|e| e.last_updated.as_ref())
+        .map(|d| d.as_str())
+        .unwrap_or("-");
+
+    let formatted = if date_str == "-" {
+        "-".to_string()
+    } else {
+        let date_part = date_str.split('T').next().unwrap_or(date_str);
+        if let Ok(parsed) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+            parsed.format("%b %d, %Y").to_string()
+        } else {
+            date_part.to_string()
+        }
+    };
+    (formatted, Style::default())
 }
 
 fn action_cell(status: PackageStatus) -> (&'static str, Style) {
@@ -371,9 +496,10 @@ fn package_footer_line(
     }
     .min(pages);
     let right = format!("Pages: {current_page}/{pages}");
-    let gap = width.saturating_sub(left.len() + right.len());
+    use unicode_width::UnicodeWidthStr;
+    let gap = width.saturating_sub(UnicodeWidthStr::width(left.as_str()) + right.len());
     Line::from(vec![
-        Span::styled(left, dim().add_modifier(Modifier::ITALIC)),
+        Span::styled(left, dim()),
         Span::raw(" ".repeat(gap)),
         Span::styled(right, dim()),
     ])
@@ -551,24 +677,24 @@ fn build_empty_state_lines(app: &App) -> Vec<Line<'static>> {
             State {
                 art: ["    ★ ☆ ★    ", "   all clear  ", "     ✓ ✓      "],
                 art_style: warning(),
-                title: "No favourite has a pending update".to_string(),
+                title: "No favorite has a pending update".to_string(),
                 subtitle: "Your starred packages are all current.".to_string(),
                 hint_key: "v",
-                hint_label: "show all favourites",
+                hint_label: "show all favorites",
             }
         } else {
             State {
                 art: ["     ☆        ", "    ☆ ☆       ", "   ☆ ☆ ☆      "],
                 art_style: dim(),
-                title: "No favourites yet".to_string(),
+                title: "No favorites yet".to_string(),
                 subtitle: "Star a package to pin it here and watch for updates.".to_string(),
                 hint_key: "f",
-                hint_label: "favourite selected",
+                hint_label: "favorite selected",
             }
         }
     } else if app.filter == Filter::SecurityUpdates {
         State {
-            art: ["   ╔═══════╗   ", "   ║  🛡  safe║   ", "   ╚═══════╝   "],
+            art: ["   ╔═══════╗   ", "   ║ ✓ safe║   ", "   ╚═══════╝   "],
             art_style: success(),
             title: "No security updates pending".to_string(),
             subtitle: "All installed packages are secure.".to_string(),
