@@ -397,7 +397,7 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
     CommandDefinition {
         id: CommandId::Quit,
         label: "Quit",
-        shortcut: "q / Ctrl+C",
+        shortcut: "q",
         enabled: command_always_enabled,
     },
     CommandDefinition {

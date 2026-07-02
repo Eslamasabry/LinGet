@@ -1694,6 +1694,10 @@ fn draw_changelog_overlay(frame: &mut Frame, app: &App) {
             if !summary.highlights.is_empty() {
                 formatted.push(Line::from(Span::styled("Highlights:", section_header())));
                 for highlight in summary.highlights.iter().take(3) {
+                    // The shared summary model tags highlights with emoji for
+                    // the GTK UI; swap them for single-width glyphs so the
+                    // overlay border stays aligned in the terminal.
+                    let highlight = highlight.replace("🔒", "⚠").replace("✨", "✦");
                     push_wrapped_styled_line(
                         &mut formatted,
                         &format!("• {}", highlight),

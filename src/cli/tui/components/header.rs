@@ -18,8 +18,9 @@ static SYSTEM_LABEL: Lazy<String> = Lazy::new(system_label);
 static KERNEL_LABEL: Lazy<String> = Lazy::new(kernel_label);
 
 pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let compact = use_compact_tabs(app, area.width);
     let mut left = header_brand_spans();
-    for spec in primary_tab_specs(app) {
+    for spec in primary_tab_specs_with(app, compact) {
         left.extend(render_primary_tab(&spec.label, spec.active, app.searching));
         left.push(Span::raw("  "));
     }
@@ -68,13 +69,26 @@ fn header_brand_spans() -> Vec<Span<'static>> {
     ]
 }
 
-fn primary_tab_specs(app: &App) -> Vec<PrimaryTabSpec> {
+/// Whether the tab row needs the short label set: either the whole UI is in
+/// compact mode, or the full-word tabs simply don't fit this width.
+fn use_compact_tabs(app: &App, width: u16) -> bool {
+    if app.compact {
+        return true;
+    }
+    let mut needed = spans_width(&header_brand_spans());
+    for spec in primary_tab_specs_with(app, false) {
+        needed += spans_width(&render_primary_tab(&spec.label, spec.active, app.searching)) + 2;
+    }
+    needed > width as usize
+}
+
+fn primary_tab_specs_with(app: &App, compact: bool) -> Vec<PrimaryTabSpec> {
     let (queued, running, _completed, failed, _cancelled) = app.queue_counts();
     let queue_count = queued + running;
     let health_count = failed + app.filter_counts[4];
     // Full words when there's room; consistent short forms in compact mode.
     // A mix of full and cryptic abbreviations ("Upd", "Q") reads as noise.
-    let (browse, updates, installed, sources, queue, health) = if app.compact {
+    let (browse, updates, installed, sources, queue, health) = if compact {
         ("Brw", "Upd", "Ins", "Src", "Que", "Hlth")
     } else {
         ("Browse", "Updates", "Installed", "Sources", "Queue", "Health")
@@ -222,7 +236,7 @@ pub fn header_action_hit_test(
     }
 
     let mut cursor = header_filter_row.x + spans_width(&header_brand_spans()) as u16;
-    let tabs = primary_tab_specs(app);
+    let tabs = primary_tab_specs_with(app, use_compact_tabs(app, header_filter_row.width));
 
     for spec in tabs {
         let width =
