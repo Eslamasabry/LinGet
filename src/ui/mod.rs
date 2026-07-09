@@ -18,12 +18,12 @@ pub mod task_queue_view;
 mod tray;
 pub mod widgets;
 
-pub use relm_app::run_relm4_app;
-pub use tray::TrayHandle;
 pub(crate) use backup::{show_export_dialog, show_import_dialog};
 pub(crate) use empty_state::EmptyState;
 pub(crate) use preferences::{apply_theme_settings, build_preferences_window};
+pub use relm_app::run_relm4_app;
 pub(crate) use skeleton::{SkeletonGrid, SkeletonList};
+pub use tray::TrayHandle;
 
 use gtk4::glib;
 use once_cell::sync::Lazy;

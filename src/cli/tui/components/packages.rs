@@ -140,7 +140,10 @@ pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: b
                     let also: Vec<String> = peers.iter().map(|s| s.to_string()).collect();
                     format!(
                         "{} · also: {}",
-                        truncate_middle_to_width(&package.name, name_width.saturating_sub(6).max(8)),
+                        truncate_middle_to_width(
+                            &package.name,
+                            name_width.saturating_sub(6).max(8)
+                        ),
                         also.join(", ")
                     )
                 } else {
@@ -348,7 +351,14 @@ impl TableMode {
     fn header_cells(self) -> Vec<&'static str> {
         match self {
             TableMode::Full => vec![
-                "", "", "Package", "Current", "Available", "Source", "Released", "Action",
+                "",
+                "",
+                "Package",
+                "Current",
+                "Available",
+                "Source",
+                "Released",
+                "Action",
             ],
             TableMode::Medium => vec!["", "", "Package", "Version", "Source", "Action"],
             TableMode::Narrow => vec!["", "", "Package", "Version", "Source"],

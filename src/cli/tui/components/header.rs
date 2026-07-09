@@ -91,7 +91,14 @@ fn primary_tab_specs_with(app: &App, compact: bool) -> Vec<PrimaryTabSpec> {
     let (browse, updates, installed, sources, queue, health) = if compact {
         ("Brw", "Upd", "Ins", "Src", "Que", "Hlth")
     } else {
-        ("Browse", "Updates", "Installed", "Sources", "Queue", "Health")
+        (
+            "Browse",
+            "Updates",
+            "Installed",
+            "Sources",
+            "Queue",
+            "Health",
+        )
     };
     vec![
         PrimaryTabSpec {

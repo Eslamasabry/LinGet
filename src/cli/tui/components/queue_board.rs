@@ -257,10 +257,7 @@ fn draw_divider(frame: &mut Frame, area: Rect) {
         return;
     }
     let line = "─".repeat(area.width as usize);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(line, dim()))),
-        area,
-    );
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(line, dim()))), area);
 }
 
 /// The three lane columns (with their 1-cell gutters skipped) for a lanes
@@ -495,12 +492,7 @@ fn lane_rows(app: &App, spec: &LaneSpec, inner_width: usize) -> Vec<LaneRow> {
     rows
 }
 
-fn append_task_rows(
-    rows: &mut Vec<LaneRow>,
-    app: &App,
-    task: &TaskQueueEntry,
-    width: usize,
-) {
+fn append_task_rows(rows: &mut Vec<LaneRow>, app: &App, task: &TaskQueueEntry, width: usize) {
     // Every row this task emits is a click target for the whole task block.
     let mut lines: Vec<Line<'static>> = Vec::new();
     let is_cursor = app.tasks.get(app.task_cursor).map(|t| &t.id) == Some(&task.id);

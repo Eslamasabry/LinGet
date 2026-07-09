@@ -597,10 +597,12 @@ impl App {
                 self.import_preview_scroll = self.import_preview_scroll.saturating_sub(1);
             }
             KeyCode::PageDown => {
-                self.import_preview_scroll = self.import_preview_scroll.saturating_add(PREVIEW_PAGE);
+                self.import_preview_scroll =
+                    self.import_preview_scroll.saturating_add(PREVIEW_PAGE);
             }
             KeyCode::PageUp => {
-                self.import_preview_scroll = self.import_preview_scroll.saturating_sub(PREVIEW_PAGE);
+                self.import_preview_scroll =
+                    self.import_preview_scroll.saturating_sub(PREVIEW_PAGE);
             }
             KeyCode::Char('g') | KeyCode::Home => self.import_preview_scroll = 0,
             KeyCode::Enter => {

@@ -200,8 +200,8 @@ fn build_source_bars(app: &App, width: usize) -> Vec<Line<'static>> {
     let label_width = 10usize;
     let count_width = 4usize;
     let gutter = 4usize; // leading + trailing padding
-    // "  (NNNN installed)" suffix must fit inside the row too, or the bar
-    // pushes it past the border and it renders clipped.
+                         // "  (NNNN installed)" suffix must fit inside the row too, or the bar
+                         // pushes it past the border and it renders clipped.
     let installed_suffix_width = 18usize;
     let bar_width = width
         .saturating_sub(label_width + count_width + gutter + installed_suffix_width)
@@ -231,7 +231,10 @@ fn build_source_bars(app: &App, width: usize) -> Vec<Line<'static>> {
             Span::styled(
                 format!(
                     "{:<width$}",
-                    crate::cli::tui::format::truncate_to_width(&source.to_string(), label_width - 2),
+                    crate::cli::tui::format::truncate_to_width(
+                        &source.to_string(),
+                        label_width - 2
+                    ),
                     width = label_width - 2
                 ),
                 source_style.add_modifier(Modifier::BOLD),

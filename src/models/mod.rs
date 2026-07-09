@@ -25,8 +25,8 @@ pub use history::{
 pub use icons::*;
 pub use insights::{guess_config_paths, guess_log_command, parse_install_date, PackageInsights};
 pub use package::{
-    detect_duplicates, normalize_name_for_dedup, Package, PackageEnrichment,
-    PackageSource, PackageStatus, UpdateCategory,
+    detect_duplicates, normalize_name_for_dedup, Package, PackageEnrichment, PackageSource,
+    PackageStatus, UpdateCategory,
 };
 pub use package_list::{ExportedPackage, PackageListExport};
 pub use recommendations::{

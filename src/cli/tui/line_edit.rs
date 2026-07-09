@@ -171,7 +171,10 @@ mod tests {
         assert_eq!(cursor, 2);
 
         let (before, under, after) = split_at_cursor("日本語", 1);
-        assert_eq!((before.as_str(), under, after.as_str()), ("日", Some('本'), "語"));
+        assert_eq!(
+            (before.as_str(), under, after.as_str()),
+            ("日", Some('本'), "語")
+        );
     }
 
     #[test]

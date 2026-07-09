@@ -7151,11 +7151,13 @@ Remove   1 Package
         // Once a frame area is known, a page equals the visible table rows
         // minus one line of overlap.
         app.terminal_area = Rect::new(0, 0, 120, 40);
-        let table_rows =
-            compute_layout(&app, app.terminal_area).packages.height as usize - 6;
+        let table_rows = compute_layout(&app, app.terminal_area).packages.height as usize - 6;
         let step = app.package_page_step();
         assert_eq!(step, table_rows - 1);
-        assert!(step > HALF_PAGE, "a 40-row terminal pages more than 10 rows");
+        assert!(
+            step > HALF_PAGE,
+            "a 40-row terminal pages more than 10 rows"
+        );
 
         let before = app.cursor;
         app.handle_key(key(KeyCode::PageDown)).await;

@@ -811,10 +811,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     // on narrow terminals.
     if !app.status.trim().is_empty() {
         let line = compose_left_right(
-            vec![
-                Span::raw(" "),
-                Span::styled(app.status.clone(), accent()),
-            ],
+            vec![Span::raw(" "), Span::styled(app.status.clone(), accent())],
             vec![Span::styled(
                 format!("{} updates available", app.filter_counts[2]),
                 Style::default().fg(palette::ORANGE()),
@@ -1839,7 +1836,9 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
             "  1 permissions   2 network   3 conflict   4 other   0 all",
         ));
         lines.push(Line::from("  [ ] scroll selected task log"));
-        lines.push(Line::from("  C or Ctrl+C cancel running task   l close queue"));
+        lines.push(Line::from(
+            "  C or Ctrl+C cancel running task   l close queue",
+        ));
     } else {
         lines.push(Line::from(Span::styled("Packages", section_header())));
         lines.push(Line::from("  Space select   f favorite   F bulk favorite"));
