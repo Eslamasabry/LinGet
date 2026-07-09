@@ -2,19 +2,30 @@
 name = "linget"
 version = "0.1.7"
 edition = "2021"
-description = "A modern GUI package manager for Linux - like winget for Windows"
+description = "A unified terminal package manager for Linux"
 authors = ["LinGet Contributors"]
 license = "GPL-3.0"
 repository = "https://github.com/linget/linget"
-keywords = ["package-manager", "linux", "gtk", "gui"]
-categories = ["gui", "system"]
+keywords = ["package-manager", "linux", "terminal", "tui"]
+categories = ["command-line-utilities"]
+
+[features]
+default = []
+gui = [
+    "dep:gdk-pixbuf",
+    "dep:gtk4",
+    "dep:ksni",
+    "dep:libadwaita",
+    "dep:notify-rust",
+    "dep:relm4",
+]
 
 [dependencies]
 # GTK4 0.9 (supports GTK 4.14) and libadwaita 0.7 (supports libadwaita 1.5)
-gtk4 = "0.9"
-gdk-pixbuf = "0.20"
-libadwaita = { version = "0.7", features = ["v1_5"] }
-relm4 = { version = "0.9", features = ["libadwaita"] }
+gtk4 = { version = "0.9", optional = true }
+gdk-pixbuf = { version = "0.20", optional = true }
+libadwaita = { version = "0.7", features = ["v1_5"], optional = true }
+relm4 = { version = "0.9", features = ["libadwaita"], optional = true }
 tokio = { version = "1", features = ["full", "rt-multi-thread", "process", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -33,11 +44,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 once_cell = "1"
 open = "5"
-notify-rust = "4"
+notify-rust = { version = "4", optional = true }
 toml = "0.8"
 humansize = "2"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-ksni = "0.2"
+ksni = { version = "0.2", optional = true }
 uuid = { version = "1", features = ["v4"] }
 semver = "1"
 
@@ -65,13 +76,10 @@ codegen-units = 1
 maintainer = "LinGet Contributors <https://github.com/linget/linget>"
 copyright = "2025, LinGet Contributors"
 license-file = ["LICENSE", "4"]
-depends = "$auto, libgtk-4-1, libadwaita-1-0"
+depends = "$auto"
 section = "utils"
 priority = "optional"
 assets = [
     ["target/release/linget", "usr/bin/", "755"],
-    ["data/io.github.linget.desktop", "usr/share/applications/", "644"],
-    ["data/icons/hicolor/scalable/apps/io.github.linget.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
-    ["data/icons/hicolor/symbolic/apps/io.github.linget-symbolic.svg", "usr/share/icons/hicolor/symbolic/apps/", "644"],
     ["README.md", "usr/share/doc/linget/README.md", "644"],
 ]

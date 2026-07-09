@@ -2,9 +2,9 @@ mod commands;
 mod output;
 pub mod tui;
 
-use crate::app::{APP_NAME, APP_VERSION};
 use crate::backend::PackageManager;
 use crate::models::PackageSource;
+use crate::product::{APP_NAME, APP_VERSION};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -155,7 +155,7 @@ pub enum Commands {
     /// Launch interactive TUI mode
     Tui,
 
-    /// Launch graphical user interface (default when no command given)
+    /// Launch the optional graphical user interface
     Gui,
 
     /// Manage ignored packages (excluded from update checks)

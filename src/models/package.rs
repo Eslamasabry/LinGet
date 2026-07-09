@@ -346,7 +346,7 @@ impl PackageSource {
     }
 
     #[allow(dead_code)]
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub(crate) fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "apt" => Some(PackageSource::Apt),
             "dnf" => Some(PackageSource::Dnf),

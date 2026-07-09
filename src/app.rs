@@ -1,17 +1,18 @@
+#[cfg(feature = "gui")]
 use crate::models::{init_icon_cache, load_cache as load_enrichment_cache, Config};
+#[cfg(feature = "gui")]
 use crate::ui::TrayHandle;
+#[cfg(feature = "gui")]
 use gtk4::prelude::ObjectExt;
+#[cfg(feature = "gui")]
 use std::cell::RefCell;
 
-#[allow(dead_code)]
-pub const APP_ID: &str = "io.github.linget";
-pub const APP_NAME: &str = "LinGet";
-pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-
+#[cfg(feature = "gui")]
 thread_local! {
     static TRAY_HANDLE: RefCell<Option<TrayHandle>> = const { RefCell::new(None) };
 }
 
+#[cfg(feature = "gui")]
 pub fn load_css_internal() {
     let provider = gtk4::CssProvider::new();
     provider.load_from_data(include_str!("../resources/style.css"));
@@ -23,6 +24,7 @@ pub fn load_css_internal() {
     );
 }
 
+#[cfg(feature = "gui")]
 pub fn load_icons_internal() {
     let Some(display) = gtk4::gdk::Display::default() else {
         tracing::warn!("No display available for loading icons");
@@ -48,6 +50,7 @@ pub fn load_icons_internal() {
     }
 }
 
+#[cfg(feature = "gui")]
 pub fn init_startup() {
     load_css_internal();
     load_icons_internal();
@@ -69,6 +72,7 @@ pub fn init_startup() {
     }
 }
 
+#[cfg(feature = "gui")]
 #[allow(dead_code)]
 pub fn with_tray<F, R>(f: F) -> Option<R>
 where
