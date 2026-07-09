@@ -19,6 +19,7 @@ mod providers;
 mod snap;
 pub mod streaming;
 mod traits;
+pub mod transaction;
 mod zypper;
 
 pub use appimage::AppImageBackend;
@@ -465,6 +466,16 @@ impl PackageManager {
         }
     }
 
+    fn ensure_source_enabled(&self, source: PackageSource) -> Result<()> {
+        if !self.enabled_sources.contains(&source) {
+            anyhow::bail!("{} source is disabled", source);
+        }
+        if !self.backends.contains_key(&source) {
+            anyhow::bail!(self.backend_unavailable_reason(source));
+        }
+        Ok(())
+    }
+
     fn ensure_package_capability(
         &self,
         package: &Package,
@@ -531,6 +542,40 @@ impl PackageManager {
         self.backends
             .iter()
             .filter(|(source, _)| self.enabled_sources.contains(source))
+    }
+
+    pub async fn list_installed_for_source(&self, source: PackageSource) -> Result<Vec<Package>> {
+        self.ensure_source_enabled(source)?;
+        let backend = self
+            .backends
+            .get(&source)
+            .with_context(|| format!("No backend available for {}", source))?;
+        timeout(BACKEND_LIST_TIMEOUT, backend.list_installed())
+            .await
+            .with_context(|| {
+                format!(
+                    "{} package listing timed out after {}s",
+                    source,
+                    BACKEND_LIST_TIMEOUT.as_secs()
+                )
+            })?
+    }
+
+    pub async fn check_updates_for_source(&self, source: PackageSource) -> Result<Vec<Package>> {
+        self.ensure_source_enabled(source)?;
+        let backend = self
+            .backends
+            .get(&source)
+            .with_context(|| format!("No backend available for {}", source))?;
+        timeout(BACKEND_UPDATE_TIMEOUT, backend.check_updates())
+            .await
+            .with_context(|| {
+                format!(
+                    "{} update check timed out after {}s",
+                    source,
+                    BACKEND_UPDATE_TIMEOUT.as_secs()
+                )
+            })?
     }
 
     #[instrument(skip(self), level = "debug")]

@@ -189,7 +189,7 @@ impl LegacyPackageListExport {
         let mut warnings = Vec::new();
 
         for (source_key, source_packages) in grouped_packages {
-            let Some(source) = PackageSource::from_str(&source_key) else {
+            let Some(source) = PackageSource::from_config_str(&source_key) else {
                 warnings.push(format!("Unknown source: {}, skipping", source_key));
                 continue;
             };
@@ -233,7 +233,7 @@ where
     D: Deserializer<'de>,
 {
     let raw = String::deserialize(deserializer)?;
-    PackageSource::from_str(&raw)
+    PackageSource::from_config_str(&raw)
         .ok_or_else(|| D::Error::custom(format!("unknown package source: {}", raw)))
 }
 

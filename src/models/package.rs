@@ -345,8 +345,7 @@ impl PackageSource {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn from_str(s: &str) -> Option<Self> {
+    pub fn from_config_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "apt" => Some(PackageSource::Apt),
             "dnf" => Some(PackageSource::Dnf),
@@ -660,14 +659,17 @@ mod tests {
     #[test]
     fn windows_sources_round_trip_from_config_keys() {
         assert_eq!(
-            PackageSource::from_str("winget"),
+            PackageSource::from_config_str("winget"),
             Some(PackageSource::Winget)
         );
         assert_eq!(
-            PackageSource::from_str("choco"),
+            PackageSource::from_config_str("choco"),
             Some(PackageSource::Chocolatey)
         );
-        assert_eq!(PackageSource::from_str("scoop"), Some(PackageSource::Scoop));
+        assert_eq!(
+            PackageSource::from_config_str("scoop"),
+            Some(PackageSource::Scoop)
+        );
         assert_eq!(PackageSource::Winget.as_config_str(), "winget");
         assert_eq!(PackageSource::Chocolatey.as_config_str(), "chocolatey");
         assert_eq!(PackageSource::Scoop.as_config_str(), "scoop");

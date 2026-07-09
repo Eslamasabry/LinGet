@@ -1081,7 +1081,7 @@ impl App {
         self.source = config
             .last_source_filter
             .as_deref()
-            .and_then(PackageSource::from_str);
+            .and_then(PackageSource::from_config_str);
         self.favorites_updates_only = config.tui_favorites_updates_only;
         self.apply_filters();
         self.set_package_cursor(config.tui_last_cursor);
