@@ -1,0 +1,49 @@
+{
+  "providers": [
+    {
+      "source": "Apt",
+      "tier": "Stable",
+      "fidelity": "Exact",
+      "operations": [
+        { "action": "Install", "program": "pkexec", "args": ["apt", "install", "-y", "--", "demo"] },
+        { "action": "Remove", "program": "pkexec", "args": ["apt", "remove", "-y", "--", "demo"] },
+        { "action": "Update", "program": "pkexec", "args": ["apt", "install", "--only-upgrade", "-y", "--", "demo"] }
+      ]
+    },
+    {
+      "source": "Flatpak",
+      "tier": "Stable",
+      "fidelity": "BestEffort",
+      "operations": [
+        { "action": "Install", "program": "flatpak", "args": ["install", "-y", "demo"] },
+        { "action": "Remove", "program": "flatpak", "args": ["uninstall", "-y", "demo"] },
+        { "action": "Update", "program": "flatpak", "args": ["update", "-y", "demo"] }
+      ]
+    },
+    {
+      "source": "Npm",
+      "tier": "Stable",
+      "fidelity": "BestEffort",
+      "operations": [
+        { "action": "Install", "program": "npm", "args": ["install", "-g", "demo"] },
+        { "action": "Remove", "program": "npm", "args": ["uninstall", "-g", "demo"] },
+        { "action": "Update", "program": "npm", "args": ["install", "-g", "demo@latest"] }
+      ]
+    }
+  ],
+  "errors": [
+    { "diagnostic": "authentication cancelled by pkexec", "code": "AuthorizationCancelled" },
+    { "diagnostic": "no authentication agent found", "code": "NoPrivilegeAgent" },
+    { "diagnostic": "EACCES permission denied", "code": "AuthorizationDenied" },
+    { "diagnostic": "dpkg lock held by another process", "code": "LockBusy" },
+    { "diagnostic": "dependency conflict", "code": "DependencyConflict" },
+    { "diagnostic": "network could not resolve host", "code": "Network" },
+    { "diagnostic": "package returned 404 not found", "code": "NotFound" },
+    { "diagnostic": "repository unavailable: no Release file", "code": "RepositoryUnavailable" },
+    { "diagnostic": "repository signature invalid", "code": "SignatureInvalid" },
+    { "diagnostic": "no space left on device", "code": "DiskFull" },
+    { "diagnostic": "request timed out", "code": "Timeout" },
+    { "diagnostic": "operation interrupted", "code": "Interrupted" },
+    { "diagnostic": "unexpected provider exit", "code": "Unknown" }
+  ]
+}

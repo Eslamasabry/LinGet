@@ -23,6 +23,18 @@ jobs:
       - name: Format (check)
         run: cargo fmt --all --check
 
+  stable-provider-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Stable provider contracts
+        run: cargo test --no-default-features stable_provider_ -- --nocapture
+
   lint-build:
     runs-on: ubuntu-latest
     steps:

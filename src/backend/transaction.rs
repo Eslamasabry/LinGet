@@ -12,6 +12,11 @@ use uuid::Uuid;
 
 pub const TRANSACTION_SCHEMA_VERSION: u16 = 1;
 pub const PLAN_TTL_SECONDS: i64 = 120;
+pub const STABLE_PROVIDERS: [PackageSource; 3] = [
+    PackageSource::Apt,
+    PackageSource::Flatpak,
+    PackageSource::Npm,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationAction {
@@ -207,6 +212,10 @@ impl ProviderDescriptor {
             },
         }
     }
+
+    pub fn stable() -> Vec<Self> {
+        STABLE_PROVIDERS.into_iter().map(Self::for_source).collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,7 +373,20 @@ impl ProviderError {
                     true,
                     "Approve the authorization prompt and retry",
                 )
-            } else if lower.contains("permission") || lower.contains("not authorized") {
+            } else if lower.contains("no authentication agent")
+                || lower.contains("no polkit agent")
+                || lower.contains("cannot open display")
+            {
+                (
+                    ProviderErrorCode::NoPrivilegeAgent,
+                    "No authorization agent is available",
+                    true,
+                    "Start an authorization agent or use an interactive session",
+                )
+            } else if lower.contains("permission")
+                || lower.contains("not authorized")
+                || lower.contains("eacces")
+            {
                 (
                     ProviderErrorCode::AuthorizationDenied,
                     "The package manager denied authorization",
@@ -385,10 +407,39 @@ impl ProviderError {
                     false,
                     "Inspect the provider output before changing dependencies",
                 )
-            } else if lower.contains("network")
-                || lower.contains("timed out")
-                || lower.contains("resolve")
+            } else if lower.contains("signature")
+                && (lower.contains("invalid") || lower.contains("not verified"))
             {
+                (
+                    ProviderErrorCode::SignatureInvalid,
+                    "The repository signature could not be verified",
+                    false,
+                    "Refresh trusted repository keys before retrying",
+                )
+            } else if lower.contains("repository")
+                && (lower.contains("unavailable") || lower.contains("no release file"))
+            {
+                (
+                    ProviderErrorCode::RepositoryUnavailable,
+                    "The configured repository is unavailable",
+                    true,
+                    "Check the repository configuration and refresh metadata",
+                )
+            } else if lower.contains("timeout") || lower.contains("timed out") {
+                (
+                    ProviderErrorCode::Timeout,
+                    "The provider operation timed out",
+                    true,
+                    "Check the network and retry",
+                )
+            } else if lower.contains("interrupted") || lower.contains("terminated by signal") {
+                (
+                    ProviderErrorCode::Interrupted,
+                    "The provider operation was interrupted",
+                    true,
+                    "Refresh package state before retrying",
+                )
+            } else if lower.contains("network") || lower.contains("resolve") {
                 (
                     ProviderErrorCode::Network,
                     "The provider could not reach its repository",
@@ -758,58 +809,7 @@ impl TransactionEngine {
 
     async fn verify(&self, plan: &ProviderPlan) -> Result<VerificationReceipt, ProviderError> {
         let inventory = self.inventory(plan.provider.source).await?;
-        let mut observed = Vec::new();
-        let mut matches = 0usize;
-        let mut warnings = Vec::new();
-        for expected in &plan.expected_changes {
-            let installed = inventory
-                .iter()
-                .find(|package| package.name == expected.name);
-            let observed_after = installed.map(|package| package.version.clone());
-            let target_matches = match plan.action {
-                OperationAction::Install => installed.is_some(),
-                OperationAction::Remove => installed.is_none(),
-                OperationAction::Update => match (&expected.after, installed) {
-                    (Some(version), Some(package)) => &package.version == version,
-                    (None, Some(_)) => false,
-                    _ => false,
-                },
-            };
-            if target_matches {
-                matches += 1;
-            }
-            observed.push(PackageChange {
-                name: expected.name.clone(),
-                before: expected.before.clone(),
-                after: observed_after,
-            });
-        }
-        let outcome = if matches == plan.expected_changes.len() {
-            VerificationOutcome::Verified
-        } else if plan.action == OperationAction::Update
-            && plan
-                .expected_changes
-                .iter()
-                .any(|change| change.after.is_none())
-        {
-            warnings.push(
-                "The provider did not expose a target version, so the update cannot be proven"
-                    .to_string(),
-            );
-            VerificationOutcome::Inconclusive
-        } else {
-            VerificationOutcome::Mismatch
-        };
-        Ok(VerificationReceipt {
-            operation_id: plan.operation_id.clone(),
-            plan_id: plan.id.clone(),
-            provider: plan.provider.source,
-            expected: plan.expected_changes.clone(),
-            observed,
-            outcome,
-            warnings,
-            verified_at: Utc::now(),
-        })
+        Ok(verify_inventory(plan, &inventory, Utc::now()))
     }
 
     async fn upsert_record(&self, record: OperationRecord) -> Result<(), ProviderError> {
@@ -885,6 +885,69 @@ impl TransactionEngine {
         record.receipt = Some(receipt);
         record.updated_at = Utc::now();
         store.save_atomic(&self.store_path).await
+    }
+}
+
+fn verify_inventory(
+    plan: &ProviderPlan,
+    inventory: &[Package],
+    verified_at: DateTime<Utc>,
+) -> VerificationReceipt {
+    let mut observed = Vec::new();
+    let mut matches = 0usize;
+    let mut warnings = Vec::new();
+    for expected in &plan.expected_changes {
+        let installed = inventory
+            .iter()
+            .find(|package| package.name == expected.name);
+        let observed_after = installed.map(|package| package.version.clone());
+        let target_matches = match plan.action {
+            OperationAction::Install => match (&expected.after, installed) {
+                (Some(version), Some(package)) => &package.version == version,
+                (None, Some(_)) => true,
+                _ => false,
+            },
+            OperationAction::Remove => installed.is_none(),
+            OperationAction::Update => match (&expected.after, installed) {
+                (Some(version), Some(package)) => &package.version == version,
+                (None, Some(_)) => false,
+                _ => false,
+            },
+        };
+        if target_matches {
+            matches += 1;
+        }
+        observed.push(PackageChange {
+            name: expected.name.clone(),
+            before: expected.before.clone(),
+            after: observed_after,
+        });
+    }
+    let outcome = if matches == plan.expected_changes.len() {
+        VerificationOutcome::Verified
+    } else if plan.action == OperationAction::Update
+        && plan
+            .expected_changes
+            .iter()
+            .any(|change| change.after.is_none())
+    {
+        warnings.push(
+            "The provider did not expose a target version, so the update cannot be proven"
+                .to_string(),
+        );
+        VerificationOutcome::Inconclusive
+    } else {
+        VerificationOutcome::Mismatch
+    };
+    VerificationReceipt {
+        operation_id: plan.operation_id.clone(),
+        plan_id: plan.id.clone(),
+        provider: plan.provider.source,
+        expected: plan.expected_changes.clone(),
+        observed,
+        outcome,
+        warnings,
+        verified_at,
     }
 }
 
@@ -1125,6 +1188,58 @@ pub fn parse_apt_simulation(output: &str) -> Vec<PackageChange> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::PackageBackend;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use std::collections::{HashMap, HashSet};
+
+    struct ContractBackend {
+        source: PackageSource,
+        inventory: Arc<Mutex<Vec<Package>>>,
+    }
+
+    #[async_trait]
+    impl PackageBackend for ContractBackend {
+        fn is_available() -> bool {
+            true
+        }
+
+        async fn list_installed(&self) -> Result<Vec<Package>> {
+            Ok(self.inventory.lock().await.clone())
+        }
+
+        async fn check_updates(&self) -> Result<Vec<Package>> {
+            Ok(Vec::new())
+        }
+
+        async fn install(&self, name: &str) -> Result<()> {
+            let mut inventory = self.inventory.lock().await;
+            inventory.retain(|package| package.name != name);
+            inventory.push(package(name, self.source, "2.0"));
+            Ok(())
+        }
+
+        async fn remove(&self, name: &str) -> Result<()> {
+            self.inventory
+                .lock()
+                .await
+                .retain(|package| package.name != name);
+            Ok(())
+        }
+
+        async fn update(&self, name: &str) -> Result<()> {
+            self.install(name).await
+        }
+
+        async fn search(&self, _query: &str) -> Result<Vec<Package>> {
+            Ok(Vec::new())
+        }
+
+        fn source(&self) -> PackageSource {
+            self.source
+        }
+    }
 
     fn package_ref(name: &str, source: PackageSource) -> PackageRef {
         PackageRef {
@@ -1154,6 +1269,24 @@ mod tests {
         }
     }
 
+    fn fixture_source(value: &str) -> PackageSource {
+        match value {
+            "Apt" => PackageSource::Apt,
+            "Flatpak" => PackageSource::Flatpak,
+            "Npm" => PackageSource::Npm,
+            other => panic!("unknown fixture provider {other}"),
+        }
+    }
+
+    fn fixture_action(value: &str) -> OperationAction {
+        match value {
+            "Install" => OperationAction::Install,
+            "Remove" => OperationAction::Remove,
+            "Update" => OperationAction::Update,
+            other => panic!("unknown fixture action {other}"),
+        }
+    }
+
     #[test]
     fn stable_provider_descriptors_are_truthful() {
         assert_eq!(
@@ -1169,6 +1302,195 @@ mod tests {
             ProviderDescriptor::for_source(PackageSource::Aur).tier,
             ProviderTier::DetectionOnly
         );
+        assert_eq!(
+            ProviderDescriptor::stable()
+                .into_iter()
+                .map(|descriptor| descriptor.source)
+                .collect::<Vec<_>>(),
+            STABLE_PROVIDERS
+        );
+    }
+
+    #[test]
+    fn stable_provider_contracts_match_tracked_fixtures() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/stable-provider-contracts.json"
+        )))
+        .expect("valid provider fixture");
+        let providers = fixture["providers"].as_array().expect("provider array");
+        assert_eq!(providers.len(), STABLE_PROVIDERS.len());
+
+        for provider in providers {
+            let source = fixture_source(provider["source"].as_str().expect("source"));
+            let descriptor = ProviderDescriptor::for_source(source);
+            assert_eq!(descriptor.tier, ProviderTier::Stable);
+            assert_eq!(format!("{:?}", descriptor.tier), provider["tier"]);
+            assert_eq!(format!("{:?}", descriptor.fidelity), provider["fidelity"]);
+
+            let operations = provider["operations"].as_array().expect("operations");
+            assert_eq!(operations.len(), 3);
+            for operation in operations {
+                let action = fixture_action(operation["action"].as_str().expect("action"));
+                let actual = command_for(source, action, "demo");
+                let expected_args = operation["args"]
+                    .as_array()
+                    .expect("args")
+                    .iter()
+                    .map(|value| value.as_str().expect("arg").to_string())
+                    .collect::<Vec<_>>();
+                assert_eq!(actual.program, operation["program"]);
+                assert_eq!(actual.args, expected_args);
+                assert_eq!(actual.privileged, source == PackageSource::Apt);
+            }
+        }
+    }
+
+    #[test]
+    fn stable_provider_error_contracts_match_tracked_fixtures() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/stable-provider-contracts.json"
+        )))
+        .expect("valid provider fixture");
+        for error in fixture["errors"].as_array().expect("error array") {
+            let classified = ProviderError::classify(
+                PackageSource::Apt,
+                error["diagnostic"].as_str().expect("diagnostic"),
+            );
+            assert_eq!(format!("{:?}", classified.code), error["code"]);
+            assert!(!classified.safe_message.is_empty());
+            assert!(!classified.recovery_actions.is_empty());
+        }
+    }
+
+    #[test]
+    fn stable_provider_plan_and_verification_matrix_is_complete() {
+        for source in STABLE_PROVIDERS {
+            for action in [
+                OperationAction::Install,
+                OperationAction::Remove,
+                OperationAction::Update,
+            ] {
+                let request = OperationRequest::new(
+                    action,
+                    vec![package_ref("demo", source)],
+                    RequestedBy::Tui,
+                );
+                let before = [package("demo", source, "1.0")];
+                let apt_changes = (source == PackageSource::Apt).then(|| {
+                    vec![PackageChange {
+                        name: "demo".to_string(),
+                        before: Some("1.0".to_string()),
+                        after: (action != OperationAction::Remove).then(|| "2.0".to_string()),
+                    }]
+                });
+                let plan = build_plan(&request, &before, apt_changes);
+                assert_eq!(plan.provider.tier, ProviderTier::Stable);
+                assert_eq!(plan.exact_commands.len(), 1);
+                assert_eq!(plan.expected_changes.len(), 1);
+                assert!(!plan.inventory_fingerprint.is_empty());
+
+                let after = if action == OperationAction::Remove {
+                    Vec::new()
+                } else {
+                    vec![package("demo", source, "2.0")]
+                };
+                let receipt = verify_inventory(&plan, &after, Utc::now());
+                assert_eq!(receipt.outcome, VerificationOutcome::Verified);
+                assert_eq!(receipt.provider, source);
+                assert_eq!(receipt.expected.len(), 1);
+                assert_eq!(receipt.observed.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn verification_rejects_wrong_installed_version() {
+        let request = OperationRequest::new(
+            OperationAction::Install,
+            vec![package_ref("demo", PackageSource::Npm)],
+            RequestedBy::Tui,
+        );
+        let plan = build_plan(&request, &[], None);
+        let receipt = verify_inventory(
+            &plan,
+            &[package("demo", PackageSource::Npm, "1.5")],
+            Utc::now(),
+        );
+        assert_eq!(receipt.outcome, VerificationOutcome::Mismatch);
+    }
+
+    #[tokio::test]
+    async fn stable_provider_execution_and_receipt_matrix_is_complete() {
+        for source in STABLE_PROVIDERS {
+            for action in [
+                OperationAction::Install,
+                OperationAction::Remove,
+                OperationAction::Update,
+            ] {
+                let initial_inventory = if action == OperationAction::Install {
+                    Vec::new()
+                } else {
+                    vec![package("demo", source, "1.0")]
+                };
+                let inventory = Arc::new(Mutex::new(initial_inventory.clone()));
+                let backend = ContractBackend {
+                    source,
+                    inventory: Arc::clone(&inventory),
+                };
+                let mut backends: HashMap<PackageSource, Box<dyn PackageBackend>> = HashMap::new();
+                backends.insert(source, Box::new(backend));
+                let manager = PackageManager {
+                    backends,
+                    enabled_sources: HashSet::from([source]),
+                    provider_statuses: HashMap::new(),
+                };
+                let root = std::env::temp_dir().join(format!(
+                    "linget-provider-contract-{}-{}",
+                    source,
+                    Uuid::new_v4()
+                ));
+                let store_path = root.join("transactions.json");
+                let engine = TransactionEngine::load(Arc::new(Mutex::new(manager)), store_path)
+                    .await
+                    .expect("load contract engine");
+                let request = OperationRequest::new(
+                    action,
+                    vec![package_ref("demo", source)],
+                    RequestedBy::Tui,
+                );
+                let apt_changes = (source == PackageSource::Apt).then(|| {
+                    vec![PackageChange {
+                        name: "demo".to_string(),
+                        before: (action != OperationAction::Install).then(|| "1.0".to_string()),
+                        after: (action != OperationAction::Remove).then(|| "2.0".to_string()),
+                    }]
+                });
+                let plan = build_plan(&request, &initial_inventory, apt_changes);
+                engine
+                    .upsert_record(OperationRecord {
+                        operation_id: request.id,
+                        state: OperationState::Ready,
+                        risk: RiskAssessment::for_plan(&plan),
+                        plan: plan.clone(),
+                        receipt: None,
+                        error: None,
+                        updated_at: Utc::now(),
+                    })
+                    .await
+                    .expect("persist reviewed plan");
+                let receipt = engine
+                    .execute(plan, CancellationFlag::default())
+                    .await
+                    .expect("execute contract operation");
+                assert_eq!(receipt.outcome, VerificationOutcome::Verified);
+                assert_eq!(engine.records().await[0].state, OperationState::Succeeded);
+                fs::remove_dir_all(root)
+                    .await
+                    .expect("remove provider contract directory");
+            }
+        }
     }
 
     #[test]
@@ -1299,7 +1621,7 @@ mod tests {
         );
         assert_eq!(
             ProviderError::classify(PackageSource::Flatpak, "network timed out").code,
-            ProviderErrorCode::Network
+            ProviderErrorCode::Timeout
         );
     }
 }
