@@ -55,9 +55,9 @@ For a custom destination, download and inspect the installer first, then run `./
 
 ### Manual Installation
 
-1. Download the terminal archive, consolidated checksum file, and provenance attestation from the [Releases page](https://github.com/Eslamasabry/LinGet/releases).
-2. Verify the checksum: `sha256sum --check linget-vVERSION-checksums.txt --ignore-missing`.
-3. Install the verified archive: `./install.sh --archive linget-vVERSION-TARGET.tar.gz`.
+1. Download the terminal archive, its matching `.sha256` sidecar, the consolidated checksum file, and provenance attestation from the [Releases page](https://github.com/Eslamasabry/LinGet/releases).
+2. Verify the checksum: `sha256sum --check linget-vVERSION-TARGET.tar.gz.sha256`.
+3. Extract the archive and run its installer against the original archive: `./linget-vVERSION-TARGET/install.sh --archive "$PWD/linget-vVERSION-TARGET.tar.gz"`.
 
 ### Building from Source
 
