@@ -5,11 +5,11 @@
 </p>
 
 <p align="center">
-  <strong>A modern, unified package manager for Linux</strong>
+  <strong>A terminal-first, unified package manager for Linux</strong>
 </p>
 
 <p align="center">
-  Manage all your packages from APT, Flatpak, Snap, npm, pip, and more in one beautiful, unified interface.
+  Plan, review, and manage Linux packages from one focused TUI and CLI.
 </p>
 
 ---
@@ -23,57 +23,41 @@ Also: parts of this project were **vibe-coded** (rapidly prototyped with AI assi
 
 ## Features
 
-- **Unified Library** - View and manage packages from multiple sources in a single list.
-- **Modern UI** - Built with GTK4 and Libadwaita for a native GNOME experience.
-- **Providers + Filtering** - Enable/disable providers from the sidebar, and filter the list by source from the top toolbar.
-- **Bulk Operations** - Select multiple packages to update or remove them all at once.
-- **Backup & Restore** - Export your package list to a file and restore it on another machine.
-- **Update Center** - See all available updates across your system in one view.
-- **Ignore Updates** - Pin specific packages to prevent them from being updated.
-- **Real-time Stats** - Live counters for installed packages and available updates.
-- **Package Details** - View detailed info, version history, and manage individual packages.
-- **Caching** - Instant startup times thanks to local caching.
+- **Terminal-first** - `linget` opens the interactive TUI without GTK or a desktop session.
+- **Reviewed operations** - Inspect provider, command intent, fidelity, risk, and expected changes before execution.
+- **Verified results** - Stable providers return a post-operation verification receipt instead of treating process exit as proof.
+- **Unified catalog** - Browse installed packages and updates from multiple sources.
+- **Queue workflow** - Stage package operations, review impact, and execute them serially.
+- **Scriptable CLI** - Use focused subcommands and structured output outside the TUI.
+- **Optional GUI** - GTK4/Libadwaita remains available as a separately built and packaged feature.
 
-## Supported Package Managers
+## Provider support
 
-| Source | Description | Supported Operations |
-|--------|-------------|---------------------|
-| **APT** | System packages (Debian/Ubuntu) | List, Install, Remove, Update |
-| **Flatpak** | Sandboxed applications | List, Install, Remove, Update |
-| **Snap** | Ubuntu Snap packages | List, Install, Remove, Update |
-| **npm** | Global Node.js packages | List, Install, Remove, Update |
-| **pip** | User Python packages | List, Install, Remove, Update |
-| **pipx** | Python app packages | List, Install, Remove, Update |
-| **cargo** | Rust crates | List, Install, Remove, Update |
-| **brew** | Homebrew (Linuxbrew) | List, Install, Remove, Update |
-| **Conda** | Conda packages (base env) | List, Install, Remove, Update |
-| **Mamba** | Mamba packages (base env) | List, Install, Remove, Update |
-| **Zypper** | System packages (openSUSE) | List, Install, Remove, Update |
-| **AUR** | Arch User Repository | List, Check Updates, Search (Install/Remove/Update not yet) |
-| **Dart** | Dart/Flutter global tools (pub global) | List, Install, Remove, Update |
-| **Deb** | Local .deb files | List, Install, Remove |
-| **AppImage** | Portable AppImages | List, Remove |
+| Tier | Providers | What the tier means |
+| --- | --- | --- |
+| **Stable** | APT, Flatpak, npm | Contract-tested commands, structured failures, labeled plan fidelity, and post-operation verification. |
+| **Beta** | Other implemented providers | Available for evaluation, but not yet held to the Stable contract. Review every plan and provider response. |
+| **Detection-only** | Providers reported as unavailable or unsupported | Discovery only; LinGet must not claim an unsupported mutation. |
+
+APT provides exact simulated plans where the host supports them. Flatpak and npm plans are currently best effort and are labeled as such. Read the [provider support contract](docs/provider-support.md) before relying on a mutation.
 
 ## Installation
 
 ### Quick Install (Recommended)
 
-Run this one-line command to download and install the latest version:
+The installer selects the terminal artifact for your architecture, verifies its SHA-256 digest, and installs to `~/.local/bin` for a normal user (`/usr/local/bin` for root):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/main/install.sh | bash
 ```
 
+For a custom destination, download and inspect the installer first, then run `./install.sh --prefix /your/prefix`. See [Release artifacts](docs/release-artifacts.md) for manual checksum and provenance verification.
+
 ### Manual Installation
 
-1.  Download the latest release tarball from the [Releases page](https://github.com/Eslamasabry/LinGet/releases).
-2.  Extract the archive.
-3.  Run the installer script inside:
-    ```bash
-    ./install.sh
-    ```
-
-### Dependencies
+1. Download the terminal archive, consolidated checksum file, and provenance attestation from the [Releases page](https://github.com/Eslamasabry/LinGet/releases).
+2. Verify the checksum: `sha256sum --check linget-vVERSION-checksums.txt --ignore-missing`.
+3. Install the verified archive: `./install.sh --archive linget-vVERSION-TARGET.tar.gz`.
 
 ### Building from Source
 
@@ -89,9 +73,15 @@ curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/main/install.sh 
    cd LinGet
    ```
 
-3. **Build and Run:**
+3. **Build and run the terminal app:**
    ```bash
    cargo run --release
+   ```
+
+   The default build has no GTK dependency. To build the optional GUI, install GTK4/Libadwaita development packages and run:
+
+   ```bash
+   cargo run --release --features gui -- gui
    ```
 
 4. **Install System-wide (Optional):**
@@ -110,50 +100,29 @@ cargo install --path .
 
 ## Usage
 
-LinGet offers three interface modes to fit your workflow:
+LinGet offers three interface modes. The terminal interface is the product default:
 
 | Mode | Command | Description |
 |------|---------|-------------|
-| **GUI** | `linget` or `linget gui` | Graphical interface (GTK4/Libadwaita) |
-| **TUI** | `linget tui` | Interactive terminal UI |
+| **TUI** | `linget` or `linget tui` | Interactive terminal UI (default artifact) |
 | **CLI** | `linget <command>` | Command-line interface for scripting |
+| **GUI** | `linget gui` | Optional GTK4/Libadwaita build and artifact |
 
-### GUI Mode (Default)
-
-Launch the graphical interface:
-
-```bash
-linget        # Default - opens GUI
-linget gui    # Explicit GUI launch
-```
-
-**GUI Features:**
-- **Navigation**: Use the sidebar to switch between "All Packages" and "Updates"
-- **Providers**: Enable/disable package sources from the sidebar
-- **Filtering**: Use the top toolbar to filter by source
-- **Selection**: Toggle "Selection Mode" (Ctrl+S) for bulk actions
-- **Details**: Click any package for detailed info
-
-**Keyboard Shortcuts:**
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+F` | Search packages |
-| `Ctrl+R` | Refresh package list |
-| `Ctrl+S` | Toggle Selection Mode |
-| `Ctrl+,` | Open Preferences |
-| `Ctrl+Q` | Quit |
-
-### TUI Mode (Terminal UI)
+### TUI Mode (Default)
 
 Launch the interactive terminal interface:
 
 ```bash
-# Build
-cargo build --release
-
-# Run TUI
+linget
 linget tui
+```
+
+### Optional GUI
+
+The standard download intentionally cannot launch a GUI. Build with the `gui` feature or download the explicitly named `linget-gui-*` artifact, then run:
+
+```bash
+linget gui
 ```
 
 **TUI Controls:**

@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a focused improvement to LinGet
+title: "feature: "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What package-management job is difficult today, and for whom?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe success without prescribing a particular implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current alternatives
+      description: How do you solve this today?
+    validations:
+      required: true
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Primary surface
+      options: [TUI, CLI, Optional GUI, Backend/provider, Release/install, Documentation]
+    validations:
+      required: true

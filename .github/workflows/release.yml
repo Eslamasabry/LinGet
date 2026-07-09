@@ -3,65 +3,231 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build Release
+  version:
+    name: Validate release version
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: read
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Match tag to Cargo package version
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev build-essential pkg-config xvfb
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          test -n "$version"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo version $version" >&2
+            exit 1
+          fi
+
+  terminal:
+    name: Terminal / ${{ matrix.target }}
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Test terminal-first build
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo test --locked --no-default-features
+
+      - name: Build native terminal binary
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo build --locked --release --target "${{ matrix.target }}"
+
+      - name: Cross-build terminal binary
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        run: cross build --locked --release --target "${{ matrix.target }}"
+
+      - name: Package deterministic terminal artifact
+        run: scripts/package_release.sh --no-build --target "${{ matrix.target }}"
+
+      - name: Verify terminal artifact
+        run: |
+          archive=$(find dist -maxdepth 1 -name 'linget-v*.tar.gz' -print -quit)
+          scripts/verify_release.sh "$archive" terminal
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          artifact-name: linget-${{ matrix.target }}.spdx.json
+          output-file: dist/linget-${{ matrix.target }}.spdx.json
+          format: spdx-json
+          upload-artifact: false
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          artifact-name: linget-${{ matrix.target }}.cdx.json
+          output-file: dist/linget-${{ matrix.target }}.cdx.json
+          format: cyclonedx-json
+          upload-artifact: false
+
+      - name: Attest terminal build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Attest terminal SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
+          sbom-path: dist/*.spdx.json
+
+      - name: Upload terminal assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  gui:
+    name: Optional GUI / x86_64-unknown-linux-gnu
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-deb
-        run: cargo install cargo-deb
-
-      - name: Run Tests
-        run: cargo test
-
-      - name: Build Release Binary
-        run: cargo build --release
-
-      - name: Smoke (install + headless GUI)
-        run: bash scripts/smoke-install.sh
-
-      - name: Build Debian Package
-        run: cargo deb
-
-      - name: Create Tarball
+      - name: Install GUI build dependencies
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          mkdir -p dist
-          cp target/release/linget dist/
-          cp -r data dist/
-          cp install.sh dist/
-          cp README.md dist/
-          cp LICENSE dist/
-          cd dist
-          tar -czvf ../linget-v${VERSION}-linux-x86_64.tar.gz *
-          cd ..
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libgtk-4-dev libadwaita-1-dev pkg-config
 
-      - name: Generate Checksums
-        run: sha256sum linget-v*-linux-x86_64.tar.gz target/debian/*.deb > linget-v${GITHUB_REF#refs/tags/v}-checksums.txt
+      - name: Build optional GUI binary
+        run: cargo build --locked --release --features gui --target x86_64-unknown-linux-gnu
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Package deterministic GUI artifact
+        run: scripts/package_release.sh --no-build --flavor gui --target x86_64-unknown-linux-gnu
+
+      - name: Verify GUI artifact
+        run: |
+          archive=$(find dist -maxdepth 1 -name 'linget-gui-v*.tar.gz' -print -quit)
+          scripts/verify_release.sh "$archive" gui
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
         with:
-          files: |
-            linget-v*-linux-x86_64.tar.gz
-            target/debian/*.deb
-            linget-v*-checksums.txt
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path: .
+          artifact-name: linget-gui-x86_64-unknown-linux-gnu.spdx.json
+          output-file: dist/linget-gui-x86_64-unknown-linux-gnu.spdx.json
+          format: spdx-json
+          upload-artifact: false
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          artifact-name: linget-gui-x86_64-unknown-linux-gnu.cdx.json
+          output-file: dist/linget-gui-x86_64-unknown-linux-gnu.cdx.json
+          format: cyclonedx-json
+          upload-artifact: false
+
+      - name: Attest GUI build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Attest GUI SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
+          sbom-path: dist/*.spdx.json
+
+      - name: Upload GUI assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-x86_64-unknown-linux-gnu
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [version, terminal, gui]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate release checksums
+        working-directory: dist
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          find . -maxdepth 1 -type f \
+            ! -name '*.sha256' \
+            ! -name '*-checksums.txt' \
+            -printf '%f\n' \
+            | LC_ALL=C sort \
+            | xargs sha256sum > "linget-v${version}-checksums.txt"
+          sha256sum --check "linget-v${version}-checksums.txt"
+
+      - name: Attest release checksum manifest
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*-checksums.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: dist/*

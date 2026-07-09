@@ -34,8 +34,7 @@ worktrees
 
 # Generated release artifacts
 linget-v*.tar.gz
-dist/linget-*/
-dist/linget-v*.tar.gz
+/dist/
 
 # Tauri generated assets
 linget-tauri/src-tauri/target/

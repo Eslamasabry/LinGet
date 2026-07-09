@@ -1,0 +1,57 @@
+name: Provider report
+description: Report an APT, Flatpak, npm, or other provider problem
+title: "provider: "
+labels: [provider, needs-triage]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: LinGet version
+      placeholder: linget 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and version
+      placeholder: apt 2.8.3
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Distribution and architecture
+      placeholder: Debian 13, aarch64
+    validations:
+      required: true
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Operation
+      options: [Detection, List, Search, Plan, Install, Remove, Update, Verification]
+    validations:
+      required: true
+  - type: dropdown
+    id: fidelity
+    attributes:
+      label: Reported plan fidelity
+      description: Select the label LinGet showed before the operation.
+      options: [Exact, Best effort, Not shown, Not applicable]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction and redacted output
+      description: Include package names only when safe to share.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I reviewed the provider tier documentation.
+          required: true
+        - label: I removed credentials, private registry URLs, and sensitive inventory data.
+          required: true
