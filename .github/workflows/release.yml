@@ -108,7 +108,7 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: dist/*.tar.gz
-          sbom-path: dist/*.spdx.json
+          sbom-path: dist/linget-${{ matrix.target }}.spdx.json
 
       - name: Upload terminal assets
         uses: actions/upload-artifact@v4
@@ -138,7 +138,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential libgtk-4-dev libadwaita-1-dev pkg-config
+            build-essential libdbus-1-dev libgtk-4-dev libadwaita-1-dev pkg-config
 
       - name: Build optional GUI binary
         run: cargo build --locked --release --features gui --target x86_64-unknown-linux-gnu
@@ -180,7 +180,7 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: dist/*.tar.gz
-          sbom-path: dist/*.spdx.json
+          sbom-path: dist/linget-gui-x86_64-unknown-linux-gnu.spdx.json
 
       - name: Upload GUI assets
         uses: actions/upload-artifact@v4
