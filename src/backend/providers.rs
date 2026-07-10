@@ -383,9 +383,9 @@ mod tests {
         // At minimum, providers that are available should have attempted version detection
         let providers = detect_providers();
         for provider in &providers {
-            if provider.available && provider.version.is_some() {
+            if let (true, Some(version)) = (provider.available, provider.version.as_ref()) {
                 // Version string should not be empty if present
-                assert!(!provider.version.as_ref().unwrap().is_empty());
+                assert!(!version.is_empty());
             }
         }
     }
