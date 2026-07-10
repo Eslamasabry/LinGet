@@ -828,10 +828,8 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => {
                 self.drag_select_anchor = None;
             }
-            MouseEventKind::Down(MouseButton::Right) => {
-                if rect_contains(regions.packages, pos) {
-                    self.handle_mouse_packages_right_click(event.row, &regions.packages);
-                }
+            MouseEventKind::Down(MouseButton::Right) if rect_contains(regions.packages, pos) => {
+                self.handle_mouse_packages_right_click(event.row, &regions.packages);
             }
             _ => {}
         }

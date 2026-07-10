@@ -264,7 +264,7 @@ impl PackageBackend for CargoBackend {
 
         let enrichments = futures::future::join_all(enrichment_futures).await;
 
-        for (pkg, info_opt) in packages.iter_mut().zip(enrichments.into_iter()) {
+        for (pkg, info_opt) in packages.iter_mut().zip(enrichments) {
             if let Some(info) = info_opt {
                 pkg.description = info.description.clone();
                 pkg.homepage = info.homepage.clone().or(info.repository.clone());
@@ -608,7 +608,7 @@ impl PackageBackend for CargoBackend {
 
         let enrichments = futures::future::join_all(enrichment_futures).await;
 
-        for (pkg, info_opt) in packages.iter_mut().take(10).zip(enrichments.into_iter()) {
+        for (pkg, info_opt) in packages.iter_mut().take(10).zip(enrichments) {
             if let Some(info) = info_opt {
                 if pkg.description.is_empty() || pkg.description.len() < info.description.len() {
                     pkg.description = info.description.clone();

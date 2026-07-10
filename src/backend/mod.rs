@@ -1337,7 +1337,7 @@ impl PackageManager {
             }
         }
 
-        all_results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        all_results.sort_by_key(|package| package.name.to_lowercase());
 
         info!(
             query = %query,

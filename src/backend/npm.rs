@@ -272,7 +272,7 @@ impl PackageBackend for NpmBackend {
 
         let enrichments = futures::future::join_all(enrichment_futures).await;
 
-        for (pkg, info_opt) in packages.iter_mut().zip(enrichments.into_iter()) {
+        for (pkg, info_opt) in packages.iter_mut().zip(enrichments) {
             if let Some(info) = info_opt {
                 // Extract description
                 if let Some(ref desc) = info.description {
@@ -356,7 +356,7 @@ impl PackageBackend for NpmBackend {
 
         let enrichments = futures::future::join_all(enrichment_futures).await;
 
-        for (pkg, info_opt) in packages.iter_mut().zip(enrichments.into_iter()) {
+        for (pkg, info_opt) in packages.iter_mut().zip(enrichments) {
             if let Some(info) = info_opt {
                 if let Some(ref desc) = info.description {
                     pkg.description.clone_from(desc);
@@ -691,7 +691,7 @@ impl PackageBackend for NpmBackend {
 
         let enrichments = futures::future::join_all(enrichment_futures).await;
 
-        for (pkg, info_opt) in packages.iter_mut().take(10).zip(enrichments.into_iter()) {
+        for (pkg, info_opt) in packages.iter_mut().take(10).zip(enrichments) {
             if let Some(info) = info_opt {
                 if let Some(ref desc) = info.description {
                     if pkg.description.is_empty() || pkg.description.len() < desc.len() {

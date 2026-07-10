@@ -292,12 +292,9 @@ impl FlatpakBackend {
                             &format!("{}={}", key, value),
                         ));
                     }
-                    "Extension" => {
-                        // Track extensions
-                        if key.starts_with("Extension ") {
-                            let ext_name = key.strip_prefix("Extension ").unwrap_or(key);
-                            metadata.extensions.push(ext_name.to_string());
-                        }
+                    "Extension" if key.starts_with("Extension ") => {
+                        let ext_name = key.strip_prefix("Extension ").unwrap_or(key);
+                        metadata.extensions.push(ext_name.to_string());
                     }
                     _ => {}
                 }

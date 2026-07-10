@@ -499,12 +499,11 @@ fn package_footer_line(
     } else {
         app.filtered.len().max(1).div_ceil(visible_rows)
     };
-    let current_page = if visible_rows == 0 {
-        1
-    } else {
-        (app.cursor / visible_rows) + 1
-    }
-    .min(pages);
+    let current_page = app
+        .cursor
+        .checked_div(visible_rows)
+        .map_or(1, |page| page + 1)
+        .min(pages);
     let right = format!("Pages: {current_page}/{pages}");
     use unicode_width::UnicodeWidthStr;
     let gap = width.saturating_sub(UnicodeWidthStr::width(left.as_str()) + right.len());
