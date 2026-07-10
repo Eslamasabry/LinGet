@@ -3,7 +3,8 @@
 use crate::cli::tui::app::App;
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::theme::{
-    accent, border_focused, border_unfocused, dim, muted, row_cursor, source_color, text, ROUNDED,
+    accent, border_focused, border_set, border_unfocused, dim, muted, row_cursor, source_color,
+    text,
 };
 use ratatui::{
     layout::Rect,
@@ -20,14 +21,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let focused = app.focus == Focus::Sources && !app.queue_expanded;
+    let focused = app.focus == Focus::Sources && !app.is_queue_view();
     let title = format!(
         " Sources ({}) ",
         app.filter_counts[filter_to_index(app.filter)]
     );
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(border_set())
         .border_style(if focused {
             border_focused()
         } else {

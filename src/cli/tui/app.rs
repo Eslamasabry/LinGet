@@ -3,12 +3,15 @@ mod consistency;
 mod input;
 use super::ui;
 use super::update_center;
+use crate::backend::transaction::{
+    OperationAction, OperationRequest, PackageRef, ProviderPlan, RequestedBy, TransactionEngine,
+};
 use crate::backend::{
     BackendCapability, HistoryTracker, PackageLoadProgress, PackageManager, SearchCatalog,
     SearchProviderSummary, SourceCapabilityContext, TaskQueueEvent, TaskQueueExecutor,
 };
 use crate::cli::tui::components::layout::{compute_layout, LayoutRegions};
-use crate::cli::tui::state::filters::{DetailsTab, Filter, Focus, ViewMode};
+use crate::cli::tui::state::filters::{DetailsTab, Filter, Focus, LayoutTier, ViewMode};
 use crate::cli::tui::state::queue::{
     ClinicRemediationPlan, FailureCategory, QueueClinicActionability, QueueFailureFilter,
     QueueJourneyLane, RecoveryState,
@@ -42,10 +45,9 @@ use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error};
 
-const COMPACT_WIDTH: u16 = 90;
-const COMPACT_HEIGHT: u16 = 24;
 pub const MIN_WIDTH: u16 = 60;
 pub const MIN_HEIGHT: u16 = 15;
+const TUI_ONBOARDING_VERSION: u16 = 1;
 const HALF_PAGE: usize = 10;
 const MAX_TASK_LOG_LINES: usize = 500;
 const FILTER_ALL_INDEX: usize = 0;
@@ -193,6 +195,7 @@ pub struct PreflightSummary {
     pub dependency_impact_known: bool,
     pub dependency_impact: Option<PreflightDependencyImpact>,
     pub verification_in_progress: bool,
+    pub provider_plans: Vec<ProviderPlan>,
     pub selection_mode: bool,
 }
 
@@ -300,6 +303,7 @@ struct PreflightVerificationResult {
     package_ids: Vec<String>,
     dependency_impact_known: bool,
     dependency_impact: Option<PreflightDependencyImpact>,
+    provider_plans: Vec<ProviderPlan>,
     note: Option<String>,
 }
 
@@ -591,7 +595,7 @@ const COMMAND_REGISTRY: &[CommandDefinition] = &[
     },
     CommandDefinition {
         id: CommandId::QueueRemediate,
-        label: "Apply remediation",
+        label: "Apply recovery fixes",
         shortcut: "M",
         enabled: command_queue_remediate_enabled,
     },
@@ -656,7 +660,6 @@ pub struct App {
     pub task_recovery_states: HashMap<String, RecoveryState>,
     pub retry_parent: HashMap<String, String>,
     pub retry_attempt: HashMap<String, usize>,
-    pub queue_expanded: bool,
     pub queue_failure_filter: QueueFailureFilter,
     pub queue_completed_at: Option<Instant>,
     pub executor_running: Arc<AtomicBool>,
@@ -664,6 +667,7 @@ pub struct App {
     pub queue_completion_digest_emitted: bool,
 
     pub view_mode: ViewMode,
+    previous_non_queue_view: ViewMode,
     pub show_sidebar: bool,
     /// The full terminal area of the most recent frame; lets key handlers
     /// derive viewport sizes (e.g. page-jump distances) from the same layout
@@ -674,6 +678,7 @@ pub struct App {
     pub compact: bool,
     pub confirming: Option<PendingAction>,
     pub showing_help: bool,
+    pub showing_onboarding: bool,
     /// Caret position (char index) inside the search query.
     pub search_cursor: usize,
     /// Caret position (char index) inside the palette query. Distinct from
@@ -768,13 +773,13 @@ impl App {
             task_recovery_states: HashMap::new(),
             retry_parent: HashMap::new(),
             retry_attempt: HashMap::new(),
-            queue_expanded: false,
             queue_failure_filter: QueueFailureFilter::All,
             queue_completed_at: None,
             executor_running: Arc::new(AtomicBool::new(false)),
             queue_failures_acknowledged: false,
             queue_completion_digest_emitted: false,
-            view_mode: ViewMode::Browse,
+            view_mode: ViewMode::Today,
+            previous_non_queue_view: ViewMode::Today,
             show_sidebar: true,
             terminal_area: Rect::default(),
             focus: Focus::Sources,
@@ -782,6 +787,7 @@ impl App {
             compact: false,
             confirming: None,
             showing_help: false,
+            showing_onboarding: false,
             search_cursor: 0,
             palette_edit_cursor: 0,
             help_scroll: 0,
@@ -1064,6 +1070,19 @@ impl App {
         self.favorites_dirty = false;
     }
 
+    pub fn load_tui_onboarding(&mut self) {
+        self.showing_onboarding = Config::load().tui_onboarding_version < TUI_ONBOARDING_VERSION;
+    }
+
+    pub fn dismiss_tui_onboarding(&mut self) {
+        self.showing_onboarding = false;
+        let mut config = Config::load();
+        config.tui_onboarding_version = TUI_ONBOARDING_VERSION;
+        if let Err(error) = config.save() {
+            self.set_status(format!("Could not save welcome state: {error}"), true);
+        }
+    }
+
     pub fn load_session_state(&mut self) {
         if !self.session_persistence_enabled {
             return;
@@ -1086,7 +1105,7 @@ impl App {
         self.apply_filters();
         self.set_package_cursor(config.tui_last_cursor);
 
-        if self.focus == Focus::Queue && !self.queue_expanded {
+        if self.focus == Focus::Queue {
             self.focus = Focus::Packages;
         }
     }
@@ -1217,19 +1236,19 @@ impl App {
                 }
                 CommandId::Refresh => "Refresh is already in progress",
                 CommandId::ToggleQueue => "Queue is empty",
-                CommandId::QueueCancel => "Select a queued or failed task in expanded queue",
-                CommandId::QueueRetry => "Select a failed task in expanded queue",
+                CommandId::QueueCancel => "Select a queued or failed task in Queue",
+                CommandId::QueueRetry => "Select a failed task in Queue",
                 CommandId::QueueRetrySafe => {
-                    if self.queue_expanded && self.focus == Focus::Queue {
+                    if self.is_queue_view() && self.focus == Focus::Queue {
                         return Some(self.safe_retry_unavailable_reason());
                     }
-                    "Focus expanded queue to run safe retry bundle"
+                    "Open Queue to run the safe retry bundle"
                 }
                 CommandId::QueueRemediate => {
-                    if self.queue_expanded && self.focus == Focus::Queue {
+                    if self.is_queue_view() && self.focus == Focus::Queue {
                         return Some(self.remediation_unavailable_reason());
                     }
-                    "Focus expanded queue to run remediation bundle"
+                    "Open Queue to run the recovery bundle"
                 }
                 CommandId::QueueLogOlder => "No older queue logs available",
                 CommandId::QueueLogNewer => "No newer queue logs available",
@@ -1309,11 +1328,12 @@ impl App {
     }
 
     fn queue_focus_active(&self) -> bool {
-        self.queue_expanded && self.focus == Focus::Queue
+        self.is_queue_view() && self.focus == Focus::Queue
     }
 
     fn can_cycle_focus_command(&self) -> bool {
-        !self.compact
+        self.is_queue_view()
+            || (self.view_mode == ViewMode::Browse && self.layout_tier().shows_sources())
     }
 
     fn can_move_up_command(&self) -> bool {
@@ -1589,17 +1609,14 @@ impl App {
                 "No failed tasks in queue".to_string()
             } else {
                 format!(
-                    "No remediation needed for {} failures (press 0 for all)",
+                    "No recovery needed for {} failures (press 0 for all)",
                     scope
                 )
             }
         } else if actionability.remediation_skipped_count >= actionability.failed_in_scope {
-            format!(
-                "No remediation needed for {} failures (already active)",
-                scope
-            )
+            format!("No recovery needed for {} failures (already active)", scope)
         } else {
-            format!("No remediation needed for {} failures", scope)
+            format!("No recovery needed for {} failures", scope)
         }
     }
 
@@ -1642,7 +1659,7 @@ impl App {
                 "Best next step: retry transient/system conflicts in one bundle.".to_string()
             }
             RecommendedAction::ReviewFailures(_) => {
-                "Best next step: inspect failed tasks and pick retry/remediation.".to_string()
+                "Best next step: inspect failed tasks and pick retry/recovery.".to_string()
             }
             RecommendedAction::QueueAllUpdates(_) => {
                 "Best next step: stage one update batch and confirm in preflight.".to_string()
@@ -1724,7 +1741,10 @@ impl App {
             .any(|package| Self::source_likely_requires_elevation(package.source));
         let dependency_impact_known = false;
         let verification_in_progress =
-            Self::preflight_dependency_verification_supported(action, valid);
+            Self::preflight_dependency_verification_supported(action, valid)
+                || valid
+                    .iter()
+                    .any(|package| Self::stable_transaction_source(package.source));
         let (risk_level, risk_reasons, certainty) = Self::assess_preflight(
             action,
             valid.len(),
@@ -1747,6 +1767,7 @@ impl App {
             dependency_impact_known,
             dependency_impact: None,
             verification_in_progress,
+            provider_plans: Vec::new(),
             selection_mode,
         }
     }
@@ -1768,6 +1789,13 @@ impl App {
                 TaskQueueAction::Install | TaskQueueAction::Update,
                 PackageSource::Apt | PackageSource::Dnf
             )
+        )
+    }
+
+    fn stable_transaction_source(source: PackageSource) -> bool {
+        matches!(
+            source,
+            PackageSource::Apt | PackageSource::Flatpak | PackageSource::Npm
         )
     }
 
@@ -2724,7 +2752,10 @@ impl App {
             return;
         };
         if packages.is_empty()
-            || !Self::preflight_dependency_verification_supported(action, &packages)
+            || (!Self::preflight_dependency_verification_supported(action, &packages)
+                && !packages
+                    .iter()
+                    .any(|package| Self::stable_transaction_source(package.source)))
         {
             return;
         }
@@ -2736,8 +2767,21 @@ impl App {
         let package_ids = Self::preflight_target_ids(&packages);
         let pm = self.pm.clone();
         let task = async move {
-            let (dependency_impact_known, dependency_impact, note) =
-                Self::run_preflight_verification_probe(pm, action, packages).await;
+            let (probe, plans) = tokio::join!(
+                Self::run_preflight_verification_probe(pm.clone(), action, packages.clone()),
+                Self::plan_stable_transactions(pm, action, packages)
+            );
+            let (dependency_impact_known, dependency_impact, mut note) = probe;
+            let provider_plans = match plans {
+                Ok(plans) => plans,
+                Err(error) => {
+                    note = Some(match note {
+                        Some(existing) => format!("{existing} Transaction plan failed: {error}"),
+                        None => format!("Transaction plan failed: {error}"),
+                    });
+                    Vec::new()
+                }
+            };
             let _ = sender
                 .send(PreflightVerificationResult {
                     request_id,
@@ -2745,6 +2789,7 @@ impl App {
                     package_ids,
                     dependency_impact_known,
                     dependency_impact,
+                    provider_plans,
                     note,
                 })
                 .await;
@@ -2768,6 +2813,54 @@ impl App {
                 }
             }
         }
+    }
+
+    async fn plan_stable_transactions(
+        pm: Arc<Mutex<PackageManager>>,
+        action: TaskQueueAction,
+        packages: Vec<Package>,
+    ) -> Result<Vec<ProviderPlan>, String> {
+        let operation_action = match action {
+            TaskQueueAction::Install => OperationAction::Install,
+            TaskQueueAction::Remove => OperationAction::Remove,
+            TaskQueueAction::Update => OperationAction::Update,
+        };
+        let mut by_source: HashMap<PackageSource, Vec<PackageRef>> = HashMap::new();
+        for package in packages
+            .iter()
+            .filter(|package| Self::stable_transaction_source(package.source))
+        {
+            by_source
+                .entry(package.source)
+                .or_default()
+                .push(PackageRef::from_package(package));
+        }
+        if by_source.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let path = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("linget")
+            .join("transactions.json");
+        let engine = TransactionEngine::load(pm, path)
+            .await
+            .map_err(|error| error.safe_message)?;
+        let mut sources: Vec<_> = by_source.into_iter().collect();
+        sources.sort_by_key(|(source, _)| source.to_string());
+        let mut plans = Vec::new();
+        for (_, targets) in sources {
+            let request = OperationRequest::new(operation_action, targets, RequestedBy::Tui);
+            let (plan, risk) = engine
+                .plan(request)
+                .await
+                .map_err(|error| error.safe_message)?;
+            if risk.level == crate::backend::transaction::RiskLevel::Blocked {
+                return Err(format!("{} provider plan is blocked", plan.provider.source));
+            }
+            plans.push(plan);
+        }
+        Ok(plans)
     }
 
     async fn run_preflight_verification_probe(
@@ -3093,8 +3186,27 @@ impl App {
 
             confirming.preflight.dependency_impact_known = event.dependency_impact_known;
             confirming.preflight.dependency_impact = event.dependency_impact;
+            confirming.preflight.provider_plans = event.provider_plans;
             confirming.preflight.verification_in_progress = false;
-            Self::refresh_preflight_assessment(&mut confirming.preflight, event.note);
+            let plan_note = if confirming.preflight.provider_plans.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "Reviewed {} provider transaction plan{} with exact argv.",
+                    confirming.preflight.provider_plans.len(),
+                    if confirming.preflight.provider_plans.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ))
+            };
+            let note = match (event.note, plan_note) {
+                (Some(first), Some(second)) => Some(format!("{first} {second}")),
+                (Some(note), None) | (None, Some(note)) => Some(note),
+                (None, None) => None,
+            };
+            Self::refresh_preflight_assessment(&mut confirming.preflight, note);
             self.clear_preflight_verification_tracking();
         }
     }
@@ -3416,7 +3528,7 @@ impl App {
     }
 
     pub fn maybe_autohide_queue(&mut self) {
-        if self.queue_expanded || self.tasks.is_empty() {
+        if self.is_queue_view() || self.tasks.is_empty() {
             return;
         }
         let has_running_or_queued = self.tasks.iter().any(|task| {
@@ -3509,14 +3621,11 @@ impl App {
         self.queue_completion_digest_emitted = true;
     }
 
-    pub fn toggle_queue_expanded(&mut self) {
-        if self.tasks.is_empty() {
-            self.set_status("No tasks in queue", true);
-            return;
-        }
-        self.queue_expanded = !self.queue_expanded;
-        if self.queue_expanded {
-            self.focus = Focus::Queue;
+    pub fn toggle_queue_view(&mut self) {
+        if self.view_mode == ViewMode::Queue {
+            self.navigate_to(self.previous_non_queue_view);
+        } else {
+            self.navigate_to(ViewMode::Queue);
             self.task_log_scroll = 0;
             self.ensure_queue_cursor_matches_filter();
             if self
@@ -3526,8 +3635,81 @@ impl App {
             {
                 self.queue_failures_acknowledged = true;
             }
-        } else if self.focus == Focus::Queue {
+        }
+    }
+
+    pub fn navigate_to(&mut self, target: ViewMode) {
+        if target == ViewMode::Queue && self.view_mode != ViewMode::Queue {
+            self.previous_non_queue_view = self.view_mode;
+        } else if target != ViewMode::Queue {
+            self.previous_non_queue_view = target;
+        }
+
+        self.view_mode = target;
+        self.focus = match target {
+            ViewMode::Queue => Focus::Queue,
+            ViewMode::Today => Focus::Packages,
+            ViewMode::Browse => {
+                if self.layout_tier().shows_sources() && self.focus == Focus::Sources {
+                    Focus::Sources
+                } else {
+                    Focus::Packages
+                }
+            }
+        };
+    }
+
+    pub fn is_queue_view(&self) -> bool {
+        self.view_mode == ViewMode::Queue
+    }
+
+    pub fn layout_tier(&self) -> LayoutTier {
+        LayoutTier::from_size(self.terminal_area.width, self.terminal_area.height)
+    }
+
+    pub fn update_terminal_area(&mut self, area: Rect) {
+        self.terminal_area = area;
+        let tier = self.layout_tier();
+        self.compact = matches!(tier, LayoutTier::Minimal | LayoutTier::Compact);
+        if self.view_mode == ViewMode::Queue {
+            self.focus = Focus::Queue;
+        } else if self.view_mode == ViewMode::Today
+            || (!tier.shows_sources() && self.focus == Focus::Sources)
+        {
             self.focus = Focus::Packages;
+        }
+    }
+
+    pub fn open_today_recommendation(&mut self) {
+        let has_running = self.tasks.iter().any(|task| {
+            matches!(
+                task.status,
+                TaskQueueStatus::Queued | TaskQueueStatus::Running
+            )
+        });
+        let has_failed = self
+            .tasks
+            .iter()
+            .any(|task| task.status == TaskQueueStatus::Failed);
+
+        if has_running || has_failed {
+            self.navigate_to(ViewMode::Queue);
+        } else if self.filter_counts[FILTER_SECURITY_INDEX] > 0 {
+            self.filter = Filter::SecurityUpdates;
+            self.apply_filters();
+            self.navigate_to(ViewMode::Browse);
+        } else if self.filter_counts[FILTER_UPDATES_INDEX] > 0 {
+            self.filter = Filter::Updates;
+            self.apply_filters();
+            self.navigate_to(ViewMode::Browse);
+        } else if self.local_packages.is_empty() {
+            if !self.start_loading() {
+                self.set_status(self.catalog_busy_reason(), true);
+            }
+        } else {
+            self.filter = Filter::All;
+            self.apply_filters();
+            self.navigate_to(ViewMode::Browse);
         }
     }
 
@@ -4125,6 +4307,14 @@ impl App {
     async fn handle_confirm_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                if self
+                    .confirming
+                    .as_ref()
+                    .is_some_and(|action| action.preflight.verification_in_progress)
+                {
+                    self.set_status("Wait for the reviewed provider plan to finish", true);
+                    return;
+                }
                 if let Some(confirming) = self.confirming.as_mut() {
                     if confirming.preflight.risk_level == PreflightRiskLevel::High
                         && !confirming.risk_acknowledged
@@ -4137,10 +4327,29 @@ impl App {
                         return;
                     }
                 }
+                if self.confirming.as_ref().is_some_and(|action| {
+                    action
+                        .packages
+                        .iter()
+                        .any(|package| Self::stable_transaction_source(package.source))
+                        && action.preflight.provider_plans.is_empty()
+                }) {
+                    self.set_status(
+                        "No reviewed Stable-provider plan is available; refresh preflight",
+                        true,
+                    );
+                    return;
+                }
 
                 if let Some(action) = self.confirming.take() {
                     self.clear_preflight_verification_tracking();
-                    let queued = self.queue_tasks(action.packages, action.action).await;
+                    let queued = self
+                        .queue_tasks_with_plans(
+                            action.packages,
+                            action.action,
+                            action.preflight.provider_plans,
+                        )
+                        .await;
                     self.clear_selection();
                     self.set_status(Self::queued_result_message(action.action, queued), true);
                 }
@@ -4254,14 +4463,52 @@ impl App {
     }
 
     pub async fn queue_tasks(&mut self, packages: Vec<Package>, action: TaskQueueAction) -> usize {
+        self.queue_tasks_with_plans(packages, action, Vec::new())
+            .await
+    }
+
+    pub async fn queue_tasks_with_plans(
+        &mut self,
+        packages: Vec<Package>,
+        action: TaskQueueAction,
+        provider_plans: Vec<ProviderPlan>,
+    ) -> usize {
         if !self.has_active_queue_tasks() && self.prune_terminal_tasks() {
             self.persist_task_queue_state().await;
         }
 
         let mut queued = 0usize;
         let mut seen_ids = HashSet::new();
+        let mut covered_targets: HashSet<(PackageSource, String)> = HashSet::new();
+
+        for plan in provider_plans {
+            for target in &plan.targets {
+                covered_targets.insert((target.source, target.name.clone()));
+            }
+            let package_name = if plan.targets.len() == 1 {
+                plan.targets[0].name.clone()
+            } else {
+                format!("{} {} packages", plan.targets.len(), plan.provider.source)
+            };
+            let package_id = format!("transaction:{}", plan.operation_id);
+            if self.has_active_task_for_package(&package_id) {
+                continue;
+            }
+            let mut entry =
+                TaskQueueEntry::new(action, package_id, package_name, plan.provider.source);
+            entry.reviewed_operation_id = Some(plan.operation_id.clone());
+            entry.reviewed_plan_json = serde_json::to_string(&plan).ok();
+            self.enqueue_task_entry(entry).await;
+            queued += 1;
+        }
 
         for package in packages {
+            if covered_targets.contains(&(package.source, package.name.clone())) {
+                continue;
+            }
+            if Self::stable_transaction_source(package.source) {
+                continue;
+            }
             let package_id = package.id();
             if !seen_ids.insert(package_id.clone()) {
                 continue;
@@ -4349,7 +4596,7 @@ impl App {
     }
 
     async fn cancel_selected_task(&mut self) {
-        if !self.queue_expanded {
+        if !self.is_queue_view() {
             return;
         }
         let Some(task) = self.tasks.get(self.task_cursor).cloned() else {
@@ -4442,7 +4689,7 @@ impl App {
     }
 
     async fn retry_selected_task(&mut self) {
-        if !self.queue_expanded {
+        if !self.is_queue_view() {
             return;
         }
         let Some(task) = self.tasks.get(self.task_cursor).cloned() else {
@@ -4532,7 +4779,7 @@ impl App {
     }
 
     async fn retry_safe_failed_tasks(&mut self) {
-        if !self.queue_expanded {
+        if !self.is_queue_view() {
             self.set_status("Open queue first to run retry bundle", true);
             return;
         }
@@ -4578,8 +4825,8 @@ impl App {
     async fn run_recommended_action(&mut self) {
         match self.recommended_action() {
             RecommendedAction::RetrySafeFailures(_) => {
-                if !self.queue_expanded {
-                    self.toggle_queue_expanded();
+                if !self.is_queue_view() {
+                    self.toggle_queue_view();
                 }
                 self.focus = Focus::Queue;
                 if let Some(index) = self.tasks.iter().position(|task| {
@@ -4590,8 +4837,8 @@ impl App {
                 self.retry_safe_failed_tasks().await;
             }
             RecommendedAction::ReviewFailures(_) => {
-                if !self.queue_expanded {
-                    self.toggle_queue_expanded();
+                if !self.is_queue_view() {
+                    self.toggle_queue_view();
                 }
                 self.focus = Focus::Queue;
                 if let Some(index) = self.tasks.iter().position(|task| {
@@ -4614,8 +4861,8 @@ impl App {
                 self.prepare_action_for_targets(TaskQueueAction::Update, targets, false);
             }
             RecommendedAction::ReviewQueue => {
-                if !self.queue_expanded {
-                    self.toggle_queue_expanded();
+                if !self.is_queue_view() {
+                    self.toggle_queue_view();
                 }
                 self.focus = Focus::Queue;
                 self.set_status("Queue journey opened.", true);
@@ -4631,7 +4878,7 @@ impl App {
     }
 
     async fn apply_selected_task_remediation(&mut self) {
-        if !self.queue_expanded {
+        if !self.is_queue_view() {
             return;
         }
 
@@ -4725,10 +4972,6 @@ impl App {
             || self.source_management.loading
             // Changelog overlay may be showing its fetch spinner.
             || self.showing_changelog
-            // Health view pulses the security chip while issues are pending.
-            || (self.view_mode == ViewMode::Dashboard
-                && !self.queue_expanded
-                && self.filter_counts[4] > 0)
             || self
                 .tasks
                 .iter()
@@ -4736,6 +4979,10 @@ impl App {
     }
 
     pub fn spinner_frame(&self) -> char {
+        if crate::cli::tui::glyphs::ascii_mode() {
+            const ASCII_FRAMES: [char; 4] = ['|', '/', '-', '\\'];
+            return ASCII_FRAMES[(self.tick as usize) % ASCII_FRAMES.len()];
+        }
         // A braille-dot spinner reads smoother than block-circles on most
         // monospace fonts and keeps a consistent vertical footprint.
         const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -4963,6 +5210,7 @@ pub async fn run() -> Result<()> {
     app.load_sources().await;
     app.load_favorites();
     app.load_session_state();
+    app.load_tui_onboarding();
     app.load_catalog_cache();
     let _ = app.start_loading();
 
@@ -5003,8 +5251,7 @@ async fn run_app(
         app.tick = (animation_epoch.elapsed().as_millis() / ANIMATION_FRAME_MS) as u64;
 
         let size = terminal.size()?;
-        app.compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
-        app.terminal_area = Rect::new(0, 0, size.width, size.height);
+        app.update_terminal_area(Rect::new(0, 0, size.width, size.height));
 
         app.poll_loading();
         app.poll_search();
@@ -5113,6 +5360,17 @@ mod tests {
     }
 
     #[test]
+    fn application_defaults_to_today() {
+        let app = App::new(
+            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(Mutex::new(None)),
+            None,
+            None,
+        );
+        assert_eq!(app.view_mode, ViewMode::Today);
+    }
+
+    #[test]
     fn tui_catalog_cache_ignores_version_mismatch() {
         let path = temp_cache_path("catalog-cache-version");
         let cache = TuiCatalogCache {
@@ -5143,6 +5401,7 @@ mod tests {
         );
         app.favorites_persistence_enabled = false;
         app.session_persistence_enabled = false;
+        app.navigate_to(ViewMode::Browse);
         app
     }
 
@@ -5214,12 +5473,12 @@ mod tests {
     fn command_enabled_reflects_navigation_and_actions() {
         let mut app = test_app();
 
+        app.update_terminal_area(Rect::new(0, 0, 160, 40));
         assert!(app.command_enabled(CommandId::CycleFocus));
-        app.compact = true;
+        app.update_terminal_area(Rect::new(0, 0, 80, 24));
         assert!(!app.command_enabled(CommandId::CycleFocus));
 
-        app.compact = false;
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         assert!(app.command_enabled(CommandId::CycleFocus));
 
         app.focus = Focus::Packages;
@@ -5392,6 +5651,7 @@ mod tests {
                     remove_count: 1,
                     held_back_count: 0,
                 }),
+                provider_plans: Vec::new(),
                 note: Some("Probe finished successfully.".to_string()),
             })
             .expect("send verification update");
@@ -5475,7 +5735,7 @@ Remove   1 Package
         failed.mark_failed("err".into());
 
         app.tasks = vec![queued.clone(), failed.clone()];
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         assert!(app.command_enabled(CommandId::ToggleQueue));
@@ -5661,7 +5921,7 @@ Remove   1 Package
     #[test]
     fn tui_mode_label_reflects_highest_priority_context() {
         let mut app = test_app();
-        assert_eq!(app.tui_mode_label(), "Source Browse");
+        assert_eq!(app.tui_mode_label(), "Package Browse");
 
         app.focus = Focus::Packages;
         assert_eq!(app.tui_mode_label(), "Package Browse");
@@ -5676,7 +5936,7 @@ Remove   1 Package
         app.search_results = Some(Vec::new());
         assert_eq!(app.tui_mode_label(), "Provider Results");
 
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
         assert_eq!(app.tui_mode_label(), "Queue Focus");
 
@@ -5814,6 +6074,7 @@ Remove   1 Package
                 dependency_impact_known: false,
                 dependency_impact: None,
                 verification_in_progress: false,
+                provider_plans: Vec::new(),
                 selection_mode: false,
             },
             risk_acknowledged: true,
@@ -6275,6 +6536,7 @@ Remove   1 Package
                 dependency_impact_known: false,
                 dependency_impact: None,
                 verification_in_progress: false,
+                provider_plans: Vec::new(),
                 selection_mode: false,
             },
             risk_acknowledged: true,
@@ -6304,6 +6566,7 @@ Remove   1 Package
                 dependency_impact_known: false,
                 dependency_impact: None,
                 verification_in_progress: false,
+                provider_plans: Vec::new(),
                 selection_mode: false,
             },
             risk_acknowledged: true,
@@ -6316,7 +6579,7 @@ Remove   1 Package
     async fn queue_cancel_and_retry_paths() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let queued = TaskQueueEntry::new(
@@ -6363,7 +6626,7 @@ Remove   1 Package
 
         app.execute_command(CommandId::RunRecommended).await;
 
-        assert!(app.queue_expanded);
+        assert!(app.is_queue_view());
         assert_eq!(app.focus, Focus::Queue);
         assert_eq!(app.tasks.len(), 2);
         assert_eq!(app.tasks.last().unwrap().status, TaskQueueStatus::Queued);
@@ -6374,7 +6637,7 @@ Remove   1 Package
     async fn retry_safe_failed_tasks_skips_non_safe_categories() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let mut unknown = TaskQueueEntry::new(
@@ -6406,7 +6669,7 @@ Remove   1 Package
     async fn retry_safe_failed_tasks_respect_active_clinic_filter() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let mut network_a = TaskQueueEntry::new(
@@ -6454,7 +6717,7 @@ Remove   1 Package
     async fn remediation_bundle_uses_active_clinic_filter_scope() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let mut network_a = TaskQueueEntry::new(
@@ -6502,7 +6765,7 @@ Remove   1 Package
     #[tokio::test]
     async fn queue_actionability_reports_filter_reasons_when_empty() {
         let mut app = test_app();
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let mut missing = TaskQueueEntry::new(
@@ -6528,7 +6791,7 @@ Remove   1 Package
         );
         assert_eq!(
             app.command_disabled_reason(CommandId::QueueRemediate),
-            Some("No remediation needed for network failures (press 0 for all)".to_string())
+            Some("No recovery needed for network failures (press 0 for all)".to_string())
         );
 
         app.handle_key(key(KeyCode::Char('A'))).await;
@@ -6539,7 +6802,7 @@ Remove   1 Package
     async fn remediation_status_matches_actionability_counts() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let mut network = TaskQueueEntry::new(
@@ -6612,7 +6875,7 @@ Remove   1 Package
             TaskQueueAction::Install,
             "APT:old".into(),
             "old".into(),
-            PackageSource::Apt,
+            PackageSource::Deb,
         );
         completed.mark_completed();
         app.tasks = vec![completed];
@@ -6621,7 +6884,7 @@ Remove   1 Package
             .queue_tasks(
                 vec![make_pkg(
                     "new",
-                    PackageSource::Apt,
+                    PackageSource::Deb,
                     PackageStatus::NotInstalled,
                 )],
                 TaskQueueAction::Install,
@@ -6701,7 +6964,7 @@ Remove   1 Package
             TaskQueueAction::Install,
             "APT:old-fail".into(),
             "old-fail".into(),
-            PackageSource::Apt,
+            PackageSource::Deb,
         );
         failed.mark_failed("err".into());
         app.tasks = vec![failed];
@@ -6710,7 +6973,7 @@ Remove   1 Package
             .queue_tasks(
                 vec![make_pkg(
                     "new",
-                    PackageSource::Apt,
+                    PackageSource::Deb,
                     PackageStatus::NotInstalled,
                 )],
                 TaskQueueAction::Install,
@@ -6880,6 +7143,7 @@ Remove   1 Package
                 dependency_impact_known: false,
                 dependency_impact: None,
                 verification_in_progress: false,
+                provider_plans: Vec::new(),
                 selection_mode: false,
             },
             risk_acknowledged: false,
@@ -6894,14 +7158,15 @@ Remove   1 Package
             .is_some_and(|pending| pending.risk_acknowledged));
 
         app.handle_key(key(KeyCode::Char('y'))).await;
-        assert!(app.confirming.is_none());
-        assert_eq!(app.tasks.len(), 1);
+        assert!(app.confirming.is_some());
+        assert_eq!(app.tasks.len(), 0);
+        assert!(app.status.contains("No reviewed Stable-provider plan"));
     }
 
     #[test]
     fn queue_remediate_command_enablement_follows_scope_actionability() {
         let mut app = test_app();
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let mut failed = TaskQueueEntry::new(
@@ -6930,7 +7195,7 @@ Remove   1 Package
     #[tokio::test]
     async fn remediation_not_found_guides_without_auto_retry() {
         let mut app = test_app();
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let mut failed = TaskQueueEntry::new(
@@ -6952,7 +7217,7 @@ Remove   1 Package
     #[tokio::test]
     async fn queue_log_scroll_keys_and_task_change_reset() {
         let mut app = test_app();
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
         let first = TaskQueueEntry::new(
             TaskQueueAction::Install,
@@ -6991,7 +7256,7 @@ Remove   1 Package
     #[tokio::test]
     async fn queue_failure_filter_shortcuts_limit_visible_tasks() {
         let mut app = test_app();
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let queued = TaskQueueEntry::new(
@@ -7034,7 +7299,7 @@ Remove   1 Package
     #[test]
     fn append_task_log_preserves_manual_scroll_position() {
         let mut app = test_app();
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let first = TaskQueueEntry::new(
@@ -7099,13 +7364,13 @@ Remove   1 Package
 
         app.handle_key(key(KeyCode::Char('l'))).await;
 
-        assert!(app.queue_expanded);
+        assert!(app.is_queue_view());
         assert_eq!(app.focus, Focus::Queue);
         assert_eq!(app.task_log_scroll, 0);
     }
 
     #[tokio::test]
-    async fn tab_cycles_through_visible_panels_when_queue_is_expanded() {
+    async fn queue_keeps_focus_on_its_only_visible_pane() {
         let mut app = test_app();
         let task = TaskQueueEntry::new(
             TaskQueueAction::Install,
@@ -7114,17 +7379,11 @@ Remove   1 Package
             PackageSource::Apt,
         );
         app.tasks = vec![task];
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Sources;
 
         app.handle_key(key(KeyCode::Tab)).await;
-        assert_eq!(app.focus, Focus::Packages);
-
-        app.handle_key(key(KeyCode::Tab)).await;
         assert_eq!(app.focus, Focus::Queue);
-
-        app.handle_key(key(KeyCode::Tab)).await;
-        assert_eq!(app.focus, Focus::Sources);
     }
 
     #[tokio::test]
@@ -7303,7 +7562,7 @@ Remove   1 Package
     }
 
     #[tokio::test]
-    async fn mouse_click_filter_tab_updates_filter() {
+    async fn mouse_click_header_browse_opens_browse() {
         let mut app = test_app();
         app.packages = vec![
             make_pkg("a", PackageSource::Apt, PackageStatus::Installed),
@@ -7313,26 +7572,29 @@ Remove   1 Package
 
         let regions = layout_regions(&app);
         let row = regions.header_filter_row.y;
-        let installed_col = (regions.header_filter_row.x
+        let browse_col = (regions.header_filter_row.x
             ..regions.header_filter_row.x + regions.header_filter_row.width)
             .find(|col| {
                 ui::header_filter_hit_test(&app, regions.header_filter_row, *col, row)
-                    == Some(crate::cli::tui::components::header::HeaderAction::Installed)
+                    == Some(crate::cli::tui::components::header::HeaderAction::Browse)
             })
-            .expect("installed tab column");
+            .expect("browse tab column");
 
         app.handle_mouse(
-            mouse(MouseEventKind::Down(MouseButton::Left), installed_col, row),
+            mouse(MouseEventKind::Down(MouseButton::Left), browse_col, row),
             &regions,
         )
         .await;
 
-        assert_eq!(app.filter, Filter::Installed);
+        assert_eq!(app.view_mode, ViewMode::Browse);
+        assert_eq!(app.filter, Filter::All);
     }
 
     #[test]
     fn dense_tui_layout_keeps_single_top_control_panel() {
         let mut app = test_app();
+        app.navigate_to(ViewMode::Browse);
+        app.update_terminal_area(Rect::new(0, 0, 120, 30));
         app.focus = Focus::Packages;
         app.filter = Filter::Updates;
         app.packages = vec![
@@ -7360,10 +7622,159 @@ Remove   1 Package
         assert!(screen.contains("Today:"));
         assert!(screen.contains("[ Favorites 0 ]"));
         assert!(screen.contains("/ Search packages"));
-        assert!(screen.contains("Package Inspector"));
+        assert!(!screen.contains("Package Inspector"));
         assert!(screen.contains("Showing 1-2 of 2 updates"));
         assert!(!screen.contains("[ All "));
         assert!(!screen.contains("Enter open source"));
+    }
+
+    #[tokio::test]
+    async fn function_keys_open_exactly_three_real_views() {
+        let mut app = test_app();
+        app.handle_key(key(KeyCode::F(2))).await;
+        assert_eq!(app.view_mode, ViewMode::Browse);
+        app.handle_key(key(KeyCode::F(3))).await;
+        assert_eq!(app.view_mode, ViewMode::Queue);
+        assert_eq!(app.focus, Focus::Queue);
+        app.handle_key(key(KeyCode::F(1))).await;
+        assert_eq!(app.view_mode, ViewMode::Today);
+    }
+
+    #[tokio::test]
+    async fn empty_queue_is_always_enterable() {
+        let mut app = test_app();
+        assert!(app.tasks.is_empty());
+        app.handle_key(key(KeyCode::F(3))).await;
+        assert_eq!(app.view_mode, ViewMode::Queue);
+        assert!(app.is_queue_view());
+    }
+
+    #[tokio::test]
+    async fn same_source_reviewed_batch_becomes_one_transaction_task() {
+        use crate::backend::transaction::{
+            CancellationSupport, CommandSpec, OperationAction, PlanFidelity, PrivilegeRequirement,
+            ProviderDescriptor, ProviderTier, RollbackCapability,
+        };
+
+        let mut app = test_app();
+        app.executor_running.store(true, Ordering::SeqCst);
+        let packages = vec![
+            make_pkg("one", PackageSource::Npm, PackageStatus::NotInstalled),
+            make_pkg("two", PackageSource::Npm, PackageStatus::NotInstalled),
+        ];
+        let operation_id = "reviewed-operation".to_string();
+        let plan = ProviderPlan {
+            id: "reviewed-plan".to_string(),
+            operation_id: operation_id.clone(),
+            provider: ProviderDescriptor {
+                source: PackageSource::Npm,
+                tier: ProviderTier::Stable,
+                fidelity: PlanFidelity::BestEffort,
+                privilege: PrivilegeRequirement::MayRequire,
+                cancellation: CancellationSupport::BetweenStepsOnly,
+                rollback: RollbackCapability::Unsupported,
+            },
+            action: OperationAction::Install,
+            targets: packages.iter().map(PackageRef::from_package).collect(),
+            exact_commands: vec![CommandSpec {
+                program: "npm".to_string(),
+                args: vec!["install".to_string(), "-g".to_string(), "one".to_string()],
+                privileged: false,
+            }],
+            expected_changes: Vec::new(),
+            inventory_fingerprint: "inventory".to_string(),
+            created_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(2),
+        };
+
+        let queued = app
+            .queue_tasks_with_plans(packages, TaskQueueAction::Install, vec![plan])
+            .await;
+        assert_eq!(queued, 1);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(
+            app.tasks[0].reviewed_operation_id.as_deref(),
+            Some(operation_id.as_str())
+        );
+        let queued_plan: ProviderPlan = serde_json::from_str(
+            app.tasks[0]
+                .reviewed_plan_json
+                .as_deref()
+                .expect("queued reviewed plan"),
+        )
+        .expect("decode queued plan");
+        assert_eq!(queued_plan.operation_id, operation_id);
+        assert_eq!(queued_plan.targets.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn today_enter_reviews_without_mutating() {
+        let mut app = test_app();
+        app.navigate_to(ViewMode::Today);
+        app.filter_counts[FILTER_UPDATES_INDEX] = 2;
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert_eq!(app.view_mode, ViewMode::Browse);
+        assert_eq!(app.filter, Filter::Updates);
+        assert!(app.confirming.is_none());
+        assert!(app.tasks.is_empty());
+    }
+
+    #[test]
+    fn resize_never_leaves_focus_on_hidden_sources() {
+        let mut app = test_app();
+        app.navigate_to(ViewMode::Browse);
+        app.update_terminal_area(Rect::new(0, 0, 160, 40));
+        app.focus = Focus::Sources;
+        app.update_terminal_area(Rect::new(0, 0, 80, 24));
+        assert_eq!(app.focus, Focus::Packages);
+    }
+
+    #[test]
+    fn three_views_render_at_supported_breakpoints() {
+        for (width, height) in [(60, 15), (80, 24), (100, 30), (120, 30), (160, 40)] {
+            for view in [ViewMode::Today, ViewMode::Browse, ViewMode::Queue] {
+                let mut app = test_app();
+                app.update_terminal_area(Rect::new(0, 0, width, height));
+                app.navigate_to(view);
+                app.packages = vec![make_pkg(
+                    "example",
+                    PackageSource::Apt,
+                    PackageStatus::UpdateAvailable,
+                )];
+                app.apply_filters();
+                let backend = ratatui::backend::TestBackend::new(width, height);
+                let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+                terminal
+                    .draw(|frame| ui::draw(frame, &mut app))
+                    .expect("render view");
+                let screen = buffer_text(terminal.backend().buffer());
+                let label = match view {
+                    ViewMode::Today => "Today",
+                    ViewMode::Browse => "Browse",
+                    ViewMode::Queue => "Queue",
+                };
+                assert!(
+                    screen.contains(label),
+                    "{label} missing at {width}x{height}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn first_run_card_states_native_manager_and_review_guarantees() {
+        let mut app = test_app();
+        app.showing_onboarding = true;
+        app.update_terminal_area(Rect::new(0, 0, 80, 24));
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app))
+            .expect("render onboarding");
+        let screen = buffer_text(terminal.backend().buffer());
+        assert!(screen.contains("uses your native package managers"));
+        assert!(screen.contains("review and confirm"));
+        assert!(screen.contains("Enter open Today"));
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
@@ -7493,6 +7904,7 @@ Remove   1 Package
                 dependency_impact_known: false,
                 dependency_impact: None,
                 verification_in_progress: false,
+                provider_plans: Vec::new(),
                 selection_mode: false,
             },
             risk_acknowledged: true,
@@ -7530,7 +7942,7 @@ Remove   1 Package
     #[tokio::test]
     async fn mouse_queue_scroll_respects_task_and_log_regions() {
         let mut app = test_app();
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let first = TaskQueueEntry::new(
@@ -7605,7 +8017,7 @@ Remove   1 Package
     async fn mouse_click_selects_task_in_kanban_attention_lane() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let mut first = TaskQueueEntry::new(
@@ -7735,7 +8147,7 @@ Remove   1 Package
     async fn retry_lineage_persists_after_retry_completes() {
         let mut app = test_app();
         app.executor_running.store(true, Ordering::SeqCst);
-        app.queue_expanded = true;
+        app.navigate_to(ViewMode::Queue);
         app.focus = Focus::Queue;
 
         let mut failed = TaskQueueEntry::new(

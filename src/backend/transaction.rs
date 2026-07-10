@@ -680,6 +680,42 @@ impl TransactionEngine {
         Ok((plan, risk))
     }
 
+    pub async fn resume_reviewed_plan(&self, reviewed: &ProviderPlan) -> Result<(), ProviderError> {
+        let mut store = self.store.lock().await;
+        let record = store
+            .operations
+            .iter_mut()
+            .find(|record| record.operation_id == reviewed.operation_id)
+            .ok_or_else(|| {
+                ProviderError::protocol(
+                    Some(reviewed.provider.source),
+                    "Reviewed transaction record is missing",
+                )
+            })?;
+        if record.plan != *reviewed {
+            return Err(ProviderError {
+                code: ProviderErrorCode::PlanChanged,
+                provider: Some(reviewed.provider.source),
+                safe_message: "The queued plan differs from the reviewed plan".to_string(),
+                diagnostic: "Persisted plan content or ID did not match".to_string(),
+                retryable: true,
+                recovery_actions: vec!["Review a fresh plan".to_string()],
+            });
+        }
+        match record.state {
+            OperationState::NeedsReview => record.state = OperationState::Ready,
+            OperationState::Ready => {}
+            state => {
+                return Err(ProviderError::protocol(
+                    Some(reviewed.provider.source),
+                    format!("Reviewed plan cannot resume from {state:?}"),
+                ));
+            }
+        }
+        record.updated_at = Utc::now();
+        store.save_atomic(&self.store_path).await
+    }
+
     pub async fn execute(
         &self,
         plan: ProviderPlan,
@@ -1193,6 +1229,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::Value;
     use std::collections::{HashMap, HashSet};
+    use std::os::unix::fs::PermissionsExt;
 
     struct ContractBackend {
         source: PackageSource,
@@ -1607,6 +1644,68 @@ mod tests {
         fs::remove_dir_all(root)
             .await
             .expect("remove temp directory");
+    }
+
+    #[tokio::test]
+    async fn reviewed_plan_survives_reload_and_executes_exactly_once() {
+        let _env_guard = crate::backend::TEST_PATH_ENV_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!("linget-reviewed-plan-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("create fake npm directory");
+        let npm_path = root.join("npm");
+        let state_path = root.join("installed");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 10.0.0; exit 0; fi\nif [ \"$1\" = \"list\" ]; then if [ -f \"{}\" ]; then echo '{{\"dependencies\":{{\"demo\":{{\"version\":\"2.0\"}}}}}}'; else echo '{{\"dependencies\":{{}}}}'; fi; exit 0; fi\nif [ \"$1\" = \"install\" ]; then : > \"{}\"; exit 0; fi\nexit 0\n",
+            state_path.display(),
+            state_path.display()
+        );
+        std::fs::write(&npm_path, script).expect("write fake npm");
+        let mut permissions = std::fs::metadata(&npm_path)
+            .expect("fake npm metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&npm_path, permissions).expect("chmod fake npm");
+
+        let previous_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", &root);
+        let manager = Arc::new(Mutex::new(PackageManager::new_fast()));
+        let store_path = root.join("transactions.json");
+        let engine = TransactionEngine::load(manager.clone(), store_path.clone())
+            .await
+            .expect("load initial engine");
+        let request = OperationRequest::new(
+            OperationAction::Install,
+            vec![PackageRef {
+                name: "demo".to_string(),
+                source: PackageSource::Npm,
+                installed_version: None,
+                available_version: Some("2.0".to_string()),
+            }],
+            RequestedBy::Tui,
+        );
+        let (reviewed_plan, _) = engine.plan(request).await.expect("create reviewed plan");
+        drop(engine);
+
+        let resumed = TransactionEngine::load(manager, store_path)
+            .await
+            .expect("reload engine");
+        resumed
+            .resume_reviewed_plan(&reviewed_plan)
+            .await
+            .expect("resume exact reviewed plan");
+        let receipt = resumed
+            .execute(reviewed_plan.clone(), CancellationFlag::default())
+            .await
+            .expect("execute exact reviewed plan");
+        assert_eq!(receipt.operation_id, reviewed_plan.operation_id);
+        assert_eq!(receipt.plan_id, reviewed_plan.id);
+        assert_eq!(receipt.outcome, VerificationOutcome::Verified);
+
+        if let Some(path) = previous_path {
+            std::env::set_var("PATH", path);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        std::fs::remove_dir_all(root).expect("remove fake npm directory");
     }
 
     #[test]

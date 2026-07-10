@@ -56,6 +56,7 @@ use anyhow::{Context, Result};
 #[cfg(test)]
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{timeout, Duration};
@@ -140,20 +141,29 @@ impl TaskQueueExecutor {
                 let _ = sender.send(TaskQueueEvent::Started(entry.clone())).await;
             }
 
-            let (log_sender, log_task) = Self::spawn_log_forwarder(&event_sender, &entry);
-            let result = {
-                let manager = self.package_manager.lock().await;
-                let pkg = Self::package_from_entry(&entry);
-                match entry.action {
-                    TaskQueueAction::Install => manager.install_streaming(&pkg, log_sender).await,
-                    TaskQueueAction::Remove => manager.remove_streaming(&pkg, log_sender).await,
-                    TaskQueueAction::Update => manager.update_streaming(&pkg, log_sender).await,
+            let result = if matches!(
+                entry.package_source,
+                PackageSource::Apt | PackageSource::Flatpak | PackageSource::Npm
+            ) {
+                self.run_verified_transaction(&entry, &event_sender).await
+            } else {
+                let (log_sender, log_task) = Self::spawn_log_forwarder(&event_sender, &entry);
+                let result = {
+                    let manager = self.package_manager.lock().await;
+                    let pkg = Self::package_from_entry(&entry);
+                    match entry.action {
+                        TaskQueueAction::Install => {
+                            manager.install_streaming(&pkg, log_sender).await
+                        }
+                        TaskQueueAction::Remove => manager.remove_streaming(&pkg, log_sender).await,
+                        TaskQueueAction::Update => manager.update_streaming(&pkg, log_sender).await,
+                    }
+                };
+                if let Some(task) = log_task {
+                    let _ = task.await;
                 }
+                result
             };
-
-            if let Some(task) = log_task {
-                let _ = task.await;
-            }
 
             match result {
                 Ok(()) => {
@@ -201,6 +211,103 @@ impl TaskQueueExecutor {
         }
 
         Ok(())
+    }
+
+    async fn run_verified_transaction(
+        &self,
+        entry: &TaskQueueEntry,
+        event_sender: &Option<mpsc::Sender<TaskQueueEvent>>,
+    ) -> Result<()> {
+        use transaction::{
+            CancellationFlag, ProviderPlan, RiskAssessment, RiskLevel, TransactionEngine,
+            VerificationOutcome,
+        };
+
+        let plan_json = entry.reviewed_plan_json.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("This Stable-provider task has no reviewed plan; review it again")
+        })?;
+        let plan: ProviderPlan = serde_json::from_str(plan_json)
+            .context("Reviewed provider plan could not be decoded")?;
+        if entry.reviewed_operation_id.as_deref() != Some(plan.operation_id.as_str()) {
+            anyhow::bail!("Queued task does not match the reviewed operation ID");
+        }
+        let risk = RiskAssessment::for_plan(&plan);
+        let engine =
+            TransactionEngine::load(self.package_manager.clone(), transaction_store_path())
+                .await
+                .map_err(|error| anyhow::anyhow!(error.safe_message))?;
+        engine
+            .resume_reviewed_plan(&plan)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.safe_message))?;
+
+        self.send_transaction_log(
+            event_sender,
+            entry,
+            format!(
+                "Reviewed {:?} plan ({:?} fidelity)",
+                risk.level, plan.provider.fidelity
+            ),
+        )
+        .await;
+        for command in &plan.exact_commands {
+            self.send_transaction_log(
+                event_sender,
+                entry,
+                format!("Command: {} argv={:?}", command.program, command.args),
+            )
+            .await;
+        }
+        if risk.level == RiskLevel::Blocked {
+            anyhow::bail!("The provider transaction plan is blocked");
+        }
+
+        let receipt = engine
+            .execute(plan, CancellationFlag::default())
+            .await
+            .map_err(|error| anyhow::anyhow!(error.safe_message))?;
+        self.send_transaction_log(
+            event_sender,
+            entry,
+            format!("Verification receipt: {:?}", receipt.outcome),
+        )
+        .await;
+        let receipt_json = serde_json::to_string(&receipt)
+            .context("Verification receipt could not be serialized")?;
+        {
+            let mut guard = self.history_tracker.lock().await;
+            let tracker = guard
+                .as_mut()
+                .context("History tracker missing while saving verification receipt")?;
+            tracker
+                .attach_task_verification_receipt(&entry.id, receipt_json)
+                .await?;
+        }
+        match receipt.outcome {
+            VerificationOutcome::Verified => Ok(()),
+            VerificationOutcome::Inconclusive => {
+                anyhow::bail!("Verification was inconclusive; review the receipt before retrying")
+            }
+            VerificationOutcome::Mismatch => {
+                anyhow::bail!("Post-operation verification did not match the reviewed plan")
+            }
+        }
+    }
+
+    async fn send_transaction_log(
+        &self,
+        event_sender: &Option<mpsc::Sender<TaskQueueEvent>>,
+        entry: &TaskQueueEntry,
+        line: String,
+    ) {
+        if let Some(sender) = event_sender {
+            let _ = sender
+                .send(TaskQueueEvent::Log {
+                    entry_id: entry.id.clone(),
+                    line: StreamLine::Stdout(line),
+                })
+                .await;
+        }
     }
 
     fn spawn_log_forwarder(
@@ -254,6 +361,13 @@ impl TaskQueueExecutor {
             enrichment: None,
         }
     }
+}
+
+fn transaction_store_path() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("linget")
+        .join("transactions.json")
 }
 
 /// Manager that coordinates all package backends

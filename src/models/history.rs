@@ -439,6 +439,12 @@ pub struct TaskQueueEntry {
     pub started_at: Option<DateTime<Local>>,
     pub completed_at: Option<DateTime<Local>>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub reviewed_operation_id: Option<String>,
+    #[serde(default)]
+    pub reviewed_plan_json: Option<String>,
+    #[serde(default)]
+    pub verification_receipt_json: Option<String>,
 }
 
 impl TaskQueueEntry {
@@ -459,6 +465,9 @@ impl TaskQueueEntry {
             started_at: None,
             completed_at: None,
             error: None,
+            reviewed_operation_id: None,
+            reviewed_plan_json: None,
+            verification_receipt_json: None,
         }
     }
 

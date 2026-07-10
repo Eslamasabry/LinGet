@@ -5,7 +5,7 @@ use super::app::{
 use super::format::truncate_to_width;
 use super::theme::*;
 use crate::cli::tui::components::header::draw_filter_bar;
-use crate::cli::tui::state::filters::{Filter, Focus};
+use crate::cli::tui::state::filters::{Filter, Focus, ViewMode};
 use crate::models::history::{TaskQueueEntry, TaskQueueStatus};
 use crate::models::{Package, PackageSource, PackageStatus};
 use chrono::Local;
@@ -59,6 +59,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_changelog_overlay(frame, app);
     } else if app.showing_help {
         draw_help_overlay(frame, app);
+    } else if app.showing_onboarding {
+        draw_onboarding_overlay(frame, app);
     } else if let Some(confirming) = &app.confirming {
         draw_preflight_overlay(frame, app, confirming);
     } else if app.showing_import_preview {
@@ -69,7 +71,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_too_small(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(border_set())
         .title(" LinGet ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -88,7 +90,9 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_horizontal_rule(frame: &mut Frame, area: Rect) {
-    let line = "─".repeat(area.width as usize);
+    let line = crate::cli::tui::glyphs::active()
+        .horizontal
+        .repeat(area.width as usize);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             line,
@@ -278,31 +282,56 @@ pub fn spans_width(spans: &[Span<'_>]) -> usize {
 }
 
 fn draw_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
-    if app.queue_expanded {
-        frame.render_widget(ratatui::widgets::Clear, area);
-        draw_expanded_queue(frame, app, area);
-        return;
+    let effective_view = if app.is_queue_view() {
+        ViewMode::Queue
+    } else {
+        app.view_mode
+    };
+    match effective_view {
+        ViewMode::Today => crate::cli::tui::components::dashboard::draw_dashboard(frame, app, area),
+        ViewMode::Browse => crate::cli::tui::components::workspace::draw(frame, app, area),
+        ViewMode::Queue => {
+            frame.render_widget(ratatui::widgets::Clear, area);
+            draw_expanded_queue(frame, app, area);
+        }
     }
+}
 
-    // The Health view stacks the dashboard summary above the workspace so
-    // the tab actually changes the screen instead of only highlighting. The
-    // split comes from layout::dashboard_split so mouse hit-testing stays in
-    // sync with what is drawn.
-    if let Some((dashboard_area, workspace_area)) =
-        crate::cli::tui::components::layout::dashboard_split(app, area)
-    {
-        crate::cli::tui::components::dashboard::draw_dashboard(frame, app, dashboard_area);
-        crate::cli::tui::components::workspace::draw(frame, app, workspace_area);
-        return;
-    }
-
-    crate::cli::tui::components::workspace::draw(frame, app, area);
+fn draw_onboarding_overlay(frame: &mut Frame, app: &App) {
+    let area = centered_rect(frame.area(), 80, 60, 60, 11);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border_set())
+        .border_style(border_focused())
+        .title(" Welcome to LinGet ")
+        .title_style(accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let detected = app.visible_sources().len();
+    let lines = vec![
+        Line::from(Span::styled("One safe terminal for Linux packages", text())),
+        Line::from(""),
+        Line::from("LinGet uses your native package managers."),
+        Line::from("Nothing changes until you review and confirm."),
+        Line::from(format!("Detected sources: {detected}")),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Enter", key_hint()),
+            Span::raw(" open Today   "),
+            Span::styled("?", key_hint()),
+            Span::raw(" keyboard guide   "),
+            Span::styled("q", key_hint()),
+            Span::raw(" quit"),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 pub fn panel_block(title: String, focused: bool, _compact: bool) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(border_set())
         .border_style(if focused {
             border_focused()
         } else {
@@ -799,7 +828,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(border_set())
         .border_style(border_unfocused())
         .style(footer_bg());
     let inner = block.inner(area);
@@ -886,7 +915,7 @@ fn footer_commands(app: &App) -> Vec<Span<'static>> {
         return spans;
     }
 
-    if app.queue_expanded || app.focus == Focus::Queue {
+    if app.is_queue_view() || app.focus == Focus::Queue {
         push(&mut spans, "l", "Collapse queue".to_string());
         push(&mut spans, "R", "Retry selected".to_string());
         push(&mut spans, "A", "Retry safe".to_string());
@@ -1073,7 +1102,7 @@ fn draw_preflight_overlay(frame: &mut Frame, _app: &App, confirming: &PendingAct
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(border_set())
         .border_style(border_focused())
         .title(" Preflight ")
         .title_style(accent());
@@ -1214,6 +1243,28 @@ fn draw_preflight_overlay(frame: &mut Frame, _app: &App, confirming: &PendingAct
             muted(),
         ),
     ]));
+    for plan in &confirming.preflight.provider_plans {
+        lines.push(Line::from(vec![
+            Span::styled("Plan: ", dim()),
+            Span::styled(
+                format!(
+                    "{} {:?} · operation {}",
+                    plan.provider.source, plan.provider.fidelity, plan.operation_id
+                ),
+                success(),
+            ),
+        ]));
+        for command in &plan.exact_commands {
+            let command_text = format!("{} argv={:?}", command.program, command.args);
+            lines.push(Line::from(vec![
+                Span::styled("Command: ", dim()),
+                Span::styled(
+                    truncate_to_width(&command_text, sections[0].width.saturating_sub(11) as usize),
+                    muted(),
+                ),
+            ]));
+        }
+    }
     lines.push(Line::from(vec![
         Span::styled("Impact: ", dim()),
         Span::styled(
@@ -1299,7 +1350,7 @@ fn draw_palette_overlay(frame: &mut Frame, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(border_set())
         .border_style(border_focused())
         .title(" Command Palette ")
         .title_style(accent());
@@ -1557,7 +1608,7 @@ fn draw_changelog_overlay(frame: &mut Frame, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(border_set())
         .border_style(border_focused())
         .title(format!(" Changelog{}", package_title))
         .title_style(accent());
@@ -1761,7 +1812,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(border_set())
         .border_style(border_focused())
         .title_style(accent());
 
@@ -1778,7 +1829,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
         Line::from(format!("  {}", app.recommended_action_detail())),
     ];
 
-    if app.queue_expanded {
+    if app.is_queue_view() {
         lines.push(Line::from(format!(
             "  Queue filter: {}",
             app.queue_failure_filter_label()
@@ -1812,7 +1863,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
         "  ↑↓/jk move   g/G top/bottom   PgUp/PgDn or ^d/^u page",
     ));
     lines.push(Line::from("  Tab cycle panels   Ctrl+b toggle sidebar"));
-    lines.push(Line::from("  F1 Health   F2 Browse   F3 Queue"));
+    lines.push(Line::from("  F1 Today   F2 Browse   F3 Queue"));
     lines.push(Line::from(
         "  Alt+1/2/3 details tabs (Info / Dependencies / Changelog)",
     ));
@@ -1826,7 +1877,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
     ));
     lines.push(Line::from(""));
 
-    if app.queue_expanded {
+    if app.is_queue_view() {
         lines.push(Line::from(Span::styled("Queue", section_header())));
         lines.push(Line::from("  R retry selected failure"));
         lines.push(Line::from(
@@ -2810,6 +2861,9 @@ mod tests {
             started_at: Some(now - Duration::seconds(started_secs_ago)),
             completed_at: Some(now - Duration::seconds(started_secs_ago - duration_secs)),
             error: None,
+            reviewed_operation_id: None,
+            reviewed_plan_json: None,
+            verification_receipt_json: None,
         };
 
         let tasks = vec![
@@ -2852,6 +2906,9 @@ mod tests {
             started_at: Some(now - Duration::seconds(started_secs_ago)),
             completed_at: Some(now - Duration::seconds(started_secs_ago - duration_secs)),
             error: None,
+            reviewed_operation_id: None,
+            reviewed_plan_json: None,
+            verification_receipt_json: None,
         };
 
         let two_samples = vec![make_completed("a", 120, 30), make_completed("b", 60, 30)];
@@ -2897,6 +2954,9 @@ mod tests {
             started_at: Some(now - Duration::seconds(55)),
             completed_at: None,
             error: None,
+            reviewed_operation_id: None,
+            reviewed_plan_json: None,
+            verification_receipt_json: None,
         };
         app.tasks = vec![running.clone()];
 
@@ -2954,6 +3014,7 @@ mod tests {
                 held_back_count: 2,
             }),
             verification_in_progress: false,
+            provider_plans: Vec::new(),
             selection_mode: false,
         };
 
@@ -2979,6 +3040,7 @@ mod tests {
             dependency_impact_known: false,
             dependency_impact: None,
             verification_in_progress: false,
+            provider_plans: Vec::new(),
             selection_mode: true,
         };
 
@@ -3020,6 +3082,9 @@ mod tests {
             started_at: Some(now - Duration::try_seconds(50).unwrap()),
             completed_at: None,
             error: None,
+            reviewed_operation_id: None,
+            reviewed_plan_json: None,
+            verification_receipt_json: None,
         };
 
         let completed = |id: &str| TaskQueueEntry {
@@ -3033,6 +3098,9 @@ mod tests {
             started_at: Some(now - Duration::try_seconds(30).unwrap()),
             completed_at: Some(now),
             error: None,
+            reviewed_operation_id: None,
+            reviewed_plan_json: None,
+            verification_receipt_json: None,
         };
 
         let tasks = vec![completed("a"), completed("b"), running];

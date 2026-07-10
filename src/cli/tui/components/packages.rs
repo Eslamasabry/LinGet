@@ -18,7 +18,7 @@ use ratatui::{
 };
 
 pub fn draw_packages_panel(frame: &mut Frame, app: &App, area: Rect, _compact: bool) {
-    let focused = app.focus == Focus::Packages && !app.queue_expanded;
+    let focused = app.focus == Focus::Packages && !app.is_queue_view();
     let block = panel_block(packages_panel_title(app), focused, true);
 
     if app.is_catalog_busy() && app.filtered.is_empty() {

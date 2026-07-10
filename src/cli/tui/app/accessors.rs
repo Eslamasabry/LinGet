@@ -47,7 +47,7 @@ impl App {
             "Review Action"
         } else if self.showing_import_preview {
             "Import Preview"
-        } else if self.queue_expanded && self.focus == Focus::Queue {
+        } else if self.is_queue_view() && self.focus == Focus::Queue {
             "Queue Focus"
         } else if self.searching {
             "Search Input"
@@ -57,7 +57,7 @@ impl App {
             "Local Filter"
         } else {
             match self.view_mode {
-                ViewMode::Dashboard => "Dashboard",
+                ViewMode::Today => "Today",
                 ViewMode::Queue => "Queue Overview",
                 ViewMode::Browse => match self.focus {
                     Focus::Sources => "Source Browse",

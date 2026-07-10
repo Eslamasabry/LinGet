@@ -104,17 +104,19 @@ impl App {
             }
             CommandId::OpenPalette => self.open_palette(),
             CommandId::CycleFocus => {
-                self.focus = if self.queue_expanded {
-                    match self.focus {
-                        Focus::Sources => Focus::Packages,
-                        Focus::Packages => Focus::Queue,
-                        Focus::Queue => Focus::Sources,
-                    }
+                let effective_view = if self.is_queue_view() {
+                    ViewMode::Queue
                 } else {
-                    match self.focus {
+                    self.view_mode
+                };
+                self.focus = match effective_view {
+                    ViewMode::Queue => Focus::Queue,
+                    ViewMode::Today => Focus::Packages,
+                    ViewMode::Browse if self.layout_tier().shows_sources() => match self.focus {
                         Focus::Sources => Focus::Packages,
                         Focus::Packages | Focus::Queue => Focus::Sources,
-                    }
+                    },
+                    ViewMode::Browse => Focus::Packages,
                 };
             }
             CommandId::MoveUp => {
@@ -217,7 +219,7 @@ impl App {
                     self.set_status(self.catalog_busy_reason(), true);
                 }
             }
-            CommandId::ToggleQueue => self.toggle_queue_expanded(),
+            CommandId::ToggleQueue => self.toggle_queue_view(),
             CommandId::QueueCancel => self.cancel_selected_task().await,
             CommandId::QueueRetry => self.retry_selected_task().await,
             CommandId::QueueRetrySafe => self.retry_safe_failed_tasks().await,
@@ -334,7 +336,7 @@ impl App {
         // Ctrl+C cancels running task when in queue view, otherwise is ignored
         // We never quit on Ctrl+C - use 'q' to quit instead
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            let can_cancel = self.queue_expanded
+            let can_cancel = self.is_queue_view()
                 && self.focus == Focus::Queue
                 && self
                     .tasks
@@ -369,7 +371,34 @@ impl App {
             _ => {}
         }
 
-        if self.queue_expanded && self.focus == Focus::Queue {
+        match key.code {
+            KeyCode::F(1) => {
+                self.navigate_to(ViewMode::Today);
+                return;
+            }
+            KeyCode::F(2) => {
+                self.navigate_to(ViewMode::Browse);
+                return;
+            }
+            KeyCode::F(3) => {
+                self.navigate_to(ViewMode::Queue);
+                return;
+            }
+            _ => {}
+        }
+
+        if self.view_mode == ViewMode::Today {
+            match key.code {
+                KeyCode::Enter => self.open_today_recommendation(),
+                KeyCode::Char('w') => self.execute_command(CommandId::RunRecommended).await,
+                KeyCode::Char('r') => self.execute_command(CommandId::Refresh).await,
+                KeyCode::Char('l') => self.navigate_to(ViewMode::Queue),
+                _ => {}
+            }
+            return;
+        }
+
+        if self.is_queue_view() && self.focus == Focus::Queue {
             match key.code {
                 KeyCode::Tab => {
                     self.execute_command(CommandId::CycleFocus).await;
@@ -432,9 +461,6 @@ impl App {
 
         match key.code {
             KeyCode::Tab => self.execute_command(CommandId::CycleFocus).await,
-            KeyCode::F(1) => self.view_mode = crate::cli::tui::state::filters::ViewMode::Dashboard,
-            KeyCode::F(2) => self.view_mode = crate::cli::tui::state::filters::ViewMode::Browse,
-            KeyCode::F(3) => self.view_mode = crate::cli::tui::state::filters::ViewMode::Queue,
             KeyCode::Char('j') | KeyCode::Down => match self.focus {
                 Focus::Sources => self.next_source(),
                 Focus::Packages | Focus::Queue => self.next_package(),
@@ -515,7 +541,7 @@ impl App {
             KeyCode::Char('r') => self.execute_command(CommandId::Refresh).await,
             KeyCode::Char('l') => self.execute_command(CommandId::ToggleQueue).await,
             KeyCode::Esc => {
-                if self.queue_expanded {
+                if self.is_queue_view() {
                     self.execute_command(CommandId::ToggleQueue).await;
                 } else if self.search_results.is_some() && !self.search.is_empty() {
                     self.restore_local_catalog_with_current_search();
@@ -531,7 +557,7 @@ impl App {
                 }
             }
             KeyCode::Char('C') => {
-                if !self.queue_expanded
+                if !self.is_queue_view()
                     && self
                         .tasks
                         .iter()
@@ -569,6 +595,21 @@ impl App {
         }
         if self.showing_help {
             self.handle_help_key(key).await;
+            return;
+        }
+        if self.showing_onboarding {
+            match key.code {
+                KeyCode::Enter => {
+                    self.dismiss_tui_onboarding();
+                    self.navigate_to(ViewMode::Today);
+                }
+                KeyCode::Char('?') => {
+                    self.showing_help = true;
+                    self.help_scroll = 0;
+                }
+                KeyCode::Char('q') => self.should_quit = true,
+                _ => {}
+            }
             return;
         }
         if self.confirming.is_some() {
@@ -773,7 +814,7 @@ impl App {
                 } else if rect_contains(regions.details, pos) {
                     self.handle_mouse_details_click(col, row, &regions.details);
                 } else if rect_contains(regions.queue_bar, pos) {
-                    self.toggle_queue_expanded();
+                    self.toggle_queue_view();
                 } else if rect_contains(regions.expanded_queue, pos) {
                     self.handle_mouse_expanded_queue_click(col, row, regions)
                         .await;
@@ -797,9 +838,7 @@ impl App {
     }
 
     fn handle_mouse_filter_panel(&mut self, col: u16, row: u16, regions: &LayoutRegions) {
-        self.queue_expanded = false;
-        self.view_mode = ViewMode::Browse;
-        self.focus = Focus::Packages;
+        self.navigate_to(ViewMode::Browse);
         if let Some(filter) = crate::cli::tui::components::workspace::filter_panel_hit_test(
             self,
             regions.filter_panel,
@@ -900,43 +939,14 @@ impl App {
         use crate::cli::tui::components::header::HeaderAction;
 
         match action {
+            HeaderAction::Today => self.navigate_to(ViewMode::Today),
             HeaderAction::Browse => {
-                self.queue_expanded = false;
-                self.view_mode = ViewMode::Browse;
-                self.focus = Focus::Packages;
+                self.navigate_to(ViewMode::Browse);
                 self.filter = Filter::All;
                 self.apply_filters();
             }
-            HeaderAction::Updates => {
-                self.queue_expanded = false;
-                self.view_mode = ViewMode::Browse;
-                self.focus = Focus::Packages;
-                self.filter = Filter::Updates;
-                self.apply_filters();
-            }
-            HeaderAction::Installed => {
-                self.queue_expanded = false;
-                self.view_mode = ViewMode::Browse;
-                self.focus = Focus::Packages;
-                self.filter = Filter::Installed;
-                self.apply_filters();
-            }
-            HeaderAction::Sources => {
-                self.queue_expanded = false;
-                self.view_mode = ViewMode::Browse;
-                self.focus = Focus::Sources;
-            }
             HeaderAction::Queue => {
-                self.queue_expanded = true;
-                self.view_mode = ViewMode::Queue;
-                self.focus = Focus::Queue;
-            }
-            HeaderAction::Health => {
-                self.queue_expanded = false;
-                self.view_mode = ViewMode::Dashboard;
-                self.focus = Focus::Packages;
-                self.filter = Filter::SecurityUpdates;
-                self.apply_filters();
+                self.navigate_to(ViewMode::Queue);
             }
         }
     }

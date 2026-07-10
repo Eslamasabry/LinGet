@@ -256,7 +256,9 @@ fn draw_divider(frame: &mut Frame, area: Rect) {
     if area.width == 0 {
         return;
     }
-    let line = "─".repeat(area.width as usize);
+    let line = crate::cli::tui::glyphs::active()
+        .horizontal
+        .repeat(area.width as usize);
     frame.render_widget(Paragraph::new(Line::from(Span::styled(line, dim()))), area);
 }
 
@@ -687,6 +689,17 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+fn verification_receipt_summary(task: &TaskQueueEntry) -> Option<String> {
+    let receipt: crate::backend::transaction::VerificationReceipt =
+        serde_json::from_str(task.verification_receipt_json.as_deref()?).ok()?;
+    Some(format!(
+        "{:?} · {} · plan {}",
+        receipt.outcome,
+        receipt.provider,
+        receipt.plan_id.chars().take(8).collect::<String>()
+    ))
+}
+
 fn draw_details_strip(frame: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
@@ -728,6 +741,14 @@ fn draw_details_strip(frame: &mut Frame, app: &App, area: Rect) {
                 error(),
             ),
         ])
+    } else if let Some(receipt) = verification_receipt_summary(task) {
+        Line::from(vec![
+            Span::styled(" receipt ", dim()),
+            Span::styled(
+                truncate(&receipt, area.width.saturating_sub(10) as usize),
+                success(),
+            ),
+        ])
     } else if let Some(parent) = app.retry_parent_for_task(&task.id) {
         let attempt = app.retry_attempt_for_task(&task.id).unwrap_or(1);
         Line::from(vec![
@@ -750,4 +771,36 @@ fn draw_details_strip(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     frame.render_widget(Paragraph::new(vec![first, second]), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::transaction::{VerificationOutcome, VerificationReceipt};
+    use crate::models::PackageSource;
+    use chrono::Utc;
+
+    #[test]
+    fn durable_receipt_summary_includes_outcome_provider_and_plan() {
+        let receipt = VerificationReceipt {
+            operation_id: "operation-123".to_string(),
+            plan_id: "plan-abcdefgh".to_string(),
+            provider: PackageSource::Npm,
+            expected: Vec::new(),
+            observed: Vec::new(),
+            outcome: VerificationOutcome::Verified,
+            warnings: Vec::new(),
+            verified_at: Utc::now(),
+        };
+        let mut task = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "transaction:operation-123".to_string(),
+            "demo".to_string(),
+            PackageSource::Npm,
+        );
+        task.verification_receipt_json = Some(serde_json::to_string(&receipt).unwrap());
+
+        let summary = verification_receipt_summary(&task).expect("receipt summary");
+        assert_eq!(summary, "Verified · npm · plan plan-abc");
+    }
 }

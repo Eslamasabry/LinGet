@@ -1,7 +1,7 @@
 use crate::cli::tui::app::App;
 use crate::cli::tui::theme::{
-    accent, active, badge_installed, badge_update, border_unfocused, dim, error, key_hint, muted,
-    palette, source_color, success, warning,
+    accent, badge_installed, badge_update, border_unfocused, dim, error, key_hint, muted, palette,
+    source_color, success, warning,
 };
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -11,28 +11,19 @@ use ratatui::{
     Frame,
 };
 
-// Visual glyphs — kept as a single vocabulary so the dashboard has a consistent
-// "voice". Prefer a single-width glyph + trailing space for alignment.
-const GLYPH_LOGO: &str = "❖";
-const GLYPH_TOTAL: &str = "∑";
-const GLYPH_INSTALLED: &str = "✓";
-const GLYPH_UPDATE: &str = "↑";
-const GLYPH_FAVORITE: &str = "★";
-const GLYPH_SECURITY: &str = "⚠";
-const GLYPH_SPARKLE: &str = "✦";
-
 pub fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
+    let glyphs = crate::cli::tui::glyphs::active();
     let total = app.filter_counts[0];
     let health_glyph = system_health_glyph(app);
     let title = format!(
-        " {} LinGet  ·  {} catalog  {} ",
-        GLYPH_LOGO, total, health_glyph,
+        " {} Today  ·  {} packages  {} ",
+        glyphs.logo, total, health_glyph,
     );
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_unfocused())
-        .border_set(crate::cli::tui::theme::ROUNDED)
+        .border_set(crate::cli::tui::theme::border_set())
         .title(title)
         .title_alignment(Alignment::Left)
         .style(dim());
@@ -41,8 +32,8 @@ pub fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
 
     if inner.height < 4 {
         let hint = Paragraph::new(Line::from(vec![
-            Span::styled(GLYPH_SPARKLE, accent()),
-            Span::raw(" Dashboard collapsed — expand the pane to see stats"),
+            Span::styled(glyphs.sparkle, accent()),
+            Span::raw(" Today summary — Enter reviews the next action"),
         ]))
         .style(dim())
         .alignment(Alignment::Center);
@@ -86,6 +77,7 @@ pub fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Compose the centred stat row.
 fn build_stat_line(app: &App) -> Line<'static> {
+    let glyphs = crate::cli::tui::glyphs::active();
     let total = app.filter_counts[0];
     let installed = app.filter_counts[1];
     let updates = app.filter_counts[2];
@@ -93,27 +85,28 @@ fn build_stat_line(app: &App) -> Line<'static> {
     let security = app.filter_counts[4];
 
     let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.extend(stat_chip(GLYPH_TOTAL, total, "total", accent_style()));
+    spans.extend(stat_chip(glyphs.total, total, "total", accent_style()));
     spans.push(Span::raw("   "));
     spans.extend(stat_chip(
-        GLYPH_INSTALLED,
+        glyphs.installed,
         installed,
         "installed",
         badge_installed(),
     ));
     spans.push(Span::raw("   "));
     let update_style = if updates > 0 { badge_update() } else { dim() };
-    spans.extend(stat_chip(GLYPH_UPDATE, updates, "updates", update_style));
+    spans.extend(stat_chip(glyphs.update, updates, "updates", update_style));
     spans.push(Span::raw("   "));
     let fav_style = if favorites > 0 { warning() } else { dim() };
-    spans.extend(stat_chip(GLYPH_FAVORITE, favorites, "favorites", fav_style));
+    spans.extend(stat_chip(
+        glyphs.favorite,
+        favorites,
+        "favorites",
+        fav_style,
+    ));
     spans.push(Span::raw("   "));
-    let sec_style = if security > 0 {
-        pulse_danger_style(app)
-    } else {
-        dim()
-    };
-    spans.extend(stat_chip(GLYPH_SECURITY, security, "security", sec_style));
+    let sec_style = if security > 0 { error() } else { dim() };
+    spans.extend(stat_chip(glyphs.warning, security, "security", sec_style));
 
     Line::from(spans)
 }
@@ -131,22 +124,6 @@ fn accent_style() -> Style {
     accent()
 }
 
-/// Danger pulse — used only when unaddressed security updates exist. The
-/// subtle alpha-breathing effect nudges the eye without burning cycles.
-fn pulse_danger_style(app: &App) -> Style {
-    let active_theme = active();
-    if active_theme.monochrome {
-        return error();
-    }
-    // Breathe the theme's red toward white and back, so the pulse stays
-    // on-palette for every theme instead of a hardcoded RGB.
-    let phase = (app.tick % 16) as f32 / 16.0 * std::f32::consts::TAU;
-    let t = (phase.sin() * 0.5 + 0.5) * 0.3;
-    Style::default()
-        .fg(blend(palette::RED(), palette::WHITE(), t))
-        .add_modifier(Modifier::BOLD)
-}
-
 /// A gradient divider spanning `width` cells, keyed to the system health
 /// colour (green when healthy, amber when updates pending, red when security
 /// updates need attention).
@@ -159,7 +136,10 @@ fn build_divider(width: usize, accent: Color) -> Line<'static> {
         let t = ((i as f32 / width.max(1) as f32) * 2.0 - 1.0).abs();
         let a = 1.0 - t;
         let col = blend(palette::INACTIVE_BORDER(), accent, a);
-        spans.push(Span::styled("─", Style::default().fg(col)));
+        spans.push(Span::styled(
+            crate::cli::tui::glyphs::active().horizontal,
+            Style::default().fg(col),
+        ));
     }
     Line::from(spans)
 }
@@ -190,7 +170,7 @@ fn build_source_bars(app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::from(Span::styled(
             format!(
                 "  {} No sources enabled — press 'o' to configure",
-                GLYPH_SPARKLE
+                crate::cli::tui::glyphs::active().sparkle
             ),
             dim(),
         )));
@@ -269,9 +249,15 @@ fn gradient_bar(width: usize, filled: usize, color: Color) -> Vec<Span<'static>>
         if i < filled {
             let t = (i as f32 / width.max(1) as f32).clamp(0.0, 1.0);
             let bright = blend(color, palette::WHITE(), 0.35 * t);
-            spans.push(Span::styled("▰", Style::default().fg(bright)));
+            spans.push(Span::styled(
+                crate::cli::tui::glyphs::active().bar_filled,
+                Style::default().fg(bright),
+            ));
         } else {
-            spans.push(Span::styled("▱", Style::default().fg(track)));
+            spans.push(Span::styled(
+                crate::cli::tui::glyphs::active().bar_empty,
+                Style::default().fg(track),
+            ));
         }
     }
     spans
@@ -279,10 +265,11 @@ fn gradient_bar(width: usize, filled: usize, color: Color) -> Vec<Span<'static>>
 
 /// Context-sensitive call to action at the bottom of the dashboard.
 fn build_cta_line(app: &App) -> Line<'static> {
+    let glyphs = crate::cli::tui::glyphs::active();
     if app.filter_counts[4] > 0 {
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{} ", GLYPH_SECURITY), error()),
+            Span::styled(format!("{} ", glyphs.warning), error()),
             Span::styled(
                 format!(
                     "{} security update{} ",
@@ -294,7 +281,7 @@ fn build_cta_line(app: &App) -> Line<'static> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("— press ", muted()),
-            Span::styled("5", key_hint()),
+            Span::styled("Enter", key_hint()),
             Span::styled(" to review, ", muted()),
             Span::styled("w", key_hint()),
             Span::styled(" to queue all", muted()),
@@ -302,7 +289,7 @@ fn build_cta_line(app: &App) -> Line<'static> {
     } else if app.filter_counts[2] > 0 {
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{} ", GLYPH_UPDATE), warning()),
+            Span::styled(format!("{} ", glyphs.update), warning()),
             Span::styled(
                 format!(
                     "{} update{} available ",
@@ -314,21 +301,19 @@ fn build_cta_line(app: &App) -> Line<'static> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("— press ", muted()),
+            Span::styled("Enter", key_hint()),
+            Span::styled(" to review or ", muted()),
             Span::styled("w", key_hint()),
-            Span::styled(" to queue, ", muted()),
-            Span::styled("3", key_hint()),
-            Span::styled(" to filter", muted()),
+            Span::styled(" for explicit safe update", muted()),
         ])
     } else if !app.packages.is_empty() {
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{} ", GLYPH_SPARKLE), success()),
+            Span::styled(format!("{} ", glyphs.sparkle), success()),
             Span::styled("Everything is up to date  ", success()),
             Span::styled("· press ", muted()),
-            Span::styled("/", key_hint()),
-            Span::styled(" to discover new packages, ", muted()),
-            Span::styled("T", key_hint()),
-            Span::styled(" to change theme", muted()),
+            Span::styled("Enter", key_hint()),
+            Span::styled(" to browse packages", muted()),
         ])
     } else {
         Line::from(vec![
@@ -348,12 +333,13 @@ fn plural(n: usize) -> &'static str {
 }
 
 fn system_health_glyph(app: &App) -> Span<'static> {
+    let glyphs = crate::cli::tui::glyphs::active();
     if app.filter_counts[4] > 0 {
-        Span::styled(format!("{} needs attention", GLYPH_SECURITY), error())
+        Span::styled(format!("{} needs attention", glyphs.warning), error())
     } else if app.filter_counts[2] > 0 {
-        Span::styled(format!("{} updates pending", GLYPH_UPDATE), warning())
+        Span::styled(format!("{} updates pending", glyphs.update), warning())
     } else if !app.packages.is_empty() {
-        Span::styled(format!("{} healthy", GLYPH_INSTALLED), success())
+        Span::styled(format!("{} all current", glyphs.installed), success())
     } else {
         Span::styled("…".to_string(), dim())
     }

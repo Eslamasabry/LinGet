@@ -186,6 +186,23 @@ impl HistoryTracker {
         Ok(Some(entry_clone))
     }
 
+    pub async fn attach_task_verification_receipt(
+        &mut self,
+        entry_id: &str,
+        receipt_json: String,
+    ) -> Result<Option<TaskQueueEntry>> {
+        let entry = self.history.task_queue.get_mut(entry_id);
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        entry.verification_receipt_json = Some(receipt_json);
+        let entry_clone = entry.clone();
+        self.save()
+            .await
+            .context("Failed to save task verification receipt")?;
+        Ok(Some(entry_clone))
+    }
+
     pub async fn mark_task_failed(
         &mut self,
         entry_id: &str,

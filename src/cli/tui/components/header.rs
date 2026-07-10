@@ -1,9 +1,7 @@
 use crate::cli::tui::app::App;
-use crate::cli::tui::state::filters::{Filter, Focus, ViewMode};
-use crate::cli::tui::theme::{dim, header_bar, muted, palette, tab_active};
+use crate::cli::tui::state::filters::ViewMode;
+use crate::cli::tui::theme::{header_bar, palette, tab_active};
 use crate::cli::tui::ui::{compose_left_right, spans_width};
-use chrono::Local;
-use once_cell::sync::Lazy;
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -11,11 +9,6 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
-use std::fs;
-use std::process::Command;
-
-static SYSTEM_LABEL: Lazy<String> = Lazy::new(system_label);
-static KERNEL_LABEL: Lazy<String> = Lazy::new(kernel_label);
 
 pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     let compact = use_compact_tabs(app, area.width);
@@ -25,16 +18,7 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
         left.push(Span::raw("  "));
     }
 
-    let right = vec![
-        Span::styled("System: ", muted()),
-        Span::styled(SYSTEM_LABEL.as_str(), dim()),
-        Span::styled("   Kernel: ", muted()),
-        Span::styled(KERNEL_LABEL.as_str(), dim()),
-        Span::styled("   Uptime: ", muted()),
-        Span::styled(uptime_label(), dim()),
-        Span::styled("   ", dim()),
-        Span::styled(Local::now().format("%H:%M").to_string(), dim()),
-    ];
+    let right = Vec::new();
 
     let line = compose_left_right(left, right, area.width as usize);
     frame.render_widget(Paragraph::new(line).style(header_bar()), area);
@@ -42,12 +26,9 @@ pub fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeaderAction {
+    Today,
     Browse,
-    Updates,
-    Installed,
-    Sources,
     Queue,
-    Health,
 }
 
 struct PrimaryTabSpec {
@@ -82,61 +63,25 @@ fn use_compact_tabs(app: &App, width: u16) -> bool {
     needed > width as usize
 }
 
-fn primary_tab_specs_with(app: &App, compact: bool) -> Vec<PrimaryTabSpec> {
+fn primary_tab_specs_with(app: &App, _compact: bool) -> Vec<PrimaryTabSpec> {
     let (queued, running, _completed, failed, _cancelled) = app.queue_counts();
-    let queue_count = queued + running;
-    let health_count = failed + app.filter_counts[4];
-    // Full words when there's room; consistent short forms in compact mode.
-    // A mix of full and cryptic abbreviations ("Upd", "Q") reads as noise.
-    let (browse, updates, installed, sources, queue, health) = if compact {
-        ("Brw", "Upd", "Ins", "Src", "Que", "Hlth")
-    } else {
-        (
-            "Browse",
-            "Updates",
-            "Installed",
-            "Sources",
-            "Queue",
-            "Health",
-        )
-    };
+    let queue_count = queued + running + failed;
+    let (today, browse, queue) = ("F1 Today", "F2 Browse", "F3 Queue");
     vec![
         PrimaryTabSpec {
+            label: today.to_string(),
+            active: app.view_mode == ViewMode::Today,
+            action: HeaderAction::Today,
+        },
+        PrimaryTabSpec {
             label: format!("{} {}", browse, compact_count(app.filter_counts[0])),
-            active: app.focus == Focus::Packages
-                && app.filter == Filter::All
-                && !app.queue_expanded
-                && app.view_mode == ViewMode::Browse,
+            active: app.view_mode == ViewMode::Browse,
             action: HeaderAction::Browse,
         },
         PrimaryTabSpec {
-            label: format!("{} {}", updates, compact_count(app.filter_counts[2])),
-            active: app.filter == Filter::Updates && !app.queue_expanded,
-            action: HeaderAction::Updates,
-        },
-        PrimaryTabSpec {
-            label: format!("{} {}", installed, compact_count(app.filter_counts[1])),
-            active: app.filter == Filter::Installed && !app.queue_expanded,
-            action: HeaderAction::Installed,
-        },
-        PrimaryTabSpec {
-            label: format!(
-                "{} {}",
-                sources,
-                compact_count(app.visible_sources().len() + 1)
-            ),
-            active: app.focus == Focus::Sources && !app.queue_expanded,
-            action: HeaderAction::Sources,
-        },
-        PrimaryTabSpec {
             label: format!("{} {}", queue, compact_count(queue_count)),
-            active: app.queue_expanded,
+            active: app.view_mode == ViewMode::Queue,
             action: HeaderAction::Queue,
-        },
-        PrimaryTabSpec {
-            label: format!("{} {}", health, compact_count(health_count)),
-            active: app.view_mode == ViewMode::Dashboard && !app.queue_expanded,
-            action: HeaderAction::Health,
         },
     ]
 }
@@ -167,58 +112,6 @@ fn compact_count(value: usize) -> String {
         format!("{:.1}k", value as f64 / 1000.0)
     } else {
         value.to_string()
-    }
-}
-
-fn system_label() -> String {
-    let Ok(contents) = fs::read_to_string("/etc/os-release") else {
-        return std::env::consts::OS.to_string();
-    };
-
-    for key in ["PRETTY_NAME", "NAME"] {
-        if let Some(value) = contents.lines().find_map(|line| {
-            let (line_key, raw) = line.split_once('=')?;
-            (line_key == key).then(|| raw.trim_matches('"').to_string())
-        }) {
-            return value;
-        }
-    }
-
-    std::env::consts::OS.to_string()
-}
-
-fn kernel_label() -> String {
-    Command::new("uname")
-        .arg("-r")
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn uptime_label() -> String {
-    let seconds = fs::read_to_string("/proc/uptime")
-        .ok()
-        .and_then(|contents| {
-            contents
-                .split_whitespace()
-                .next()
-                .and_then(|value| value.parse::<f64>().ok())
-        })
-        .map(|value| value as u64)
-        .unwrap_or(0);
-
-    let days = seconds / 86_400;
-    let hours = (seconds % 86_400) / 3_600;
-    let minutes = (seconds % 3_600) / 60;
-    if days > 0 {
-        format!("{days}d {hours}h")
-    } else if hours > 0 {
-        format!("{hours}h {minutes}m")
-    } else {
-        format!("{minutes}m")
     }
 }
 

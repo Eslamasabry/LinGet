@@ -12,7 +12,7 @@ use crate::cli::tui::format::truncate_to_width;
 use crate::cli::tui::state::filters::{Filter, Focus};
 use crate::cli::tui::theme::{
     accent, border_focused, border_unfocused, dim, error, muted, palette, row_cursor, success,
-    text, warning, ROUNDED,
+    text, warning,
 };
 use crate::models::{Package, PackageStatus, UpdateCategory};
 use ratatui::{
@@ -98,7 +98,7 @@ pub fn filter_panel_search_hit_test(filter_panel_rect: Rect, col: u16, row: u16)
 fn draw_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(crate::cli::tui::theme::border_set())
         .border_style(border_unfocused());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -178,18 +178,21 @@ fn top_status_line(app: &App, width: usize) -> Line<'static> {
     // terminals and shove the rest of the row out of alignment.
     let mut spans = vec![
         Span::styled(" Today: ", accent()),
-        Span::styled("⚠", error()),
+        Span::styled(crate::cli::tui::glyphs::active().warning, error()),
         Span::styled(" Security ", muted()),
         Span::styled(security.to_string(), error()),
         Span::styled("   |   ", dim()),
-        Span::styled("↻", Style::default().fg(palette::ORANGE())),
+        Span::styled(
+            crate::cli::tui::glyphs::active().refresh,
+            Style::default().fg(palette::ORANGE()),
+        ),
         Span::styled(" Safe updates ", muted()),
         Span::styled(
             safe_updates.to_string(),
             Style::default().fg(palette::ORANGE()),
         ),
         Span::styled("   |   ", dim()),
-        Span::styled("✗", error()),
+        Span::styled(crate::cli::tui::glyphs::active().failed, error()),
         Span::styled(" Failed tasks ", muted()),
         Span::styled(failed.to_string(), error()),
         Span::styled("   |   ", dim()),
@@ -231,18 +234,29 @@ fn draw_main_columns(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let source_width = if area.width >= 92 {
+    if area.width < 100 {
+        let rows = if area.height >= 8 {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(4), Constraint::Length(3)])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(0)])
+                .split(area)
+        };
+        draw_packages_panel(frame, app, rows[0], true);
+        draw_compact_package_summary(frame, app, rows[1]);
+        return;
+    }
+
+    let source_width = if area.width >= 100 {
         source_rail::RAIL_WIDTH
     } else {
         0
     };
-    let inspector_width = if area.width >= 142 {
-        49
-    } else if area.width >= 118 {
-        42
-    } else {
-        0
-    };
+    let inspector_width = if area.width >= 140 { 42 } else { 0 };
 
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -266,15 +280,51 @@ fn draw_main_columns(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn draw_compact_package_summary(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let Some(package) = app.current_package() else {
+        frame.render_widget(Paragraph::new("No package selected").style(dim()), area);
+        return;
+    };
+    let width = area.width as usize;
+    let version = format!(
+        "{} -> {}",
+        if package.version.is_empty() {
+            "not installed"
+        } else {
+            package.version.as_str()
+        },
+        package.available_version.as_deref().unwrap_or("current")
+    );
+    let lines = vec![
+        Line::from(Span::styled(
+            truncate_to_width(&package.name, width),
+            text().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(truncate_to_width(&version, width), muted())),
+        Line::from(Span::styled(
+            truncate_to_width(
+                &format!("{} | Enter review | ? help", package.source),
+                width,
+            ),
+            dim(),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 fn draw_inspector(frame: &mut Frame, app: &App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let focused = app.focus == Focus::Packages && !app.queue_expanded;
+    let focused = app.focus == Focus::Packages
+        && app.view_mode == crate::cli::tui::state::filters::ViewMode::Browse;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_set(ROUNDED)
+        .border_set(crate::cli::tui::theme::border_set())
         .border_style(if focused {
             border_focused()
         } else {

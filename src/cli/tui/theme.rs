@@ -342,7 +342,9 @@ pub fn init_from_env() {
 
 // ---------- Borders ----------
 
-pub const ROUNDED: border::Set = border::ROUNDED;
+pub fn border_set() -> border::Set {
+    crate::cli::tui::glyphs::border_set()
+}
 
 // ---------- Back-compat palette accessors (UPPERCASE kept for call-site stability) ----------
 

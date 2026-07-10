@@ -1,6 +1,6 @@
 use crate::cli::tui::app::{App, MIN_HEIGHT, MIN_WIDTH};
 use crate::cli::tui::components::{source_rail, workspace};
-use crate::cli::tui::state::filters::ViewMode;
+use crate::cli::tui::state::filters::{LayoutTier, ViewMode};
 use crate::cli::tui::ui::{palette_overlay_rect, preflight_overlay_rect, source_count_label};
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use unicode_width::UnicodeWidthStr;
@@ -47,17 +47,31 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
         (Rect::default(), chunks[4])
     };
 
-    // The Health dashboard shifts the workspace down; hit-testing must use
-    // the same shifted area as the draw path or every click lands offset.
-    let workspace_area = match dashboard_split(app, main_area) {
-        Some((_, rest)) => rest,
-        None => main_area,
-    };
-
-    let (filter_panel, sources, packages, details, expanded_queue) = if app.compact {
-        compute_compact_regions(app, workspace_area)
+    let tier = LayoutTier::from_size(area.width, area.height);
+    let effective_view = if app.is_queue_view() {
+        ViewMode::Queue
     } else {
-        compute_full_regions(app, workspace_area)
+        app.view_mode
+    };
+    let (filter_panel, sources, packages, details, expanded_queue) = match effective_view {
+        ViewMode::Today => (
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+        ),
+        ViewMode::Queue => (
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            Rect::default(),
+            main_area,
+        ),
+        ViewMode::Browse if matches!(tier, LayoutTier::Minimal | LayoutTier::Compact) => {
+            compute_compact_regions(app, main_area)
+        }
+        ViewMode::Browse => compute_full_regions(app, main_area),
     };
 
     let (expanded_queue_tasks, expanded_queue_logs) = expanded_queue_sections(expanded_queue);
@@ -85,55 +99,18 @@ pub fn compute_layout(app: &App, area: Rect) -> LayoutRegions {
     }
 }
 
-/// The vertical split for the Health view: dashboard strip above, workspace
-/// below. `None` when the dashboard isn't shown (other views, expanded
-/// queue, or not enough height). Shared by the draw path and `compute_layout`
-/// so rendering and mouse hit-testing can never disagree.
-pub fn dashboard_split(app: &App, area: Rect) -> Option<(Rect, Rect)> {
-    if app.view_mode != ViewMode::Dashboard || app.queue_expanded {
-        return None;
-    }
-    let dashboard_height = (app.visible_sources().len() as u16 + 6)
-        .min(area.height / 2)
-        .max(6);
-    if area.height <= dashboard_height + 8 {
-        return None;
-    }
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(dashboard_height), Constraint::Min(8)])
-        .split(area);
-    Some((chunks[0], chunks[1]))
-}
-
 pub fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
-    if app.queue_expanded {
-        return (
-            Rect::default(),
-            Rect::default(),
-            Rect::default(),
-            Rect::default(),
-            area,
-        );
-    }
-
     let vertical = workspace_vertical_regions(area);
     let filter_panel = vertical.0;
     let main = vertical.1;
 
-    let source_width = if app.show_sidebar && main.width >= 92 {
+    let source_width = if app.show_sidebar && main.width >= 100 {
         let _adaptive_source_width = sources_panel_width(app, main.width);
         source_rail::RAIL_WIDTH
     } else {
         0
     };
-    let inspector_width = if main.width >= 142 {
-        49
-    } else if main.width >= 118 {
-        42
-    } else {
-        0
-    };
+    let inspector_width = if main.width >= 140 { 42 } else { 0 };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -154,17 +131,9 @@ pub fn compute_full_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect, R
     )
 }
 
-pub fn compute_compact_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
+pub fn compute_compact_regions(_app: &App, area: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
     let sources = Rect::default();
-    if app.queue_expanded {
-        (
-            Rect::default(),
-            sources,
-            Rect::default(),
-            Rect::default(),
-            area,
-        )
-    } else if area.height < 4 {
+    if area.height < 4 {
         (
             Rect::default(),
             sources,
@@ -174,10 +143,18 @@ pub fn compute_compact_regions(app: &App, area: Rect) -> (Rect, Rect, Rect, Rect
         )
     } else {
         let vertical = workspace_vertical_regions(area);
+        let package_area = if vertical.1.height >= 8 {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(4), Constraint::Length(3)])
+                .split(vertical.1)[0]
+        } else {
+            vertical.1
+        };
         (
             vertical.0,
             sources,
-            vertical.1,
+            package_area,
             Rect::default(),
             Rect::default(),
         )

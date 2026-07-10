@@ -91,6 +91,10 @@ pub struct Config {
     #[serde(default)]
     pub onboarding_completed: bool,
 
+    /// Last completed terminal onboarding revision.
+    #[serde(default)]
+    pub tui_onboarding_version: u16,
+
     /// Recent search queries (last 5)
     #[serde(default)]
     pub recent_searches: Vec<String>,
@@ -446,6 +450,7 @@ impl Default for Config {
             tui_favorites_updates_only: false,
             collections: HashMap::new(),
             onboarding_completed: false,
+            tui_onboarding_version: 0,
             recent_searches: Vec::new(),
             dismissed_recommendations: Vec::new(),
             vim_mode: false,
