@@ -7762,6 +7762,38 @@ Remove   1 Package
     }
 
     #[test]
+    fn cohort_help_is_readable_at_minimum_size_and_explains_trust_signals() {
+        let mut compact = test_app();
+        compact.showing_help = true;
+        compact.update_terminal_area(Rect::new(0, 0, 60, 15));
+        let backend = ratatui::backend::TestBackend::new(60, 15);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| ui::draw(frame, &mut compact))
+            .expect("render compact help");
+        let compact_screen = buffer_text(terminal.backend().buffer());
+        assert!(compact_screen.contains("Safe workflow"));
+        assert!(compact_screen.contains("nothing runs until you confirm"));
+
+        let mut full = test_app();
+        full.showing_help = true;
+        full.update_terminal_area(Rect::new(0, 0, 100, 100));
+        let backend = ratatui::backend::TestBackend::new(100, 100);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| ui::draw(frame, &mut full))
+            .expect("render full help");
+        let full_screen = buffer_text(terminal.backend().buffer());
+        assert!(full_screen.contains("Failures never rerun automatically"));
+        assert!(full_screen.contains("VERIFIED: observed state matched"));
+        assert!(full_screen.contains("MISMATCH: state differed"));
+        assert!(full_screen.contains("INCONCLUSIVE: final state was not proven"));
+        assert!(full_screen.contains("Feedback (manual; no telemetry)"));
+        assert!(full_screen.contains("github.com/Eslamasabry/LinGet/issues"));
+        assert!(full_screen.contains("rate usefulness 1-5"));
+    }
+
+    #[test]
     fn first_run_card_states_native_manager_and_review_guarantees() {
         let mut app = test_app();
         app.showing_onboarding = true;
@@ -7774,6 +7806,7 @@ Remove   1 Package
         let screen = buffer_text(terminal.backend().buffer());
         assert!(screen.contains("uses your native package managers"));
         assert!(screen.contains("review and confirm"));
+        assert!(screen.contains("Queue explains what verification proved"));
         assert!(screen.contains("Enter open Today"));
     }
 

@@ -23,6 +23,7 @@
 //! └───────────────────────────────────────────────────────────────────┘
 //! ```
 
+use crate::backend::transaction::VerificationOutcome;
 use crate::cli::tui::app::App;
 use crate::cli::tui::state::queue::QueueJourneyLane;
 use crate::cli::tui::theme::{
@@ -564,7 +565,14 @@ fn append_task_rows(rows: &mut Vec<LaneRow>, app: &App, task: &TaskQueueEntry, w
     if lane == QueueJourneyLane::NeedsAttention {
         lines.push(Line::from(sub_spans));
         if let Some(err) = &task.error {
-            let short = truncate(&short_error(err), width.saturating_sub(4));
+            let category = app
+                .failure_category_for_task(task)
+                .map(|category| category.code())
+                .unwrap_or("E_UNKNOWN");
+            let short = truncate(
+                &format!("[{category}] {}", short_error(err)),
+                width.saturating_sub(4),
+            );
             lines.push(Line::from(vec![
                 Span::styled("   ", dim()),
                 Span::styled(short, error()),
@@ -689,15 +697,37 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn verification_receipt_summary(task: &TaskQueueEntry) -> Option<String> {
+#[derive(Debug, PartialEq, Eq)]
+struct VerificationReceiptSummary {
+    outcome: VerificationOutcome,
+    text: String,
+}
+
+fn verification_receipt_summary(task: &TaskQueueEntry) -> Option<VerificationReceiptSummary> {
     let receipt: crate::backend::transaction::VerificationReceipt =
         serde_json::from_str(task.verification_receipt_json.as_deref()?).ok()?;
-    Some(format!(
-        "{:?} · {} · plan {}",
-        receipt.outcome,
-        receipt.provider,
-        receipt.plan_id.chars().take(8).collect::<String>()
-    ))
+    let (label, meaning) = match receipt.outcome {
+        VerificationOutcome::Verified => ("VERIFIED", "observed state matches plan"),
+        VerificationOutcome::Mismatch => ("MISMATCH", "observed state differs from plan"),
+        VerificationOutcome::Inconclusive => ("INCONCLUSIVE", "final state needs manual check"),
+    };
+    let warning_note = if receipt.warnings.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " · {} warning{}",
+            receipt.warnings.len(),
+            if receipt.warnings.len() == 1 { "" } else { "s" }
+        )
+    };
+    Some(VerificationReceiptSummary {
+        outcome: receipt.outcome,
+        text: format!(
+            "{label} · {meaning} · {} · plan {}{warning_note}",
+            receipt.provider,
+            receipt.plan_id.chars().take(8).collect::<String>()
+        ),
+    })
 }
 
 fn draw_details_strip(frame: &mut Frame, app: &App, area: Rect) {
@@ -734,19 +764,31 @@ fn draw_details_strip(frame: &mut Frame, app: &App, area: Rect) {
     ]);
 
     let second = if let Some(err) = &task.error {
+        let category = app
+            .failure_category_for_task(task)
+            .map(|category| category.code())
+            .unwrap_or("E_UNKNOWN");
         Line::from(vec![
             Span::styled(" last: ", dim()),
             Span::styled(
-                truncate(&short_error(err), area.width.saturating_sub(8) as usize),
+                truncate(
+                    &format!("[{category}] {}", short_error(err)),
+                    area.width.saturating_sub(8) as usize,
+                ),
                 error(),
             ),
         ])
     } else if let Some(receipt) = verification_receipt_summary(task) {
+        let receipt_style = match receipt.outcome {
+            VerificationOutcome::Verified => success(),
+            VerificationOutcome::Mismatch => error(),
+            VerificationOutcome::Inconclusive => warning(),
+        };
         Line::from(vec![
             Span::styled(" receipt ", dim()),
             Span::styled(
-                truncate(&receipt, area.width.saturating_sub(10) as usize),
-                success(),
+                truncate(&receipt.text, area.width.saturating_sub(10) as usize),
+                receipt_style,
             ),
         ])
     } else if let Some(parent) = app.retry_parent_for_task(&task.id) {
@@ -801,6 +843,51 @@ mod tests {
         task.verification_receipt_json = Some(serde_json::to_string(&receipt).unwrap());
 
         let summary = verification_receipt_summary(&task).expect("receipt summary");
-        assert_eq!(summary, "Verified · npm · plan plan-abc");
+        assert_eq!(summary.outcome, VerificationOutcome::Verified);
+        assert_eq!(
+            summary.text,
+            "VERIFIED · observed state matches plan · npm · plan plan-abc"
+        );
+    }
+
+    #[test]
+    fn durable_receipt_summary_explains_non_verified_outcomes_and_warnings() {
+        let make_task = |outcome, warnings: Vec<String>| {
+            let receipt = VerificationReceipt {
+                operation_id: "operation-123".to_string(),
+                plan_id: "plan-abcdefgh".to_string(),
+                provider: PackageSource::Apt,
+                expected: Vec::new(),
+                observed: Vec::new(),
+                outcome,
+                warnings,
+                verified_at: Utc::now(),
+            };
+            let mut task = TaskQueueEntry::new(
+                TaskQueueAction::Update,
+                "transaction:operation-123".to_string(),
+                "demo".to_string(),
+                PackageSource::Apt,
+            );
+            task.verification_receipt_json = Some(serde_json::to_string(&receipt).unwrap());
+            task
+        };
+
+        let mismatch = verification_receipt_summary(&make_task(
+            VerificationOutcome::Mismatch,
+            vec!["unexpected version".to_string()],
+        ))
+        .expect("mismatch receipt");
+        assert_eq!(mismatch.outcome, VerificationOutcome::Mismatch);
+        assert_eq!(
+            mismatch.text,
+            "MISMATCH · observed state differs from plan · APT · plan plan-abc · 1 warning"
+        );
+
+        let inconclusive =
+            verification_receipt_summary(&make_task(VerificationOutcome::Inconclusive, Vec::new()))
+                .expect("inconclusive receipt");
+        assert_eq!(inconclusive.outcome, VerificationOutcome::Inconclusive);
+        assert!(inconclusive.text.contains("final state needs manual check"));
     }
 }

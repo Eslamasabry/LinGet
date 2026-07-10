@@ -314,6 +314,7 @@ fn draw_onboarding_overlay(frame: &mut Frame, app: &App) {
         Line::from(""),
         Line::from("LinGet uses your native package managers."),
         Line::from("Nothing changes until you review and confirm."),
+        Line::from("After a run, Queue explains what verification proved."),
         Line::from(format!("Detected sources: {detected}")),
         Line::from(""),
         Line::from(vec![
@@ -1858,6 +1859,17 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
     }
 
     lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Safe workflow", section_header())));
+    lines.push(Line::from(
+        "  Today recommends   Browse selects   Queue explains outcomes",
+    ));
+    lines.push(Line::from(
+        "  Enter opens review; nothing runs until you confirm.",
+    ));
+    lines.push(Line::from(
+        "  Check provider, changes, privilege, and plan certainty first.",
+    ));
+    lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("Navigation", section_header())));
     lines.push(Line::from(
         "  ↑↓/jk move   g/G top/bottom   PgUp/PgDn or ^d/^u page",
@@ -1881,7 +1893,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
         lines.push(Line::from(Span::styled("Queue", section_header())));
         lines.push(Line::from("  R retry selected failure"));
         lines.push(Line::from(
-            "  M apply filtered fixes   A retry safe failures",
+            "  M inspect/apply filtered fixes   A retry safe failures",
         ));
         lines.push(Line::from(
             "  1 permissions   2 network   3 conflict   4 other   0 all",
@@ -1903,8 +1915,54 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
         lines.push(Line::from(
             "  D dismiss duplicate (Duplicates filter)   C clear failed tasks",
         ));
-        lines.push(Line::from("  R retry failure   A retry safe   M remediate"));
+        lines.push(Line::from(
+            "  R retry failure   A retry safe   M inspect/apply fix",
+        ));
     }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Recovery", section_header())));
+    lines.push(Line::from(
+        "  Failures never rerun automatically; read the category and error.",
+    ));
+    lines.push(Line::from(
+        "  R retries one; A retries safe failures; M inspects/applies fixes.",
+    ));
+    lines.push(Line::from(
+        "  Stop if a retry may surprise you; verify with the package manager.",
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Verification receipts",
+        section_header(),
+    )));
+    lines.push(Line::from(
+        "  VERIFIED: observed state matched the reviewed plan.",
+    ));
+    lines.push(Line::from(
+        "  MISMATCH: state differed; stop and report the redacted receipt.",
+    ));
+    lines.push(Line::from(
+        "  INCONCLUSIVE: final state was not proven; verify manually.",
+    ));
+    lines.push(Line::from(
+        "  Select a completed Queue item for its provider and plan ID.",
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Feedback (manual; no telemetry)",
+        section_header(),
+    )));
+    lines.push(Line::from("  Report: github.com/Eslamasabry/LinGet/issues"));
+    lines.push(Line::from(
+        "  Include version, provider, redacted error/receipt, and expectation.",
+    ));
+    lines.push(Line::from(
+        "  Say what surprised you and rate usefulness 1-5.",
+    ));
+    lines.push(Line::from(
+        "  Never paste usernames, hostnames, tokens, inventories, or full logs.",
+    ));
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("Global", section_header())));
