@@ -129,7 +129,8 @@ linget gui
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Switch between Sources/Packages panels |
+| `F1` / `F2` / `F3` | Open Today / Browse / Queue |
+| `Tab` | Switch visible panels in Browse |
 | `j`/`k` or `↓`/`↑` | Navigate up/down |
 | `g`/`G` | Jump to first/last item |
 | `PageUp`/`PageDown` | Scroll by page |
@@ -138,8 +139,10 @@ linget gui
 | `r` | Refresh package list |
 | `i` | Install selected package |
 | `x` | Remove selected package |
-| `Enter` | Show package details |
-| `h` | Show help |
+| `Enter` | Review the current recommendation or package action |
+| `l` | Open Queue, or return from Queue |
+| `?` | Show help |
+| `:` | Open the command palette |
 | `q` or `Esc` | Quit |
 
 ### CLI Mode
