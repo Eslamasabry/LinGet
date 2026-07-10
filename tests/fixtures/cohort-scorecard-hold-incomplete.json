@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "cohort_size": 10,
+  "first_session_responses": 10,
+  "day_seven_responses": 8,
+  "activated": 8,
+  "plan_understood": 8,
+  "verified_operation": 7,
+  "unreviewed_mutation_reports": 0,
+  "unexplained_change_reports": 0,
+  "task_success_without_intervention": 8,
+  "returned_by_day_7": 4,
+  "usefulness_4_or_5": 7,
+  "share_prompt_eligible": 7,
+  "share_prompt_offered": 7,
+  "participants_chose_to_share": 2,
+  "referred_first_sessions": 1,
+  "referred_activations": 1
+}

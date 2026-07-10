@@ -5,7 +5,7 @@ DATADIR = $(PREFIX)/share
 APPDIR = $(DATADIR)/applications
 ICONDIR = $(DATADIR)/icons/hicolor
 
-.PHONY: all build release package install uninstall clean dist-clean run check fmt test
+.PHONY: all build release package install uninstall clean dist-clean run check fmt test cohort-check
 
 all: build
 
@@ -59,3 +59,6 @@ dev: build
 
 test:
 	cargo test
+
+cohort-check:
+	python3 -m unittest discover -s tests -p 'test_*.py'

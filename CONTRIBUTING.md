@@ -32,7 +32,7 @@ The process described here has several goals:
 
 Please follow these steps to have your contribution considered by the maintainers:
 
-1.  **Fork the repository** and create your branch from `main`.
+1.  **Fork the repository** and create your branch from `master`.
 2.  **Clone the repository** to your local machine.
 3.  **Create a new branch** for your fix or feature.
 4.  **Test your changes** to ensure they work as expected.
@@ -41,16 +41,20 @@ Please follow these steps to have your contribution considered by the maintainer
 
 ## Development Setup
 
-1.  Install Rust and system dependencies (GTK4, Libadwaita).
-2.  Clone the repo: `git clone https://github.com/linget/linget`
-3.  Run the app: `cargo run`
+1. Install Rust and the terminal-build dependencies: a C toolchain and `pkg-config`.
+2. Clone the repo: `git clone https://github.com/Eslamasabry/LinGet.git`
+3. Run the terminal app: `cargo run`
+4. Run the quality gates: `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test`.
+
+The default build and product interface are terminal-first and do not require GTK. For the optional GUI, install the GTK4, Libadwaita, and D-Bus development packages, then run `cargo run --features gui -- gui`.
 
 ## Coding Style
 
 - We use standard Rust formatting (`cargo fmt`).
 - Please ensure no warnings are left in the build output (`cargo check` should be clean).
 - Follow the existing project structure:
-    - `src/ui/`: UI components and logic
+    - `src/cli/tui/`: Terminal UI components and logic
+    - `src/ui/`: Optional GUI components and logic
     - `src/backend/`: Package manager implementations
     - `src/models/`: Data structures
 

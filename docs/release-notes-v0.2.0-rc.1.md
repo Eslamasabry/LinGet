@@ -28,6 +28,6 @@ Use the matching `aarch64-unknown-linux-gnu` archive on 64-bit ARM. The optional
 
 ## Evaluation gate
 
-Publishing this prerelease does not make v0.2 stable. Promotion remains blocked until the activation, plan-comprehension, verified-operation, safety, task-success, week-one retention, and usefulness thresholds in [the cohort scorecard](v0.2-cohort-scorecard.md) are evaluated.
+Publishing this prerelease does not make v0.2 stable. Promotion remains blocked until the activation, plan-comprehension, verified-operation, safety, task-success, week-one retention, and usefulness thresholds in [the cohort scorecard](v0.2-cohort-scorecard.md) are evaluated with the [consent-safe ten-user operations kit](cohort-v0.2/README.md) and deterministic report.
 
 Report provider failures with the provider issue form. Do not attach full package inventories, hostnames, usernames, or other identifying system output.

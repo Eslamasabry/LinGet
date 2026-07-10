@@ -47,3 +47,7 @@ linget-electron/dist/
 session-ses_*.md
 temp_*.rs
 autoremove
+
+# Python validation caches
+__pycache__/
+*.py[cod]

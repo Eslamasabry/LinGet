@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Eslamasabry/LinGet/blob/master/docs/cohort-v0.2/cohort-scorecard.schema.json",
+  "title": "LinGet v0.2 aggregate cohort scorecard",
+  "description": "Aggregate counts only. Never add participant or machine identifiers or free text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "cohort_size",
+    "first_session_responses",
+    "day_seven_responses",
+    "activated",
+    "plan_understood",
+    "verified_operation",
+    "unreviewed_mutation_reports",
+    "unexplained_change_reports",
+    "task_success_without_intervention",
+    "returned_by_day_7",
+    "usefulness_4_or_5",
+    "share_prompt_eligible",
+    "share_prompt_offered",
+    "participants_chose_to_share",
+    "referred_first_sessions",
+    "referred_activations"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "cohort_size": { "const": 10 },
+    "first_session_responses": { "$ref": "#/$defs/cohortCount" },
+    "day_seven_responses": { "$ref": "#/$defs/cohortCount" },
+    "activated": { "$ref": "#/$defs/cohortCount" },
+    "plan_understood": { "$ref": "#/$defs/cohortCount" },
+    "verified_operation": { "$ref": "#/$defs/cohortCount" },
+    "unreviewed_mutation_reports": { "$ref": "#/$defs/nonNegativeCount" },
+    "unexplained_change_reports": { "$ref": "#/$defs/nonNegativeCount" },
+    "task_success_without_intervention": { "$ref": "#/$defs/cohortCount" },
+    "returned_by_day_7": { "$ref": "#/$defs/cohortCount" },
+    "usefulness_4_or_5": { "$ref": "#/$defs/cohortCount" },
+    "share_prompt_eligible": { "$ref": "#/$defs/cohortCount" },
+    "share_prompt_offered": { "$ref": "#/$defs/cohortCount" },
+    "participants_chose_to_share": { "$ref": "#/$defs/cohortCount" },
+    "referred_first_sessions": { "$ref": "#/$defs/nonNegativeCount" },
+    "referred_activations": { "$ref": "#/$defs/nonNegativeCount" }
+  },
+  "$defs": {
+    "cohortCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10
+    },
+    "nonNegativeCount": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

@@ -48,7 +48,7 @@ APT provides exact simulated plans where the host supports them. Flatpak and npm
 The installer selects the terminal artifact for your architecture, verifies its SHA-256 digest, and installs to `~/.local/bin` for a normal user (`/usr/local/bin` for root):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/master/install.sh | bash
 ```
 
 For a custom destination, download and inspect the installer first, then run `./install.sh --prefix /your/prefix`. See [Release artifacts](docs/release-artifacts.md) for manual checksum and provenance verification.
