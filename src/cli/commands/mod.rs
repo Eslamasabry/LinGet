@@ -1,5 +1,6 @@
 pub mod backup;
 pub mod check;
+pub mod cohort_report;
 pub mod completions;
 pub mod ignore;
 pub mod info;

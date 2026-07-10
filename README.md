@@ -108,6 +108,23 @@ LinGet offers three interface modes. The terminal interface is the product defau
 | **CLI** | `linget <command>` | Command-line interface for scripting |
 | **GUI** | `linget gui` | Optional GTK4/Libadwaita build and artifact |
 
+### Privacy-safe cohort report
+
+Prerelease participants can inspect a local summary of LinGet version, provider
+readiness, and aggregate task/verification outcomes:
+
+```bash
+linget cohort-report
+linget cohort-report --format json
+linget cohort-report --output cohort-report.json
+```
+
+This command transmits nothing. It deliberately excludes package names and
+inventories, usernames, hostnames, filesystem paths, provider command output,
+errors, operation IDs, and receipt details. Review the generated report before
+sharing it with the cohort facilitator. See [the cohort report privacy
+contract](docs/cohort-report.md) for the exact fields and limitations.
+
 ### TUI Mode (Default)
 
 Launch the interactive terminal interface:

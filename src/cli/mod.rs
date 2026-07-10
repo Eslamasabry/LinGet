@@ -5,6 +5,7 @@ pub mod tui;
 use crate::backend::PackageManager;
 use crate::models::PackageSource;
 use crate::product::{APP_NAME, APP_VERSION};
+use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -127,6 +128,13 @@ pub enum Commands {
         /// Show all providers (including unavailable ones)
         #[arg(short, long)]
         all: bool,
+    },
+
+    /// Create a local-only, privacy-safe prerelease cohort report
+    CohortReport {
+        /// Write the JSON report to a file instead of standard output
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<String>,
     },
 
     /// Generate shell completions
@@ -305,10 +313,32 @@ impl std::fmt::Display for SourceArg {
 
 /// Run the CLI application
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
+    let writer = OutputWriter::new(cli.format, cli.verbose, cli.quiet);
+
+    if let Commands::CohortReport { output } = &cli.command {
+        let providers = tokio::task::spawn_blocking(crate::backend::detect_providers_fast)
+            .await
+            .context("Provider readiness check did not complete")?;
+        let history_result = crate::models::history::load_operation_history();
+        let history = match &history_result {
+            Ok(history) => commands::cohort_report::SavedHistory::Readable(history),
+            Err(_) => commands::cohort_report::SavedHistory::Unreadable,
+        };
+        let report = commands::cohort_report::build(&providers, history);
+        if let Some(output) = output {
+            commands::cohort_report::write_json(std::path::Path::new(output), &report)?;
+            writer.success("Privacy-safe cohort report saved. LinGet transmitted nothing.");
+        } else if writer.is_json() {
+            println!("{}", commands::cohort_report::render_json(&report)?);
+        } else if !writer.is_quiet() {
+            println!("{}", commands::cohort_report::render_human(&report));
+        }
+        return Ok(());
+    }
+
     crate::models::load_cache();
 
     let pm = Arc::new(Mutex::new(PackageManager::new()));
-    let writer = OutputWriter::new(cli.format, cli.verbose, cli.quiet);
 
     match cli.command {
         Commands::List { source, updates } => {
@@ -349,6 +379,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Sources { action } => commands::sources::run(pm, action, &writer).await,
         Commands::Check => commands::check::run(pm, &writer).await,
         Commands::Providers { all } => commands::providers::run(&writer, all).await,
+        Commands::CohortReport { .. } => {
+            unreachable!("cohort report should be handled before package manager startup")
+        }
         Commands::Completions { shell } => {
             commands::completions::run(shell);
             Ok(())

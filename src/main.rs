@@ -29,9 +29,8 @@ fn detect_run_mode_from(args: impl IntoIterator<Item = impl AsRef<str>>) -> RunM
         "tui" => RunMode::Tui,
         // CLI commands
         "list" | "search" | "install" | "remove" | "update" | "info" | "sources" | "check"
-        | "completions" | "help" | "--help" | "-h" | "--version" | "-V" | "schedule" => {
-            RunMode::Cli
-        }
+        | "completions" | "cohort-report" | "help" | "--help" | "-h" | "--version" | "-V"
+        | "schedule" => RunMode::Cli,
         // Unknown argument - let clap handle it (will show error or help)
         _ => RunMode::Cli,
     }
@@ -198,6 +197,10 @@ mod tests {
     #[test]
     fn cli_commands_and_unknown_arguments_go_through_clap() {
         assert_eq!(detect_run_mode_from(["linget", "list"]), RunMode::Cli);
+        assert_eq!(
+            detect_run_mode_from(["linget", "cohort-report"]),
+            RunMode::Cli
+        );
         assert_eq!(detect_run_mode_from(["linget", "--help"]), RunMode::Cli);
         assert_eq!(detect_run_mode_from(["linget", "unknown"]), RunMode::Cli);
     }
