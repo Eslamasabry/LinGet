@@ -17,7 +17,7 @@ impl CargoBackend {
         // Create an HTTP client with proper User-Agent (required by crates.io)
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
-            .user_agent("linget (https://github.com/linget/linget)")
+            .user_agent("linget (https://github.com/Eslamasabry/LinGet)")
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 

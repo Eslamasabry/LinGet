@@ -1,11 +1,11 @@
 [package]
 name = "linget"
-version = "0.2.0-rc.1"
+version = "0.2.0-rc.2"
 edition = "2021"
 description = "A unified terminal package manager for Linux"
 authors = ["LinGet Contributors"]
 license = "GPL-3.0"
-repository = "https://github.com/linget/linget"
+repository = "https://github.com/Eslamasabry/LinGet"
 keywords = ["package-manager", "linux", "terminal", "tui"]
 categories = ["command-line-utilities"]
 
@@ -73,7 +73,7 @@ strip = true
 codegen-units = 1
 
 [package.metadata.deb]
-maintainer = "LinGet Contributors <https://github.com/linget/linget>"
+maintainer = "LinGet Contributors <Eslamasabry@users.noreply.github.com>"
 copyright = "2025, LinGet Contributors"
 license-file = ["LICENSE", "4"]
 depends = "$auto"

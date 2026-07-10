@@ -1961,6 +1961,9 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut App) {
         "  Say what surprised you and rate usefulness 1-5.",
     ));
     lines.push(Line::from(
+        "  Run: linget cohort-report (local aggregate; review before sharing).",
+    ));
+    lines.push(Line::from(
         "  Never paste usernames, hostnames, tokens, inventories, or full logs.",
     ));
 

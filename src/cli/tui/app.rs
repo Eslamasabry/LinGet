@@ -7791,6 +7791,7 @@ Remove   1 Package
         assert!(full_screen.contains("Feedback (manual; no telemetry)"));
         assert!(full_screen.contains("github.com/Eslamasabry/LinGet/issues"));
         assert!(full_screen.contains("rate usefulness 1-5"));
+        assert!(full_screen.contains("linget cohort-report"));
     }
 
     #[test]

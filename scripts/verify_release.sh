@@ -36,7 +36,20 @@ fi
 HOST=$(rustc -vV | sed -n 's/^host: //p')
 case "$(basename "$ARCHIVE")" in
     *"-$HOST.tar.gz")
-        "$BINARY" --version
+        VERSION_OUTPUT=$("$BINARY" --version)
+        printf '%s\n' "$VERSION_OUTPUT"
+        BINARY_VERSION=$(printf '%s\n' "$VERSION_OUTPUT" | awk '$1 == "LinGet" { print $2; exit }')
+        ARCHIVE_NAME=$(basename "$ARCHIVE")
+        if [[ "$FLAVOR" == "gui" ]]; then
+            EXPECTED_VERSION=${ARCHIVE_NAME#linget-gui-v}
+        else
+            EXPECTED_VERSION=${ARCHIVE_NAME#linget-v}
+        fi
+        EXPECTED_VERSION=${EXPECTED_VERSION%-$HOST.tar.gz}
+        if [[ "$BINARY_VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "Archive version '$EXPECTED_VERSION' contains LinGet '$BINARY_VERSION'" >&2
+            exit 1
+        fi
         "$BINARY" --help >/dev/null
         if [[ "$FLAVOR" == "terminal" ]]; then
             if ldd "$BINARY" 2>/dev/null | grep -Eiq '(gtk|gdk|adwaita|cairo|pango)'; then

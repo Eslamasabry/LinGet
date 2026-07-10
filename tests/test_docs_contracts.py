@@ -28,10 +28,18 @@ class DocumentationContractsTests(unittest.TestCase):
         self.assertNotIn("https://github.com/linget/linget", contributing)
         self.assertNotIn("branch from `main`", contributing)
 
+    def test_package_metadata_and_clients_use_current_repository(self) -> None:
+        current = "https://github.com/Eslamasabry/LinGet"
+        self.assertIn(f'repository = "{current}"', self.text("Cargo.toml"))
+        self.assertIn(current, self.text("src/backend/npm.rs"))
+        self.assertIn(current, self.text("src/backend/cargo.rs"))
+        for path in ["Cargo.toml", "src/backend/npm.rs", "src/backend/cargo.rs"]:
+            self.assertNotIn("https://github.com/linget/linget", self.text(path))
+
     def test_cohort_install_is_pinned_to_the_prerelease(self) -> None:
         guide = self.text("docs/cohort-v0.2/participant-guide.md")
         release_prefix = (
-            "https://github.com/Eslamasabry/LinGet/releases/download/v0.2.0-rc.1/"
+            "https://github.com/Eslamasabry/LinGet/releases/download/v0.2.0-rc.2/"
         )
         self.assertGreaterEqual(guide.count(release_prefix), 2)
         self.assertNotIn("raw.githubusercontent.com", guide)
@@ -42,6 +50,7 @@ class DocumentationContractsTests(unittest.TestCase):
             [
                 ROOT / "docs" / "v0.2-cohort-scorecard.md",
                 ROOT / "docs" / "release-notes-v0.2.0-rc.1.md",
+                ROOT / "docs" / "release-notes-v0.2.0-rc.2.md",
             ]
         )
         for document in files:

@@ -6,7 +6,7 @@ Use existing Linux communities or direct channels; do not purchase contact lists
 
 > **Help evaluate LinGet’s terminal-first package workflow**
 >
-> We are looking for ten Linux users to try the signed `v0.2.0-rc.1` prerelease on a non-critical machine or disposable VM. The session takes about 20 minutes, with a 3-minute structured check-in seven days later. You choose a package task you already intended to do and may stop or cancel at any time.
+> We are looking for ten Linux users to try the signed `v0.2.0-rc.2` prerelease on a non-critical machine or disposable VM. The session takes about 20 minutes, with a 3-minute structured check-in seven days later. You choose a package task you already intended to do and may stop or cancel at any time.
 >
 > Evaluation records contain only anonymous multiple-choice outcomes. We do not collect package lists, commands, terminal output, machine/account identifiers, contact details, or free-text feedback. Participation and later sharing are optional and uncompensated.
 >

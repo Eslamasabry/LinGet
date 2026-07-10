@@ -53,6 +53,10 @@ curl -fsSL https://raw.githubusercontent.com/Eslamasabry/LinGet/master/install.s
 
 For a custom destination, download and inspect the installer first, then run `./install.sh --prefix /your/prefix`. See [Release artifacts](docs/release-artifacts.md) for manual checksum and provenance verification.
 
+Joining the terminal-first v0.2 evaluation? Use the pinned, consent-safe
+[prerelease participant guide](docs/cohort-v0.2/participant-guide.md) instead of
+the stable-channel installer.
+
 ### Manual Installation
 
 1. Download the terminal archive, its matching `.sha256` sidecar, the consolidated checksum file, and provenance attestation from the [Releases page](https://github.com/Eslamasabry/LinGet/releases).

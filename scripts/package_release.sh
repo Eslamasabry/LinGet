@@ -90,6 +90,18 @@ if [[ ! -x "$BINARY" ]]; then
     exit 1
 fi
 
+HOST=$(rustc -vV | sed -n 's/^host: //p')
+if [[ "$TARGET" == "$HOST" ]]; then
+    BINARY_VERSION=$("$BINARY" --version 2>/dev/null | awk '$1 == "LinGet" { print $2; exit }')
+    if [[ "$BINARY_VERSION" != "$VERSION" ]]; then
+        echo "Refusing to package $BINARY: binary version '$BINARY_VERSION' does not match Cargo.toml '$VERSION'" >&2
+        exit 1
+    fi
+elif ! grep -aFq "$VERSION" "$BINARY"; then
+    echo "Refusing to package $BINARY: cross-target binary does not contain Cargo.toml version '$VERSION'" >&2
+    exit 1
+fi
+
 ARCHIVE_STEM="$NAME_PREFIX-v$VERSION-$TARGET"
 STAGE_DIR="$OUTPUT_DIR/.stage/$ARCHIVE_STEM"
 ARCHIVE="$OUTPUT_DIR/$ARCHIVE_STEM.tar.gz"

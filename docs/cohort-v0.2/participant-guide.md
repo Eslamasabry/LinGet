@@ -26,15 +26,15 @@ If any statement is not true, do not continue.
 
 ## Install the explicit prerelease
 
-The generic installer follows stable releases, so this cohort must use the explicit `v0.2.0-rc.1` archive. For x86_64 Linux:
+The generic installer follows stable releases, so this cohort must use the explicit `v0.2.0-rc.2` archive. For x86_64 Linux:
 
 ```bash
-curl -fsSLO https://github.com/Eslamasabry/LinGet/releases/download/v0.2.0-rc.1/linget-v0.2.0-rc.1-x86_64-unknown-linux-gnu.tar.gz
-curl -fsSLO https://github.com/Eslamasabry/LinGet/releases/download/v0.2.0-rc.1/linget-v0.2.0-rc.1-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum --check linget-v0.2.0-rc.1-x86_64-unknown-linux-gnu.tar.gz.sha256
-tar -xzf linget-v0.2.0-rc.1-x86_64-unknown-linux-gnu.tar.gz
-./linget-v0.2.0-rc.1-x86_64-unknown-linux-gnu/install.sh \
-  --archive "$PWD/linget-v0.2.0-rc.1-x86_64-unknown-linux-gnu.tar.gz"
+curl -fsSLO https://github.com/Eslamasabry/LinGet/releases/download/v0.2.0-rc.2/linget-v0.2.0-rc.2-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSLO https://github.com/Eslamasabry/LinGet/releases/download/v0.2.0-rc.2/linget-v0.2.0-rc.2-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum --check linget-v0.2.0-rc.2-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf linget-v0.2.0-rc.2-x86_64-unknown-linux-gnu.tar.gz
+./linget-v0.2.0-rc.2-x86_64-unknown-linux-gnu/install.sh \
+  --archive "$PWD/linget-v0.2.0-rc.2-x86_64-unknown-linux-gnu.tar.gz"
 ```
 
 Use the matching `aarch64-unknown-linux-gnu` files on 64-bit ARM. Do not use the `linget-gui-*` artifact for this terminal-interface cohort.

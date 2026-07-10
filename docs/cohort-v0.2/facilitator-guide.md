@@ -4,7 +4,7 @@ This script standardizes ten first sessions and ten day-seven check-ins. Facilit
 
 ## Before recruitment
 
-1. Use the published `v0.2.0-rc.1` terminal artifact and confirm its checksum instructions still work.
+1. Use the published `v0.2.0-rc.2` terminal artifact and confirm its checksum instructions still work.
 2. Configure the local form to generate a random six-character cohort code after consent. The participant keeps the code for day seven. Do not keep a code-to-person mapping.
 3. Use an access-controlled temporary form that accepts only the choices in the two check-in templates. Disable telemetry, account collection, and free-text fields.
 4. Schedule the same day-seven message to the recruitment channel without exporting contact details.

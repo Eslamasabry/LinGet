@@ -74,5 +74,8 @@ jobs:
       - name: Build (release)
         run: cargo build --locked --release --no-default-features
 
+      - name: Smoke privacy-safe cohort report
+        run: scripts/smoke-cohort-report.sh target/release/linget
+
       - name: Smoke terminal artifact
         run: bash scripts/smoke-install.sh

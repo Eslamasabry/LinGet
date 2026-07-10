@@ -6,7 +6,7 @@ LinGet is pre-1.0 software. Back up important systems and review every operation
 
 - Use the bug report form for reproducible LinGet failures.
 - Use the provider report form for package-manager-specific failures.
-- Use discussions for usage questions and design ideas when discussions are enabled.
+- Use [Discussions](https://github.com/Eslamasabry/LinGet/discussions) for usage questions and design ideas.
 - Report security issues privately as described in [SECURITY.md](SECURITY.md).
 
 The latest release is the supported version. Include `linget --version`, your distribution, architecture, provider version, and a redacted command/error transcript. Maintainers cannot provide emergency system recovery or support third-party package repositories.

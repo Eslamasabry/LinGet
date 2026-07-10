@@ -1,6 +1,6 @@
 # LinGet v0.2 ten-user cohort operations kit
 
-This directory contains the complete, consent-safe operating kit for deciding whether `v0.2.0-rc.1` is ready for stable promotion. The process measures use of the terminal-first workflow; it is not a request for more repository downloads.
+This directory contains the complete, consent-safe operating kit for deciding whether `v0.2.0-rc.2` is ready for stable promotion. The process measures use of the terminal-first workflow; it is not a request for more repository downloads.
 
 ## Operating sequence
 
