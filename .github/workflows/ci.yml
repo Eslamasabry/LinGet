@@ -41,6 +41,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Reject tracked generated artifacts
+        run: scripts/check-no-tracked-artifacts.sh
+
       - name: Verify cohort decisions and documentation contracts
         run: python3 -m unittest discover -s tests -p 'test_*.py'
 
