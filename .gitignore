@@ -50,6 +50,9 @@ autoremove
 /tmp*
 .codex
 
+# Vendored jars and Kotlin build output
+kotlin-mvp/**/*.jar
+
 # Python virtualenvs
 .venv/
 venv/
