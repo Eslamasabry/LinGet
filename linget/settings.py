@@ -11,6 +11,7 @@ DEFAULT_SETTINGS = {
     "refresh_interval": 600,
     "confirm_destructive": True,
     "default_source": "all",
+    "default_mode": "mode-updates",
     "offline_mode": False,
 }
 

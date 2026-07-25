@@ -198,4 +198,4 @@ def should_use_cache(max_age: int = DEFAULT_MAX_AGE_SECONDS) -> bool:
     Returns:
         True if cache should be used for immediate display.
     """
-    return is_cache_valid(max_age) or os.path.exists(CACHE_FILE)
+    return is_cache_valid(max_age)

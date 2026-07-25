@@ -2,6 +2,8 @@
 
 import json
 import os
+import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -9,6 +11,7 @@ from typing import List, Dict, Any, Optional
 
 # Default history file location
 HISTORY_FILE = Path.home() / ".config" / "linget" / "task_history.json"
+_history_lock = threading.Lock()
 
 
 def ensure_history_dir():
@@ -32,7 +35,7 @@ def load_task_history(limit: int = 100) -> List[Dict[str, Any]]:
         with open(HISTORY_FILE, "r") as f:
             history = json.load(f)
         # Return most recent tasks first
-        return history[-limit:]
+        return history[-limit:][::-1]
     except Exception as e:
         print(f"Error loading task history: {e}", flush=True)
         return []
@@ -70,23 +73,31 @@ def save_task(
         "error_message": error_message,
     }
 
-    history = []
-    if HISTORY_FILE.exists():
-        try:
-            with open(HISTORY_FILE, "r") as f:
-                history = json.load(f)
-        except Exception:
-            pass
-
-    history.append(task_record)
-
-    # Keep only last 500 tasks to prevent file bloat
-    if len(history) > 500:
-        history = history[-500:]
-
     try:
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(history, f, indent=2)
+        with _history_lock:
+            history = []
+            if HISTORY_FILE.exists():
+                try:
+                    with open(HISTORY_FILE, "r") as f:
+                        history = json.load(f)
+                except Exception:
+                    history = []
+
+            history.append(task_record)
+
+            if len(history) > 500:
+                history = history[-500:]
+
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=HISTORY_FILE.parent,
+                delete=False,
+            ) as tmp:
+                json.dump(history, tmp, indent=2)
+                tmp_path = Path(tmp.name)
+
+            os.replace(tmp_path, HISTORY_FILE)
     except Exception as e:
         print(f"Error saving task history: {e}", flush=True)
 

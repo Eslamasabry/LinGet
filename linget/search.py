@@ -1,8 +1,20 @@
 """Search functionality for finding packages across repositories."""
 
 import asyncio
+import shutil
 from typing import List
 from .models import Package, PackageStatus
+
+
+SEARCH_TIMEOUT = 30
+
+
+async def _run_cmd(cmd: List[str]) -> tuple[int, str]:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=SEARCH_TIMEOUT)
+    return proc.returncode, stdout.decode(errors="ignore")
 
 
 async def search_apt_repositories(
@@ -10,16 +22,11 @@ async def search_apt_repositories(
 ) -> List[Package]:
     """Search APT repositories for packages matching query."""
     found = []
-
-    async def run_cmd(cmd):
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await proc.communicate()
-        return proc.returncode, stdout.decode(errors="ignore")
+    if not shutil.which("apt-cache"):
+        return found
 
     try:
-        code, out = await run_cmd(["apt-cache", "search", "--names-only", query])
+        code, out = await _run_cmd(["apt-cache", "search", "--names-only", query])
         if code == 0:
             for line in out.splitlines():
                 if " - " in line:
@@ -52,22 +59,17 @@ async def search_flatpak_remotes(
 ) -> List[Package]:
     """Search Flatpak remotes for packages matching query."""
     found = []
-
-    async def run_cmd(cmd):
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await proc.communicate()
-        return proc.returncode, stdout.decode(errors="ignore")
+    if not shutil.which("flatpak"):
+        return found
 
     try:
-        code, out = await run_cmd(["flatpak", "search", query])
+        code, out = await _run_cmd(["flatpak", "search", query])
         if code == 0:
             for line in out.splitlines():
                 parts = line.split("\t")
                 if len(parts) >= 3:
-                    name = parts[0]
-                    desc = parts[2] if len(parts) > 2 else ""
+                    name = parts[2].strip()
+                    desc = parts[1].strip() if len(parts) > 1 else ""
 
                     already_installed = any(
                         p.name == name and p.source == "flatpak"
@@ -94,16 +96,11 @@ async def search_snap_store(
 ) -> List[Package]:
     """Search Snap store for packages matching query."""
     found = []
-
-    async def run_cmd(cmd):
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await proc.communicate()
-        return proc.returncode, stdout.decode(errors="ignore")
+    if not shutil.which("snap"):
+        return found
 
     try:
-        code, out = await run_cmd(["snap", "find", query])
+        code, out = await _run_cmd(["snap", "find", query])
         if code == 0:
             for line in out.splitlines()[1:]:  # Skip header line
                 parts = line.split()
@@ -137,25 +134,11 @@ async def search_aur(query: str, installed_packages: List[Package]) -> List[Pack
     """Search AUR for packages matching query using yay or paru."""
     found = []
 
-    async def run_cmd(cmd):
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await proc.communicate()
-        return proc.returncode, stdout.decode(errors="ignore")
-
     # Check for yay first, fallback to paru
     aur_helper = None
     for helper in ["yay", "paru"]:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "which",
-                helper,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.communicate()
-            if proc.returncode == 0:
+            if shutil.which(helper):
                 aur_helper = helper
                 break
         except:
@@ -165,50 +148,14 @@ async def search_aur(query: str, installed_packages: List[Package]) -> List[Pack
         return found
 
     try:
-        code, out = await run_cmd([aur_helper, "-Ss", query])
+        code, out = await _run_cmd([aur_helper, "-Ss", query])
         if code == 0:
             current_pkg = None
-            for line in out.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
 
-                # AUR search format: "aur/package-name version ..."
-                if line.startswith("aur/"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        name = parts[0].replace("aur/", "")
-                        version = parts[1]
-                        # Description is on the same line or next lines
-                        desc = " ".join(parts[2:]) if len(parts) > 2 else ""
-                        current_pkg = (name, version, desc)
-                elif current_pkg and not line.startswith("aur/"):
-                    # This is a continuation of description
-                    name, version, desc = current_pkg
-                    desc = desc + " " + line if desc else line
-                    current_pkg = (name, version, desc)
-
-                # Check if we've completed this entry
-                if current_pkg and (line.startswith("aur/") or not line.strip()):
-                    name, version, desc = current_pkg
-                    already_installed = any(
-                        p.name == name and p.source == "aur" for p in installed_packages
-                    )
-                    if not already_installed:
-                        found.append(
-                            Package(
-                                name=name,
-                                version=version,
-                                source="aur",
-                                status=PackageStatus.NOT_INSTALLED,
-                                desc=desc or "AUR Package",
-                            )
-                        )
-                    current_pkg = None
-
-            # Don't forget the last package
-            if current_pkg:
-                name, version, desc = current_pkg
+            def emit_package(pkg_data):
+                if not pkg_data:
+                    return
+                name, version, desc = pkg_data
                 already_installed = any(
                     p.name == name and p.source == "aur" for p in installed_packages
                 )
@@ -222,6 +169,25 @@ async def search_aur(query: str, installed_packages: List[Package]) -> List[Pack
                             desc=desc or "AUR Package",
                         )
                     )
+
+            for line in out.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+
+                if line.startswith("aur/"):
+                    emit_package(current_pkg)
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        name = parts[0].replace("aur/", "")
+                        version = parts[1]
+                        desc = " ".join(parts[2:]) if len(parts) > 2 else ""
+                        current_pkg = (name, version, desc)
+                elif current_pkg and not line.startswith("aur/"):
+                    name, version, desc = current_pkg
+                    desc = desc + " " + line if desc else line
+                    current_pkg = (name, version, desc)
+            emit_package(current_pkg)
     except Exception as e:
         print(f"AUR search error: {e}", flush=True)
 
@@ -241,37 +207,26 @@ async def search_new_packages(
     Returns:
         List of new packages found
     """
-    found_packages = []
+    tasks = []
 
-    # Search APT repositories
     if source_filter in ("all", "apt"):
-        apt_packages = await search_apt_repositories(query, installed_packages)
-        found_packages.extend(apt_packages)
-
-    # Search Flatpak remotes
+        tasks.append(search_apt_repositories(query, installed_packages))
     if source_filter in ("all", "flatpak"):
-        flatpak_packages = await search_flatpak_remotes(query, installed_packages)
-        found_packages.extend(flatpak_packages)
-
-    # Search Snap store
+        tasks.append(search_flatpak_remotes(query, installed_packages))
     if source_filter in ("all", "snap"):
-        snap_packages = await search_snap_store(query, installed_packages)
-        found_packages.extend(snap_packages)
-
-    # Search AUR
+        tasks.append(search_snap_store(query, installed_packages))
     if source_filter in ("all", "aur"):
-        aur_packages = await search_aur(query, installed_packages)
-        found_packages.extend(aur_packages)
-
-    # Search DNF repositories
+        tasks.append(search_aur(query, installed_packages))
     if source_filter in ("all", "dnf"):
-        dnf_packages = await search_dnf_repositories(query, installed_packages)
-        found_packages.extend(dnf_packages)
-
-    # Step 43: Search Homebrew (macOS only)
+        tasks.append(search_dnf_repositories(query, installed_packages))
     if source_filter in ("all", "brew"):
-        brew_packages = await search_brew(query, installed_packages)
-        found_packages.extend(brew_packages)
+        tasks.append(search_brew(query, installed_packages))
+
+    found_packages: List[Package] = []
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, list):
+            found_packages.extend(result)
 
     return found_packages
 
@@ -281,27 +236,11 @@ async def search_dnf_repositories(
 ) -> List[Package]:
     """Search DNF repositories for packages matching query."""
     found = []
-
-    async def run_cmd(cmd):
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await proc.communicate()
-        return proc.returncode, stdout.decode(errors="ignore")
+    if not shutil.which("dnf"):
+        return found
 
     try:
-        # First check if dnf is available
-        proc = await asyncio.create_subprocess_exec(
-            "which",
-            "dnf",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
-        if proc.returncode != 0:
-            return found  # dnf not available
-
-        code, out = await run_cmd(["dnf", "search", query])
+        code, out = await _run_cmd(["dnf", "search", query])
         if code == 0:
             for line in out.splitlines():
                 # Skip headers and metadata lines
@@ -353,16 +292,9 @@ async def search_brew(query: str, installed_packages: List[Package]) -> List[Pac
     if not shutil.which("brew"):
         return found
 
-    async def run_cmd(cmd):
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await proc.communicate()
-        return proc.returncode, stdout.decode(errors="ignore")
-
     try:
         # Search for formulae
-        code, out = await run_cmd(["brew", "search", "--formula", query])
+        code, out = await _run_cmd(["brew", "search", "--formula", query])
         if code == 0:
             for line in out.splitlines():
                 name = line.strip()
@@ -383,7 +315,7 @@ async def search_brew(query: str, installed_packages: List[Package]) -> List[Pac
                         )
 
         # Search for casks
-        code, out = await run_cmd(["brew", "search", "--cask", query])
+        code, out = await _run_cmd(["brew", "search", "--cask", query])
         if code == 0:
             for line in out.splitlines():
                 name = line.strip()

@@ -25,7 +25,7 @@ PACKAGE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._+\-]*$")
 BLOCKED_CHARS = set(";|&`$(){}[]<>!\\\"'*?\n\r\t")
 
 # Path traversal patterns
-PATH_TRAVERSAL_PATTERNS = ["..", "~", "//"]
+PATH_TRAVERSAL_PATTERNS = ["..", "//"]
 
 # Maximum concurrent tasks to prevent resource exhaustion
 MAX_CONCURRENT_TASKS = 50

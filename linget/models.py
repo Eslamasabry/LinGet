@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from datetime import datetime
 from enum import Enum
 
@@ -49,6 +50,7 @@ class ErrorType(Enum):
     """Classify task failures for better user feedback and retry strategies."""
 
     NONE = "none"
+    USER_CANCELLED = "user_cancelled"
     AUTH_CANCELLED = "auth_cancelled"
     NETWORK = "network"
     NOT_FOUND = "not_found"
@@ -69,7 +71,7 @@ class Package:
         self.source = source
         self.status = status
         self.size = size
-        self.description = desc
+        self.description = desc or ""
 
     @property
     def row_key(self) -> str:
@@ -90,3 +92,11 @@ class Task:
         self.status = "queued"
         self.error_type = ErrorType.NONE
         self.error_message = ""
+
+    @property
+    def dom_id(self) -> str:
+        """Return a Textual-safe identifier for widget IDs/selectors."""
+        dom_id = re.sub(r"[^A-Za-z0-9_-]+", "-", self.id).strip("-")
+        if not dom_id or dom_id[0].isdigit():
+            dom_id = f"task-{dom_id}" if dom_id else "task"
+        return dom_id

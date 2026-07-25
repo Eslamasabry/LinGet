@@ -122,6 +122,14 @@ class PluginRegistry:
         self._plugins: dict[str, PackageBackendPlugin] = {}
         self._load_errors: List[str] = []
 
+    def _record_error(self, message: str) -> None:
+        """Record plugin errors without unbounded duplicate growth."""
+        if message in self._load_errors:
+            return
+        self._load_errors.append(message)
+        if len(self._load_errors) > 200:
+            self._load_errors = self._load_errors[-200:]
+
     def register(self, plugin: PackageBackendPlugin) -> bool:
         """Register a plugin instance.
 
@@ -132,11 +140,11 @@ class PluginRegistry:
             True if registration succeeded
         """
         if not plugin.name:
-            self._load_errors.append("Plugin missing name attribute")
+            self._record_error("Plugin missing name attribute")
             return False
 
         if not plugin.check_api_version():
-            self._load_errors.append(
+            self._record_error(
                 f"Plugin '{plugin.name}' API version {plugin.api_version} "
                 f"!= required {API_VERSION}"
             )
@@ -196,7 +204,7 @@ class PluginRegistry:
                 packages = plugin.fetch_installed()
                 all_packages.extend(packages)
             except Exception as e:
-                self._load_errors.append(f"Plugin '{plugin.name}' fetch error: {e}")
+                self._record_error(f"Plugin '{plugin.name}' fetch error: {e}")
         return all_packages
 
     def search_all(self, query: str) -> List[Package]:
@@ -214,7 +222,7 @@ class PluginRegistry:
                 found = plugin.search(query)
                 results.extend(found)
             except Exception as e:
-                self._load_errors.append(f"Plugin '{plugin.name}' search error: {e}")
+                self._record_error(f"Plugin '{plugin.name}' search error: {e}")
         return results
 
     @property
@@ -265,23 +273,24 @@ def load_plugins(registry: PluginRegistry) -> int:
         try:
             spec = importlib.util.spec_from_file_location(module_name, plugin_path)
             if spec is None or spec.loader is None:
-                registry._load_errors.append(f"Failed to load spec for {filename}")
+                registry._record_error(f"Failed to load spec for {filename}")
                 continue
 
             module = importlib.util.module_from_spec(spec)
 
-            exec_module_with_isolation(spec.loader, module, registry, filename)
-            loaded_count += 1
+            loaded_count += exec_module_with_isolation(
+                spec.loader, module, registry, filename
+            )
 
         except Exception as e:
-            registry._load_errors.append(f"Failed to load {filename}: {e}")
+            registry._record_error(f"Failed to load {filename}: {e}")
 
     return loaded_count
 
 
 def exec_module_with_isolation(
     loader, module, registry: PluginRegistry, filename: str
-) -> None:
+) -> int:
     """Execute a plugin module with exception isolation.
 
     This ensures that a single failing plugin doesn't crash the entire
@@ -293,6 +302,7 @@ def exec_module_with_isolation(
         registry: Registry to register found plugins
         filename: Source filename for error reporting
     """
+    registered_count = 0
     try:
         loader.exec_module(module)
 
@@ -307,14 +317,15 @@ def exec_module_with_isolation(
                 try:
                     instance = attr()
                     if registry.register(instance):
-                        pass  # Successfully registered
+                        registered_count += 1
                 except Exception as e:
-                    registry._load_errors.append(
+                    registry._record_error(
                         f"Failed to instantiate plugin from {filename}: {e}"
                     )
 
     except Exception as e:
-        registry._load_errors.append(f"Error executing {filename}: {e}")
+        registry._record_error(f"Error executing {filename}: {e}")
+    return registered_count
 
 
 # Global registry instance for the application
