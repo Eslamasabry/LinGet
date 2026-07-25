@@ -66,7 +66,12 @@ impl PackageBackend for AurBackend {
             }
         }
         // A failed listing that parsed nothing is not an empty system.
-        crate::backend::exec::ensure_listing_succeeded("AUR helper", &output, packages.len())?;
+        crate::backend::exec::ensure_listing_succeeded_unless(
+            "AUR helper",
+            &output,
+            packages.len(),
+            &["no packages found", "there is nothing to do"],
+        )?;
 
         Ok(packages)
     }

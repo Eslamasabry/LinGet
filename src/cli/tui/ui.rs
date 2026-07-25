@@ -2925,6 +2925,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            owner_pid: None,
         };
 
         let tasks = vec![
@@ -2970,6 +2971,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            owner_pid: None,
         };
 
         let two_samples = vec![make_completed("a", 120, 30), make_completed("b", 60, 30)];
@@ -3018,6 +3020,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            owner_pid: None,
         };
         app.tasks = vec![running.clone()];
 
@@ -3146,6 +3149,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            owner_pid: None,
         };
 
         let completed = |id: &str| TaskQueueEntry {
@@ -3162,6 +3166,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            owner_pid: None,
         };
 
         let tasks = vec![completed("a"), completed("b"), running];

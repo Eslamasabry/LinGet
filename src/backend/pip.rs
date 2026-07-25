@@ -198,7 +198,12 @@ impl PackageBackend for PipBackend {
         }
 
         // A failed listing that parsed nothing is not an empty system.
-        crate::backend::exec::ensure_listing_succeeded("pip", &output, packages.len())?;
+        crate::backend::exec::ensure_listing_succeeded_unless(
+            "pip",
+            &output,
+            packages.len(),
+            &["no packages installed"],
+        )?;
 
         Ok(packages)
     }

@@ -165,7 +165,12 @@ impl PackageBackend for SnapBackend {
         }
 
         // A failed listing that parsed nothing is not an empty system.
-        crate::backend::exec::ensure_listing_succeeded("snap", &output, packages.len())?;
+        crate::backend::exec::ensure_listing_succeeded_unless(
+            "snap",
+            &output,
+            packages.len(),
+            &["no snaps are installed", "no matching snaps"],
+        )?;
 
         Ok(packages)
     }

@@ -445,6 +445,11 @@ pub struct TaskQueueEntry {
     pub reviewed_plan_json: Option<String>,
     #[serde(default)]
     pub verification_receipt_json: Option<String>,
+    /// The process that started this task, so a second LinGet instance can tell
+    /// a genuinely running task from one orphaned by a dead session. Absent on
+    /// entries written before this was recorded.
+    #[serde(default)]
+    pub owner_pid: Option<u32>,
 }
 
 impl TaskQueueEntry {
@@ -468,11 +473,13 @@ impl TaskQueueEntry {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            owner_pid: None,
         }
     }
 
     pub fn mark_running(&mut self) {
         self.status = TaskQueueStatus::Running;
+        self.owner_pid = Some(std::process::id());
         if self.started_at.is_none() {
             self.started_at = Some(Local::now());
         }

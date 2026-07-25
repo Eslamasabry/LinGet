@@ -19,11 +19,40 @@ use std::process::Output;
 /// `parsed` is the number of entries successfully read out of the output. When
 /// the command produced usable rows, its exit status is ignored deliberately.
 pub fn ensure_listing_succeeded(tool: &str, output: &Output, parsed: usize) -> Result<()> {
+    ensure_listing_succeeded_unless(tool, output, parsed, &[])
+}
+
+/// As [`ensure_listing_succeeded`], but with the phrases this tool uses to say
+/// "nothing is installed".
+///
+/// Several package managers report an empty system with a non-zero exit —
+/// `snap list` answers "No snaps are installed yet" and exits 1, and an AUR
+/// helper does the same when there are no foreign packages. That is a complete,
+/// truthful answer, not a failure, and treating it as one turns a working
+/// machine into a wall of errors.
+pub fn ensure_listing_succeeded_unless(
+    tool: &str,
+    output: &Output,
+    parsed: usize,
+    empty_signals: &[&str],
+) -> Result<()> {
     if parsed > 0 || output.status.success() {
         return Ok(());
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    if !empty_signals.is_empty() {
+        let haystack = format!("{stderr}\n{stdout}").to_lowercase();
+        if empty_signals
+            .iter()
+            .any(|signal| haystack.contains(&signal.to_lowercase()))
+        {
+            return Ok(());
+        }
+    }
+
     let detail = stderr
         .lines()
         .map(str::trim)
@@ -79,5 +108,39 @@ mod tests {
         let error =
             ensure_listing_succeeded("flatpak", &output(1, ""), 0).expect_err("should fail");
         assert!(error.to_string().contains("no error output"));
+    }
+
+    #[test]
+    fn an_empty_system_reported_with_a_nonzero_exit_is_not_a_failure() {
+        // `snap list` on a machine with snapd but no snaps.
+        let out = output(
+            1,
+            "No snaps are installed yet. Try 'snap install hello-world'.",
+        );
+        assert!(
+            ensure_listing_succeeded_unless("snap", &out, 0, &["no snaps are installed"]).is_ok(),
+            "an empty system is a complete answer, not a broken backend"
+        );
+    }
+
+    #[test]
+    fn a_real_failure_still_reports_even_with_empty_signals_configured() {
+        let out = output(
+            1,
+            "error: cannot communicate with server: permission denied",
+        );
+        let error = ensure_listing_succeeded_unless("snap", &out, 0, &["no snaps are installed"])
+            .expect_err("a broken backend must not be mistaken for an empty one");
+        assert!(error.to_string().contains("permission denied"));
+    }
+
+    #[test]
+    fn empty_signals_are_matched_case_insensitively_on_either_stream() {
+        let mut out = output(1, "");
+        out.stdout = b"Nothing has been installed with pipx".to_vec();
+        assert!(
+            ensure_listing_succeeded_unless("pipx", &out, 0, &["nothing has been installed"])
+                .is_ok()
+        );
     }
 }

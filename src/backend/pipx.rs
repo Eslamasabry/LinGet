@@ -95,7 +95,12 @@ impl PackageBackend for PipxBackend {
         }
 
         // A failed listing that parsed nothing is not an empty system.
-        crate::backend::exec::ensure_listing_succeeded("pipx", &output, packages.len())?;
+        crate::backend::exec::ensure_listing_succeeded_unless(
+            "pipx",
+            &output,
+            packages.len(),
+            &["nothing has been installed"],
+        )?;
 
         Ok(packages)
     }

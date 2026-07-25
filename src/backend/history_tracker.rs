@@ -12,6 +12,18 @@ use tracing::{debug, info, warn};
 const HISTORY_FILE: &str = "history.json";
 const SNAPSHOT_FILE: &str = "snapshot.json";
 
+/// Whether a process id is still running.
+///
+/// `kill(pid, 0)` performs the permission and existence checks without
+/// delivering a signal, which is the standard way to ask.
+fn process_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    // Safety: signal 0 sends nothing; it only probes for the process.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
 fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -67,22 +79,23 @@ impl HistoryTracker {
         Ok(tracker)
     }
 
-    /// Fail any task still marked running from a previous process.
+    /// Fail any task whose owning process is gone.
     ///
-    /// Only one executor runs per process, and it has not started yet at load
-    /// time, so a `Running` entry on disk cannot have anything behind it: the
-    /// app was closed or killed mid-task. Left alone these sit in the queue
-    /// forever, showing "started 54m ago" with no process to show for it and no
-    /// way to retry, because a terminal status is what makes a task actionable
-    /// again.
+    /// A `Running` entry left on disk by a session that exited sits in the
+    /// queue forever, showing "started 54m ago" with no process to show for it
+    /// and no way to retry, because a terminal status is what makes a task
+    /// actionable again.
+    ///
+    /// The owner check matters: LinGet can be open twice — a TUI and the GTK
+    /// app — and reclaiming purely on status would let one instance fail the
+    /// other's live task out from under it. An entry written before owners were
+    /// recorded has no pid, and is reclaimed on the old reasoning.
     fn reclaim_interrupted_tasks(history: &mut OperationHistory) -> usize {
         let mut reclaimed = 0;
-        for entry in history
-            .task_queue
-            .entries
-            .iter_mut()
-            .filter(|entry| entry.status == TaskQueueStatus::Running)
-        {
+        for entry in history.task_queue.entries.iter_mut().filter(|entry| {
+            entry.status == TaskQueueStatus::Running
+                && entry.owner_pid.is_none_or(|pid| !process_is_alive(pid))
+        }) {
             entry.mark_failed(
                 "Interrupted — LinGet exited while this task was running. It may or may not have \
                  completed; check the package before retrying."
@@ -450,7 +463,10 @@ mod tests {
     #[test]
     fn tasks_left_running_by_a_dead_session_are_reclaimed() {
         let mut history = OperationHistory::default();
-        history.task_queue.enqueue(running_entry("libk5crypto3"));
+        let mut entry = running_entry("libk5crypto3");
+        // The reported entry predated owner tracking, so it carried no pid.
+        entry.owner_pid = None;
+        history.task_queue.enqueue(entry);
 
         let reclaimed = HistoryTracker::reclaim_interrupted_tasks(&mut history);
 
@@ -511,7 +527,9 @@ mod tests {
         std::env::set_var("XDG_DATA_HOME", &root);
 
         let mut history = OperationHistory::default();
-        history.task_queue.enqueue(running_entry("libk5crypto3"));
+        let mut orphan = running_entry("libk5crypto3");
+        orphan.owner_pid = Some(u32::MAX - 1); // a process that cannot exist
+        history.task_queue.enqueue(orphan);
         std::fs::write(
             dir.join(HISTORY_FILE),
             serde_json::to_string(&history).expect("serialise history"),
@@ -534,5 +552,42 @@ mod tests {
             Some(value) => std::env::set_var("XDG_DATA_HOME", value),
             None => std::env::remove_var("XDG_DATA_HOME"),
         }
+    }
+
+    /// A second LinGet instance must not fail the first one's live task.
+    #[test]
+    fn a_task_owned_by_a_living_process_is_left_alone() {
+        let mut history = OperationHistory::default();
+        let mut entry = running_entry("libk5crypto3");
+        entry.owner_pid = Some(std::process::id()); // us — definitely alive
+        history.task_queue.enqueue(entry);
+
+        assert_eq!(HistoryTracker::reclaim_interrupted_tasks(&mut history), 0);
+        assert_eq!(
+            history.task_queue.entries[0].status,
+            TaskQueueStatus::Running,
+            "another instance's running task must survive our startup"
+        );
+    }
+
+    #[test]
+    fn a_task_owned_by_a_dead_process_is_reclaimed() {
+        let mut history = OperationHistory::default();
+        let mut entry = running_entry("libk5crypto3");
+        // A pid that cannot be running: beyond any plausible pid_max.
+        entry.owner_pid = Some(u32::MAX - 1);
+        history.task_queue.enqueue(entry);
+
+        assert_eq!(HistoryTracker::reclaim_interrupted_tasks(&mut history), 1);
+        assert_eq!(
+            history.task_queue.entries[0].status,
+            TaskQueueStatus::Failed
+        );
+    }
+
+    #[test]
+    fn mark_running_records_the_owning_process() {
+        let entry = running_entry("vim");
+        assert_eq!(entry.owner_pid, Some(std::process::id()));
     }
 }
