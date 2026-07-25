@@ -14,6 +14,9 @@ pub struct GlyphSet {
     pub horizontal: &'static str,
     pub bar_filled: &'static str,
     pub bar_empty: &'static str,
+    /// Marks the active navigation tab, so the current view is legible without
+    /// relying on colour alone.
+    pub selected: &'static str,
 }
 
 const UNICODE: GlyphSet = GlyphSet {
@@ -29,6 +32,7 @@ const UNICODE: GlyphSet = GlyphSet {
     horizontal: "─",
     bar_filled: "▰",
     bar_empty: "▱",
+    selected: "▸",
 };
 
 const ASCII: GlyphSet = GlyphSet {
@@ -44,6 +48,7 @@ const ASCII: GlyphSet = GlyphSet {
     horizontal: "-",
     bar_filled: "#",
     bar_empty: ".",
+    selected: ">",
 };
 
 pub fn ascii_mode() -> bool {
@@ -99,6 +104,7 @@ mod tests {
                 set.horizontal,
                 set.bar_filled,
                 set.bar_empty,
+                set.selected,
             ] {
                 assert_eq!(unicode_width::UnicodeWidthStr::width(glyph), 1);
             }

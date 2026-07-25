@@ -13,19 +13,14 @@ use ratatui::{
 
 pub fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     let glyphs = crate::cli::tui::glyphs::active();
-    let total = app.filter_counts[0];
-    let health_glyph = system_health_glyph(app);
-    let title = format!(
-        " {} Today  ·  {} packages  {} ",
-        glyphs.logo, total, health_glyph,
-    );
 
+    // No title here on purpose. The header bar already names the active view
+    // and carries the health indicator, and repeating "Today" and the package
+    // count one line below it read as two competing headers.
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_unfocused())
         .border_set(crate::cli::tui::theme::border_set())
-        .title(title)
-        .title_alignment(Alignment::Left)
         .style(dim());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -332,7 +327,7 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
-fn system_health_glyph(app: &App) -> Span<'static> {
+pub fn system_health_glyph(app: &App) -> Span<'static> {
     let glyphs = crate::cli::tui::glyphs::active();
     if app.filter_counts[4] > 0 {
         Span::styled(format!("{} needs attention", glyphs.warning), error())

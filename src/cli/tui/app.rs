@@ -57,6 +57,10 @@ const FILTER_FAVORITES_INDEX: usize = 3;
 const FILTER_SECURITY_INDEX: usize = 4;
 const FILTER_DUPLICATES_INDEX: usize = 5;
 const QUEUE_AUTO_HIDE_AFTER: Duration = Duration::from_secs(10);
+/// Upper bound on preflight verification. Generous, because planning shells out
+/// to the system package manager — this is a guard against wedging forever, not
+/// a latency target.
+const PREFLIGHT_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(45);
 /// How long a first quit attempt (with tasks still running) stays armed; a
 /// second attempt within this window quits.
 const QUIT_CONFIRM_WINDOW: Duration = Duration::from_secs(3);
@@ -2767,10 +2771,30 @@ impl App {
         let package_ids = Self::preflight_target_ids(&packages);
         let pm = self.pm.clone();
         let task = async move {
-            let (probe, plans) = tokio::join!(
-                Self::run_preflight_verification_probe(pm.clone(), action, packages.clone()),
-                Self::plan_stable_transactions(pm, action, packages)
-            );
+            let verification = async {
+                tokio::join!(
+                    Self::run_preflight_verification_probe(pm.clone(), action, packages.clone()),
+                    Self::plan_stable_transactions(pm, action, packages)
+                )
+            };
+
+            // Both halves take the PackageManager mutex, which is held across
+            // whole multi-backend refreshes. Without a bound, a refresh that
+            // never returns (apt waiting on the dpkg lock, say) would leave the
+            // confirm dialog stuck on "Wait for the reviewed provider plan to
+            // finish" with no way forward but Esc.
+            let (probe, plans) =
+                match tokio::time::timeout(PREFLIGHT_VERIFICATION_TIMEOUT, verification).await {
+                    Ok(result) => result,
+                    Err(_) => (
+                        (false, None, None),
+                        Err(format!(
+                            "timed out after {}s; another package operation may hold the lock",
+                            PREFLIGHT_VERIFICATION_TIMEOUT.as_secs()
+                        )),
+                    ),
+                };
+
             let (dependency_impact_known, dependency_impact, mut note) = probe;
             let provider_plans = match plans {
                 Ok(plans) => plans,
@@ -3209,6 +3233,33 @@ impl App {
             Self::refresh_preflight_assessment(&mut confirming.preflight, note);
             self.clear_preflight_verification_tracking();
         }
+
+        self.reconcile_preflight_verification_flag();
+    }
+
+    /// Enforce the invariant that no in-flight request means nothing is being
+    /// verified.
+    ///
+    /// Results can be abandoned without ever reaching the assignment above: the
+    /// channel can disconnect, or an event can be dropped for not matching the
+    /// dialog. Every one of those paths used to leave `verification_in_progress`
+    /// stuck true, which permanently refuses the confirm key. Reconciling here
+    /// covers them all, whatever the reason the result went missing.
+    fn reconcile_preflight_verification_flag(&mut self) {
+        if self.active_preflight_verification_id.is_some() {
+            return;
+        }
+        let Some(confirming) = self.confirming.as_mut() else {
+            return;
+        };
+        if !confirming.preflight.verification_in_progress {
+            return;
+        }
+        confirming.preflight.verification_in_progress = false;
+        Self::refresh_preflight_assessment(
+            &mut confirming.preflight,
+            Some("Verification did not complete; proceeding with estimated impact.".to_string()),
+        );
     }
 
     fn merge_installed_with_updates(
@@ -5678,6 +5729,129 @@ mod tests {
             .iter()
             .any(|reason| reason.contains("Probe finished successfully")));
         assert!(app.active_preflight_verification_id.is_none());
+    }
+
+    /// An abandoned verification must not leave the confirm key permanently
+    /// refused. Reproduces the wedge on "Wait for the reviewed provider plan to
+    /// finish": a result that never lands, with no request left in flight.
+    #[tokio::test]
+    async fn abandoned_verification_releases_the_confirm_key() {
+        let mut app = test_app();
+        let pkg = make_pkg("pkg", PackageSource::Apt, PackageStatus::Installed);
+        let targets = vec![pkg.clone()];
+        let valid = vec![pkg];
+        let preflight =
+            App::build_preflight_summary(TaskQueueAction::Remove, &targets, &valid, false);
+        assert!(
+            preflight.verification_in_progress,
+            "an apt removal should start out verifying"
+        );
+
+        app.confirming = Some(PendingAction {
+            label: "Remove pkg?".into(),
+            packages: valid,
+            action: TaskQueueAction::Remove,
+            preflight,
+            risk_acknowledged: true,
+        });
+        // No result will arrive and nothing is in flight — the state the
+        // dropped-event and channel-disconnect paths used to leave behind.
+        app.active_preflight_verification_id = None;
+
+        app.poll_preflight_verification();
+
+        assert!(
+            !app.confirming
+                .as_ref()
+                .expect("confirming state")
+                .preflight
+                .verification_in_progress,
+            "the dialog must stop reporting verification once nothing is in flight"
+        );
+
+        // The confirm key must now be accepted rather than refused.
+        app.handle_key(key(KeyCode::Char('y'))).await;
+        assert!(
+            !app.status
+                .contains("Wait for the reviewed provider plan to finish"),
+            "confirm was still refused: {}",
+            app.status
+        );
+    }
+
+    /// The Today view must present one header, not two. The dashboard used to
+    /// repeat the view name and the package count in its block title, directly
+    /// under the header bar that already carried both.
+    #[tokio::test]
+    async fn today_view_draws_a_single_header() {
+        let mut app = test_app();
+        app.navigate_to(ViewMode::Today);
+
+        let backend = ratatui::backend::TestBackend::new(120, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::cli::tui::ui::draw(frame, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let row = |y: u16| -> String {
+            (0..120)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+
+        // Row 0 is the one header: brand, tabs, health.
+        let header = row(0);
+        assert!(header.contains("LinGet"), "header row: {header}");
+        assert!(
+            header.contains("F1 Today"),
+            "header must name the view: {header}"
+        );
+
+        // The panel border below it must not carry a second "Today" title.
+        let panel_border = row(2);
+        assert!(
+            !panel_border.contains("Today"),
+            "the Today panel is titled again under the header: {panel_border}"
+        );
+        assert!(
+            !panel_border.contains("packages"),
+            "the package count is repeated under the header: {panel_border}"
+        );
+    }
+
+    /// The active tab has to be identifiable without relying on colour, and all
+    /// three tabs must survive the narrowest supported terminal.
+    #[tokio::test]
+    async fn navigation_tabs_stay_legible_at_minimum_width() {
+        let marker = crate::cli::tui::glyphs::active().selected;
+        let mut app = test_app();
+
+        for (mode, label) in [
+            (ViewMode::Today, "F1 Today"),
+            (ViewMode::Browse, "F2 Browse"),
+            (ViewMode::Queue, "F3 Queue"),
+        ] {
+            app.navigate_to(mode);
+            let backend = ratatui::backend::TestBackend::new(MIN_WIDTH, 24);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| crate::cli::tui::ui::draw(frame, &mut app))
+                .unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            let header: String = (0..MIN_WIDTH).map(|x| buffer[(x, 0)].symbol()).collect();
+
+            for expected in ["F1 Today", "F2 Browse", "F3 Queue"] {
+                assert!(
+                    header.contains(expected),
+                    "tab {expected} was cut off at {MIN_WIDTH} columns: {header}"
+                );
+            }
+            assert!(
+                header.contains(&format!("{marker}{label}")),
+                "active tab {label} is not marked: {header}"
+            );
+        }
     }
 
     #[test]
