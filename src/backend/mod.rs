@@ -39,7 +39,9 @@ pub use npm::NpmBackend;
 pub use pacman::PacmanBackend;
 pub use pip::PipBackend;
 pub use pipx::PipxBackend;
-pub use pkexec::{run_pkexec, run_pkexec_with_logs, Suggest, SUGGEST_PREFIX};
+pub use pkexec::{
+    graphical_prompt_available, run_pkexec, run_pkexec_with_logs, Suggest, SUGGEST_PREFIX,
+};
 pub use providers::{
     detect_available_providers, detect_providers, detect_providers_fast, ProviderStatus,
 };

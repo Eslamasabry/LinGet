@@ -57,6 +57,9 @@ const FILTER_FAVORITES_INDEX: usize = 3;
 const FILTER_SECURITY_INDEX: usize = 4;
 const FILTER_DUPLICATES_INDEX: usize = 5;
 const QUEUE_AUTO_HIDE_AFTER: Duration = Duration::from_secs(10);
+/// How long a privileged task may sit silent before we say it is waiting on
+/// authentication rather than doing work.
+const AUTH_PROMPT_HINT_AFTER_SECS: i64 = 4;
 /// Upper bound on preflight verification. Generous, because planning shells out
 /// to the system package manager — this is a guard against wedging forever, not
 /// a latency target.
@@ -1470,6 +1473,53 @@ impl App {
 
     fn can_retry_safe_failed_tasks_command(&self) -> bool {
         self.queue_focus_active() && self.queue_clinic_actionability().safe_retry_count > 0
+    }
+
+    /// Whether a running task is parked on a privilege prompt.
+    ///
+    /// pkexec produces no output at all until authentication succeeds, so a
+    /// privileged task that has been running for a few seconds with an empty
+    /// log is waiting on polkit. Without saying so the queue shows nothing but
+    /// a spinner and a climbing timer, which is indistinguishable from work
+    /// actually happening — and the prompt itself may be on a screen the user
+    /// cannot see.
+    pub fn task_awaiting_authentication(&self, task: &TaskQueueEntry) -> bool {
+        if task.status != TaskQueueStatus::Running
+            || !Self::source_likely_requires_elevation(task.package_source)
+        {
+            return false;
+        }
+        if self
+            .task_logs
+            .get(&task.id)
+            .is_some_and(|logs| !logs.is_empty())
+        {
+            return false;
+        }
+        task.started_at.is_some_and(|started| {
+            (chrono::Local::now() - started).num_seconds() >= AUTH_PROMPT_HINT_AFTER_SECS
+        })
+    }
+
+    /// Short form for a lane cell, which is only a few dozen columns wide.
+    pub fn authentication_hint(&self) -> &'static str {
+        if crate::backend::graphical_prompt_available() {
+            "needs your password"
+        } else {
+            "needs password (see desktop)"
+        }
+    }
+
+    /// Full explanation for the details strip, which has the whole width.
+    pub fn authentication_explanation(&self) -> &'static str {
+        if crate::backend::graphical_prompt_available() {
+            "Blocked on authentication — answer the system password prompt, or press C to cancel."
+        } else {
+            // polkit still routes to the desktop agent for this user, so the
+            // dialog exists — just not anywhere this session can show it.
+            "Blocked on authentication. This session has no display, so polkit sent the prompt to \
+             the desktop session on this machine. Answer it there, or press C to cancel."
+        }
     }
 
     fn queue_log_max_scroll(&self) -> usize {
@@ -5852,6 +5902,64 @@ mod tests {
                 "active tab {label} is not marked: {header}"
             );
         }
+    }
+
+    /// Reproduces a real report: an APT update sat at "started 1m31s ago" with
+    /// nothing but a spinner, while pkexec was blocked on a polkit prompt that
+    /// had been routed to a desktop session the user could not see.
+    #[test]
+    fn a_silent_privileged_task_is_reported_as_waiting_on_authentication() {
+        let mut app = test_app();
+        let mut task = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "apt:libk5crypto3".to_string(),
+            "libk5crypto3".to_string(),
+            PackageSource::Apt,
+        );
+        task.mark_running();
+        task.started_at = Some(chrono::Local::now() - chrono::Duration::seconds(91));
+
+        assert!(
+            app.task_awaiting_authentication(&task),
+            "a privileged task silent for 91s is blocked on a prompt, not working"
+        );
+
+        // Once the command actually starts producing output it is doing work.
+        app.task_logs
+            .entry(task.id.clone())
+            .or_default()
+            .push_back("Reading package lists...".to_string());
+        assert!(!app.task_awaiting_authentication(&task));
+    }
+
+    #[test]
+    fn unprivileged_and_fresh_tasks_are_not_flagged() {
+        let app = test_app();
+
+        let mut npm = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "npm:cline".to_string(),
+            "cline".to_string(),
+            PackageSource::Npm,
+        );
+        npm.mark_running();
+        npm.started_at = Some(chrono::Local::now() - chrono::Duration::seconds(600));
+        assert!(
+            !app.task_awaiting_authentication(&npm),
+            "npm needs no privilege escalation"
+        );
+
+        let mut fresh = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "apt:vim".to_string(),
+            "vim".to_string(),
+            PackageSource::Apt,
+        );
+        fresh.mark_running();
+        assert!(
+            !app.task_awaiting_authentication(&fresh),
+            "a task that just started has not had time to be blocked"
+        );
     }
 
     #[test]

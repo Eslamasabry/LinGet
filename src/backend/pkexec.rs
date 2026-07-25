@@ -13,6 +13,20 @@ pub struct Suggest {
     pub command: String,
 }
 
+/// Whether this session could display a graphical polkit prompt.
+///
+/// polkit routes authentication to whichever agent is registered for the user,
+/// which on a desktop is the shell's graphical dialog. That dialog appears on
+/// the seat's screen — not in the terminal running LinGet. Over SSH, in a
+/// detached tmux, or on any session without a display, the prompt is therefore
+/// invisible to the person who triggered it, and the operation waits forever
+/// for an answer that cannot arrive.
+pub fn graphical_prompt_available() -> bool {
+    ["DISPLAY", "WAYLAND_DISPLAY"]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some_and(|value| !value.is_empty()))
+}
+
 /// Detects the type of privilege escalation error from stderr
 fn detect_auth_error(stderr: &str, exit_code: Option<i32>) -> AuthErrorKind {
     let lowered = stderr.to_lowercase();

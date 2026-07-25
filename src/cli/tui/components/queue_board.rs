@@ -290,6 +290,7 @@ fn with_lane_specs(app: &App, mut visit: impl FnMut(usize, &LaneSpec)) {
         0,
         &LaneSpec {
             title: "RUNNING",
+            empty_label: "nothing running",
             title_glyph: "◉",
             title_style: loading().add_modifier(Modifier::BOLD),
             primary: &running,
@@ -311,6 +312,7 @@ fn with_lane_specs(app: &App, mut visit: impl FnMut(usize, &LaneSpec)) {
         1,
         &LaneSpec {
             title: "NEEDS ATTENTION",
+            empty_label: "nothing needs attention",
             title_glyph: "⚠",
             title_style: warning().add_modifier(Modifier::BOLD),
             primary: &failed_visible,
@@ -331,6 +333,7 @@ fn with_lane_specs(app: &App, mut visit: impl FnMut(usize, &LaneSpec)) {
         2,
         &LaneSpec {
             title: "DONE",
+            empty_label: "nothing finished yet",
             title_glyph: "✓",
             title_style: success().add_modifier(Modifier::BOLD),
             primary: &done_visible,
@@ -413,6 +416,9 @@ fn partition_tasks(
 
 struct LaneSpec<'a> {
     title: &'a str,
+    /// What this lane looks like when it holds nothing. "empty" on its own
+    /// reads as a value rather than a state, especially in a row of lanes.
+    empty_label: &'a str,
     title_glyph: &'a str,
     title_style: Style,
     primary: &'a [&'a TaskQueueEntry],
@@ -443,7 +449,7 @@ fn lane_rows(app: &App, spec: &LaneSpec, inner_width: usize) -> Vec<LaneRow> {
     // Primary task list
     if spec.primary.is_empty() && spec.secondary.is_none_or(|(s, _)| s.is_empty()) {
         rows.push(LaneRow::plain(Line::from(vec![Span::styled(
-            "   empty",
+            format!("   {}", spec.empty_label),
             dim(),
         )])));
     } else {
@@ -559,6 +565,18 @@ fn append_task_rows(rows: &mut Vec<LaneRow>, app: &App, task: &TaskQueueEntry, w
     if !timing.is_empty() && used + 2 + timing.chars().count() <= width {
         sub_spans.push(Span::styled("  ", dim()));
         sub_spans.push(Span::styled(timing, dim()));
+    }
+
+    // A privileged task that is silent is not working, it is blocked on a
+    // password prompt — which may be on a screen this session cannot show.
+    // Saying so is the difference between waiting and being stuck.
+    if app.task_awaiting_authentication(task) {
+        let hint = truncate(app.authentication_hint(), width.saturating_sub(4));
+        lines.push(Line::from(sub_spans));
+        sub_spans = vec![
+            Span::styled("   ", dim()),
+            Span::styled(hint, warning().add_modifier(Modifier::BOLD)),
+        ];
     }
 
     // On failures: show the short error and an inline action chip.
@@ -763,7 +781,18 @@ fn draw_details_strip(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(task_timing(task), dim()),
     ]);
 
-    let second = if let Some(err) = &task.error {
+    let second = if app.task_awaiting_authentication(task) {
+        Line::from(vec![
+            Span::styled(" blocked ", warning().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                truncate(
+                    app.authentication_explanation(),
+                    area.width.saturating_sub(10) as usize,
+                ),
+                warning(),
+            ),
+        ])
+    } else if let Some(err) = &task.error {
         let category = app
             .failure_category_for_task(task)
             .map(|category| category.code())
