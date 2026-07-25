@@ -14,6 +14,18 @@ fn detect_run_mode() -> RunMode {
     detect_run_mode_from(std::env::args())
 }
 
+fn is_documentation_flag(arg: &str) -> bool {
+    matches!(arg, "--help" | "-h" | "--version" | "-V")
+}
+
+/// Whether this invocation is just asking what the tool is, rather than asking
+/// it to do anything.
+fn asks_for_documentation(args: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
+    args.into_iter()
+        .skip(1)
+        .any(|arg| is_documentation_flag(arg.as_ref()))
+}
+
 fn detect_run_mode_from(args: impl IntoIterator<Item = impl AsRef<str>>) -> RunMode {
     let mut args = args.into_iter();
     let _binary = args.next();
@@ -21,6 +33,17 @@ fn detect_run_mode_from(args: impl IntoIterator<Item = impl AsRef<str>>) -> RunM
     let Some(command) = args.next() else {
         return RunMode::Tui;
     };
+
+    // Asking for help or the version is always a question, never a launch —
+    // even when it trails a subcommand that would otherwise open a UI.
+    // `linget tui --help` used to reach the TUI, which then failed trying to
+    // take over a terminal that may not even be attached.
+    if args
+        .into_iter()
+        .any(|arg| is_documentation_flag(arg.as_ref()))
+    {
+        return RunMode::Cli;
+    }
 
     match command.as_ref() {
         // Explicit GUI launch
@@ -58,6 +81,16 @@ fn init_logging(run_mode: RunMode) {
     let filter = EnvFilter::from_default_env()
         .add_directive("linget=info".parse().unwrap())
         .add_directive("gtk=warn".parse().unwrap());
+
+    // `--help` should print help and nothing else. A startup banner above it is
+    // noise in the one output a first-time user is guaranteed to read.
+    if asks_for_documentation(std::env::args()) {
+        tracing_subscriber::registry()
+            .with(fmt::layer().with_writer(std::io::sink))
+            .with(filter)
+            .init();
+        return;
+    }
 
     match run_mode {
         RunMode::Tui => {
@@ -185,6 +218,37 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_and_version_never_launch_a_ui() {
+        // These used to reach the TUI, which then failed with an opaque
+        // "No such device or address" when it tried to claim a terminal.
+        for args in [
+            ["linget", "tui", "--help"].as_slice(),
+            ["linget", "tui", "-h"].as_slice(),
+            ["linget", "gui", "--help"].as_slice(),
+            ["linget", "tui", "--version"].as_slice(),
+            ["linget", "tui", "--next", "--help"].as_slice(),
+        ] {
+            assert_eq!(
+                detect_run_mode_from(args.iter().copied()),
+                RunMode::Cli,
+                "{args:?} should be answered by the CLI, not a UI"
+            );
+        }
+    }
+
+    #[test]
+    fn launching_a_ui_still_works_with_other_flags() {
+        assert_eq!(
+            detect_run_mode_from(["linget", "tui", "--next"].iter().copied()),
+            RunMode::Tui
+        );
+        assert_eq!(
+            detect_run_mode_from(["linget", "tui"].iter().copied()),
+            RunMode::Tui
+        );
+    }
 
     #[test]
     fn no_command_defaults_to_tui() {
