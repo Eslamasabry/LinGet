@@ -25,9 +25,62 @@ impl NpmBackend {
         Self { client }
     }
 
-    /// Fetch package metadata from npm registry API
+    /// Locate npm's content-addressable cache directory.
+    ///
+    /// Asks npm rather than assuming `~/.npm`, since the cache location is
+    /// configurable and nvm-style setups often move it.
+    async fn cache_dir() -> Option<std::path::PathBuf> {
+        let root = Command::new("npm")
+            .args(["config", "get", "cache"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty() && s != "null" && s != "undefined")
+            .map(std::path::PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|h| h.join(".npm")))?;
+
+        Some(root.join("_cacache"))
+    }
+
+    /// Percent-encode a package name for use in a registry URL.
+    ///
+    /// Scoped names contain a `/` that has to be escaped, otherwise it reads as
+    /// an extra path segment. This is the same encoding the npm CLI itself uses.
+    fn registry_path(name: &str) -> String {
+        name.replace('/', "%2f")
+    }
+
+    /// Fetch metadata for a package's latest published version.
+    ///
+    /// This deliberately hits `/{name}/latest` rather than the full packument at
+    /// `/{name}`: the packument carries every version ever published, which runs
+    /// to tens of megabytes for packages like `npm` or `playwright`, while the
+    /// latest-version document is a couple of kilobytes and carries every field
+    /// the package list needs.
+    async fn fetch_latest_version(&self, name: &str) -> Option<NpmVersionDoc> {
+        let url = format!(
+            "https://registry.npmjs.org/{}/latest",
+            Self::registry_path(name)
+        );
+        let resp = self.client.get(&url).send().await.ok()?;
+
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        resp.json::<NpmVersionDoc>().await.ok()
+    }
+
+    /// Fetch the full packument, including the per-version release timeline.
+    ///
+    /// Only used for on-demand, single-package lookups (the changelog view) —
+    /// never in a loop over installed packages. See [`Self::fetch_latest_version`].
     async fn fetch_package_info(&self, name: &str) -> Option<NpmRegistryPackage> {
-        let url = format!("https://registry.npmjs.org/{}", name);
+        let url = format!("https://registry.npmjs.org/{}", Self::registry_path(name));
         let resp = self.client.get(&url).send().await.ok()?;
 
         if !resp.status().is_success() {
@@ -37,29 +90,60 @@ impl NpmBackend {
         resp.json::<NpmRegistryPackage>().await.ok()
     }
 
-    /// Create package enrichment from registry info
-    fn create_enrichment(info: &NpmRegistryPackage) -> PackageEnrichment {
-        let latest_version = info.dist_tags.as_ref().and_then(|dt| dt.latest.clone());
+    /// Enrich packages with registry metadata, one concurrent request each.
+    ///
+    /// Failures are not fatal: a package the registry can't answer for simply
+    /// keeps whatever the npm CLI reported.
+    async fn enrich(&self, packages: &mut [Package]) {
+        let names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
+        let docs =
+            futures::future::join_all(names.iter().map(|n| self.fetch_latest_version(n))).await;
 
-        let version_info = latest_version
-            .as_ref()
-            .and_then(|v| info.versions.as_ref().and_then(|vs| vs.get(v)));
+        for (pkg, doc) in packages.iter_mut().zip(docs.into_iter()) {
+            if let Some(doc) = doc {
+                Self::apply_metadata(pkg, &doc);
+            }
+        }
+    }
 
-        let keywords = version_info
-            .and_then(|vi| vi.keywords.clone())
-            .unwrap_or_default();
+    /// Copy registry metadata onto a package built from npm CLI output.
+    fn apply_metadata(pkg: &mut Package, doc: &NpmVersionDoc) {
+        if let Some(ref desc) = doc.description {
+            if pkg.description.is_empty() || pkg.description.len() < desc.len() {
+                pkg.description.clone_from(desc);
+            }
+        }
 
+        pkg.homepage = doc
+            .homepage
+            .clone()
+            .or_else(|| doc.repository.as_ref().and_then(|r| r.url()));
+        pkg.license = doc.license.as_ref().map(|l| l.name());
+        pkg.maintainer = doc.author.as_ref().map(|a| a.name()).or_else(|| {
+            doc.maintainers
+                .as_ref()
+                .and_then(|m| m.first())
+                .and_then(|m| m.name.clone())
+        });
+        pkg.size = doc.dist.as_ref().and_then(|d| d.unpacked_size);
+        pkg.enrichment = Some(Self::create_enrichment(doc));
+    }
+
+    /// Create package enrichment from the latest-version document
+    fn create_enrichment(doc: &NpmVersionDoc) -> PackageEnrichment {
         PackageEnrichment {
             icon_url: None, // npm packages don't have standard icons
             screenshots: Vec::new(),
             categories: Vec::new(), // npm doesn't categorize like other registries
-            developer: info.author.as_ref().map(|a| a.name()),
+            developer: doc.author.as_ref().map(|a| a.name()),
             rating: None,    // npm doesn't provide ratings
             downloads: None, // Would require separate API call to npm download counts
-            summary: info.description.clone(),
-            repository: info.repository.as_ref().and_then(|r| r.url()),
-            keywords,
-            last_updated: info.time.as_ref().and_then(|t| t.modified.clone()),
+            summary: doc.description.clone(),
+            repository: doc.repository.as_ref().and_then(|r| r.url()),
+            keywords: doc.keywords.clone().unwrap_or_default(),
+            // Release dates live in the packument's `time` map, which is only
+            // fetched on demand for the changelog — see fetch_latest_version.
+            last_updated: None,
         }
     }
 }
@@ -106,19 +190,31 @@ enum NpmVersions {
 // npm Registry API structures (https://registry.npmjs.org)
 // ============================================================================
 
-/// Package metadata from npm registry
+/// Full packument from `GET /{name}` — every published version, so this can be
+/// tens of megabytes. Only fetched for single-package, on-demand lookups.
 #[derive(Debug, Deserialize)]
 struct NpmRegistryPackage {
     description: Option<String>,
     #[serde(rename = "dist-tags")]
     dist_tags: Option<NpmDistTags>,
-    versions: Option<std::collections::HashMap<String, NpmVersionInfo>>,
     time: Option<NpmTimeInfo>,
     author: Option<NpmAuthor>,
     repository: Option<NpmRepository>,
     license: Option<NpmLicense>,
     homepage: Option<String>,
+}
+
+/// A single version's manifest, from `GET /{name}/latest` — a few kilobytes.
+#[derive(Debug, Deserialize)]
+struct NpmVersionDoc {
+    description: Option<String>,
+    keywords: Option<Vec<String>>,
+    author: Option<NpmAuthor>,
+    repository: Option<NpmRepository>,
+    license: Option<NpmLicense>,
+    homepage: Option<String>,
     maintainers: Option<Vec<NpmMaintainer>>,
+    dist: Option<NpmDist>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,15 +224,10 @@ struct NpmDistTags {
     next: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct NpmVersionInfo {
-    keywords: Option<Vec<String>>,
-    dist: Option<NpmDist>,
-}
-
+/// The packument `time` map: version -> ISO publish date, plus the
+/// `created`/`modified` entries, which callers filter out by key.
 #[derive(Debug, Deserialize)]
 struct NpmTimeInfo {
-    modified: Option<String>,
     #[serde(flatten)]
     versions: std::collections::HashMap<String, String>,
 }
@@ -238,77 +329,41 @@ impl PackageBackend for NpmBackend {
             .context("Failed to list npm packages")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut packages = Vec::new();
 
-        if let Ok(parsed) = serde_json::from_str::<NpmListOutput>(&stdout) {
-            if let Some(deps) = parsed.dependencies {
-                for (name, info) in deps {
-                    packages.push(Package {
-                        name,
-                        version: info.version.unwrap_or_default(),
-                        available_version: None,
-                        description: String::new(),
-                        source: PackageSource::Npm,
-                        status: PackageStatus::Installed,
-                        size: None,
-                        homepage: None,
-                        license: None,
-                        maintainer: None,
-                        dependencies: Vec::new(),
-                        install_date: None,
-                        update_category: None,
-                        enrichment: None,
-                    });
-                }
-            }
-        }
+        // `npm list -g` exits non-zero for benign reasons (unmet peer deps, extraneous
+        // packages) while still writing a usable tree, so the JSON is what decides.
+        let parsed = serde_json::from_str::<NpmListOutput>(&stdout).map_err(|e| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::anyhow!(
+                "Could not read the global npm package list: {}\n{}",
+                e,
+                stderr.trim()
+            )
+        })?;
 
-        // Enrich packages with metadata from npm registry API
-        // We do this in parallel for better performance
-        let enrichment_futures: Vec<_> = packages
-            .iter()
-            .map(|pkg| self.fetch_package_info(&pkg.name))
+        let mut packages: Vec<Package> = parsed
+            .dependencies
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, info)| Package {
+                name,
+                version: info.version.unwrap_or_default(),
+                available_version: None,
+                description: String::new(),
+                source: PackageSource::Npm,
+                status: PackageStatus::Installed,
+                size: None,
+                homepage: None,
+                license: None,
+                maintainer: None,
+                dependencies: Vec::new(),
+                install_date: None,
+                update_category: None,
+                enrichment: None,
+            })
             .collect();
 
-        let enrichments = futures::future::join_all(enrichment_futures).await;
-
-        for (pkg, info_opt) in packages.iter_mut().zip(enrichments) {
-            if let Some(info) = info_opt {
-                // Extract description
-                if let Some(ref desc) = info.description {
-                    pkg.description = desc.clone();
-                }
-
-                // Extract homepage
-                pkg.homepage = info
-                    .homepage
-                    .clone()
-                    .or_else(|| info.repository.as_ref().and_then(|r| r.url()));
-
-                // Extract license
-                pkg.license = info.license.as_ref().map(|l| l.name());
-
-                // Extract maintainer (first one or author)
-                pkg.maintainer = info.author.as_ref().map(|a| a.name()).or_else(|| {
-                    info.maintainers
-                        .as_ref()
-                        .and_then(|m| m.first())
-                        .and_then(|m| m.name.clone())
-                });
-
-                // Extract size from latest version
-                let latest_version = info.dist_tags.as_ref().and_then(|dt| dt.latest.clone());
-                if let Some(ref latest) = latest_version {
-                    if let Some(version_info) = info.versions.as_ref().and_then(|vs| vs.get(latest))
-                    {
-                        pkg.size = version_info.dist.as_ref().and_then(|d| d.unpacked_size);
-                    }
-                }
-
-                // Add enrichment
-                pkg.enrichment = Some(Self::create_enrichment(&info));
-            }
-        }
+        self.enrich(&mut packages).await;
 
         Ok(packages)
     }
@@ -348,28 +403,7 @@ impl PackageBackend for NpmBackend {
             }
         }
 
-        // Enrich packages with metadata from npm registry
-        let enrichment_futures: Vec<_> = packages
-            .iter()
-            .map(|pkg| self.fetch_package_info(&pkg.name))
-            .collect();
-
-        let enrichments = futures::future::join_all(enrichment_futures).await;
-
-        for (pkg, info_opt) in packages.iter_mut().zip(enrichments) {
-            if let Some(info) = info_opt {
-                if let Some(ref desc) = info.description {
-                    pkg.description.clone_from(desc);
-                }
-                pkg.homepage = info
-                    .homepage
-                    .clone()
-                    .or_else(|| info.repository.as_ref().and_then(|r| r.url()));
-                pkg.license = info.license.as_ref().map(|l| l.name());
-                pkg.maintainer = info.author.as_ref().map(|a| a.name());
-                pkg.enrichment = Some(Self::create_enrichment(&info));
-            }
-        }
+        self.enrich(&mut packages).await;
 
         Ok(packages)
     }
@@ -390,23 +424,22 @@ impl PackageBackend for NpmBackend {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let lowered = stderr.to_lowercase();
 
-        // Permission errors
-        if lowered.contains("eacces")
-            || lowered.contains("permission denied")
-            || lowered.contains("access")
-        {
+        // Package not found. Checked before the permission case because npm words
+        // a private/unauthorized package as "you do not have access to it", which
+        // is not something sudo can fix.
+        if lowered.contains("404") || lowered.contains("e404") {
             anyhow::bail!(
-                "Failed to install npm package '{}'.\n\n{} sudo npm install -g {}\n",
-                name,
-                SUGGEST_PREFIX,
+                "Package '{}' not found on npm registry. Check the name and try again.",
                 name
             );
         }
 
-        // Package not found
-        if lowered.contains("404") || lowered.contains("not found") || lowered.contains("e404") {
+        // Permission errors
+        if is_permission_error(&lowered) {
             anyhow::bail!(
-                "Package '{}' not found on npm registry. Check the name and try again.",
+                "Failed to install npm package '{}'.\n\n{} sudo npm install -g {}\n",
+                name,
+                SUGGEST_PREFIX,
                 name
             );
         }
@@ -447,7 +480,7 @@ impl PackageBackend for NpmBackend {
         let lowered = stderr.to_lowercase();
 
         // Permission errors
-        if lowered.contains("eacces") || lowered.contains("permission") {
+        if is_permission_error(&lowered) {
             anyhow::bail!(
                 "Failed to remove npm package '{}'.\n\n{} sudo npm uninstall -g {}\n",
                 name,
@@ -483,7 +516,7 @@ impl PackageBackend for NpmBackend {
         let lowered = stderr.to_lowercase();
 
         // Permission errors
-        if lowered.contains("eacces") || lowered.contains("permission") {
+        if is_permission_error(&lowered) {
             anyhow::bail!(
                 "Failed to update npm package '{}'.\n\n{} sudo npm install -g {}@latest\n",
                 name,
@@ -511,10 +544,7 @@ impl PackageBackend for NpmBackend {
 
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let lowered = stderr.to_lowercase();
-        if lowered.contains("eacces")
-            || lowered.contains("permission")
-            || lowered.contains("access")
-        {
+        if is_permission_error(&lowered) {
             anyhow::bail!(
                 "Failed to install {}.\n\n{} sudo npm install -g {}\n",
                 spec,
@@ -644,8 +674,17 @@ impl PackageBackend for NpmBackend {
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Package>> {
+        const SEARCH_LIMIT: usize = 50;
+        // Registry lookups are only worth it for the results a user actually sees.
+        const ENRICH_LIMIT: usize = 10;
+
         let output = Command::new("npm")
-            .args(["search", query, "--json", "--long"])
+            .args([
+                "search",
+                query,
+                "--json",
+                &format!("--searchlimit={}", SEARCH_LIMIT),
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -653,7 +692,6 @@ impl PackageBackend for NpmBackend {
             .context("Failed to search npm packages")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut packages = Vec::new();
 
         #[derive(Deserialize)]
         struct NpmSearchResult {
@@ -662,100 +700,50 @@ impl PackageBackend for NpmBackend {
             description: Option<String>,
         }
 
-        if let Ok(results) = serde_json::from_str::<Vec<NpmSearchResult>>(&stdout) {
-            for result in results.into_iter().take(50) {
-                packages.push(Package {
-                    name: result.name,
-                    version: result.version.unwrap_or_default(),
-                    available_version: None,
-                    description: result.description.unwrap_or_default(),
-                    source: PackageSource::Npm,
-                    status: PackageStatus::NotInstalled,
-                    size: None,
-                    homepage: None,
-                    license: None,
-                    maintainer: None,
-                    dependencies: Vec::new(),
-                    install_date: None,
-                    update_category: None,
-                    enrichment: None,
-                });
-            }
-        }
+        let results = serde_json::from_str::<Vec<NpmSearchResult>>(&stdout).map_err(|e| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::anyhow!("npm search failed: {}\n{}", e, stderr.trim())
+        })?;
 
-        let enrichment_futures: Vec<_> = packages
-            .iter()
-            .take(10)
-            .map(|pkg| self.fetch_package_info(&pkg.name))
+        let mut packages: Vec<Package> = results
+            .into_iter()
+            .take(SEARCH_LIMIT)
+            .map(|result| Package {
+                name: result.name,
+                version: result.version.unwrap_or_default(),
+                available_version: None,
+                description: result.description.unwrap_or_default(),
+                source: PackageSource::Npm,
+                status: PackageStatus::NotInstalled,
+                size: None,
+                homepage: None,
+                license: None,
+                maintainer: None,
+                dependencies: Vec::new(),
+                install_date: None,
+                update_category: None,
+                enrichment: None,
+            })
             .collect();
 
-        let enrichments = futures::future::join_all(enrichment_futures).await;
-
-        for (pkg, info_opt) in packages.iter_mut().take(10).zip(enrichments) {
-            if let Some(info) = info_opt {
-                if let Some(ref desc) = info.description {
-                    if pkg.description.is_empty() || pkg.description.len() < desc.len() {
-                        pkg.description.clone_from(desc);
-                    }
-                }
-                pkg.homepage = info
-                    .homepage
-                    .clone()
-                    .or_else(|| info.repository.as_ref().and_then(|r| r.url()));
-                pkg.license = info.license.as_ref().map(|l| l.name());
-                pkg.maintainer = info.author.as_ref().map(|a| a.name());
-                pkg.enrichment = Some(Self::create_enrichment(&info));
-            }
-        }
+        let enrich_count = packages.len().min(ENRICH_LIMIT);
+        self.enrich(&mut packages[..enrich_count]).await;
 
         Ok(packages)
     }
 
     async fn get_cache_size(&self) -> Result<u64> {
-        let output = Command::new("npm")
-            .args(["cache", "ls", "--json"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await;
+        let Some(cache_dir) = Self::cache_dir().await else {
+            return Ok(0);
+        };
 
-        if output.is_err() {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-            let cache_path = format!("{}/.npm/_cacache", home);
-            let path = std::path::Path::new(&cache_path);
-
-            if !path.exists() {
-                return Ok(0);
-            }
-
-            let du_output = Command::new("du")
-                .args(["-sb", &cache_path])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .context("Failed to get npm cache size")?;
-
-            let stdout = String::from_utf8_lossy(&du_output.stdout);
-            let size = stdout
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0);
-
-            return Ok(size);
-        }
-
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-        let cache_path = format!("{}/.npm/_cacache", home);
-        let path = std::path::Path::new(&cache_path);
-
-        if !path.exists() {
+        if !cache_dir.exists() {
             return Ok(0);
         }
 
         let du_output = Command::new("du")
-            .args(["-sb", &cache_path])
+            .arg("-sb")
+            .arg(&cache_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -789,10 +777,12 @@ impl PackageBackend for NpmBackend {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Failed to clean npm cache: {}", stderr);
+            anyhow::bail!("Failed to clean npm cache: {}", stderr.trim());
         }
 
-        Ok(before)
+        // Report what was actually reclaimed, not what was there beforehand.
+        let after = self.get_cache_size().await.unwrap_or(0);
+        Ok(before.saturating_sub(after))
     }
 
     fn source(&self) -> PackageSource {
@@ -864,6 +854,22 @@ impl PackageBackend for NpmBackend {
 // ============================================================================
 // Helper functions
 // ============================================================================
+
+/// Decide whether npm's stderr describes a filesystem permission problem.
+///
+/// Matches on npm's error codes and the exact phrasings the OS produces, so
+/// that registry messages like "you do not have access to this package" —
+/// which sudo cannot fix — are not mistaken for one.
+fn is_permission_error(lowered_stderr: &str) -> bool {
+    [
+        "eacces",
+        "eperm",
+        "permission denied",
+        "operation not permitted",
+    ]
+    .iter()
+    .any(|needle| lowered_stderr.contains(needle))
+}
 
 /// Format download count for display
 #[allow(dead_code)]
@@ -941,5 +947,106 @@ mod tests {
         assert_eq!(format_downloads(1500), "1.5K");
         assert_eq!(format_downloads(1_500_000), "1.5M");
         assert_eq!(format_downloads(0), "0");
+    }
+
+    #[test]
+    fn test_registry_path_escapes_scopes() {
+        assert_eq!(NpmBackend::registry_path("express"), "express");
+        assert_eq!(
+            NpmBackend::registry_path("@types/node"),
+            "@types%2fnode",
+            "the scope separator must not become an extra URL path segment"
+        );
+    }
+
+    #[test]
+    fn test_permission_error_detection() {
+        assert!(is_permission_error("npm error code eacces"));
+        assert!(is_permission_error("eperm: operation not permitted, mkdir"));
+        assert!(is_permission_error(
+            "error: eacces: permission denied, access '/usr/lib/node_modules'"
+        ));
+
+        // A registry authorization failure is not something sudo can fix.
+        assert!(!is_permission_error(
+            "npm error 403 forbidden - you do not have access to this package"
+        ));
+        assert!(!is_permission_error(
+            "npm error 404 not found - getaddrinfo enotfound registry.npmjs.org"
+        ));
+    }
+
+    #[test]
+    fn test_latest_version_doc_parsing() {
+        // Shape of a real GET /{name}/latest response.
+        let doc: NpmVersionDoc = serde_json::from_str(
+            r#"{
+                "name": "example",
+                "version": "1.2.3",
+                "description": "An example package",
+                "keywords": ["cli", "example"],
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "author": {"name": "Ada Lovelace"},
+                "repository": {"type": "git", "url": "git+https://github.com/u/r.git"},
+                "maintainers": [{"name": "maintainer-one"}],
+                "dist": {"unpackedSize": 4096, "tarball": "https://…", "shasum": "abc"}
+            }"#,
+        )
+        .expect("latest-version document should deserialize");
+
+        let mut pkg = Package {
+            name: "example".to_string(),
+            version: "1.2.3".to_string(),
+            available_version: None,
+            description: String::new(),
+            source: PackageSource::Npm,
+            status: PackageStatus::Installed,
+            size: None,
+            homepage: None,
+            license: None,
+            maintainer: None,
+            dependencies: Vec::new(),
+            install_date: None,
+            update_category: None,
+            enrichment: None,
+        };
+
+        NpmBackend::apply_metadata(&mut pkg, &doc);
+
+        assert_eq!(pkg.description, "An example package");
+        assert_eq!(pkg.homepage.as_deref(), Some("https://example.com"));
+        assert_eq!(pkg.license.as_deref(), Some("MIT"));
+        assert_eq!(pkg.maintainer.as_deref(), Some("Ada Lovelace"));
+        assert_eq!(pkg.size, Some(4096));
+
+        let enrichment = pkg.enrichment.expect("enrichment should be populated");
+        assert_eq!(enrichment.keywords, vec!["cli", "example"]);
+        assert_eq!(
+            enrichment.repository.as_deref(),
+            Some("https://github.com/u/r")
+        );
+    }
+
+    /// Hits the live npm registry; run with `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore = "requires network access"]
+    async fn test_latest_version_fetch_is_small_and_complete() {
+        let backend = NpmBackend::new();
+        let doc = backend
+            .fetch_latest_version("@types/node")
+            .await
+            .expect("registry should answer for a scoped package");
+        assert!(doc.description.is_some());
+    }
+
+    /// Requires npm on PATH; run with `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore = "requires a local npm installation"]
+    async fn test_cache_dir_resolves_under_npm_config() {
+        let dir = NpmBackend::cache_dir()
+            .await
+            .expect("npm should report a cache location");
+        assert!(dir.ends_with("_cacache"), "unexpected cache dir: {:?}", dir);
     }
 }
