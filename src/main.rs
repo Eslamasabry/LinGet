@@ -94,11 +94,24 @@ fn init_logging(run_mode: RunMode) {
 
     match run_mode {
         RunMode::Tui => {
-            // Avoid emitting logs to the terminal while in alternate screen.
-            tracing_subscriber::registry()
-                .with(fmt::layer().with_writer(std::io::sink))
-                .with(filter)
-                .init();
+            // Logs cannot go to the terminal while the alternate screen is up,
+            // which otherwise leaves the TUI undebuggable: there is no way to
+            // see why a search came back empty or a backend failed. Honour an
+            // explicit log file so a session can be traced when it misbehaves.
+            match std::env::var_os("LINGET_LOG_FILE").map(std::fs::File::create) {
+                Some(Ok(file)) => {
+                    tracing_subscriber::registry()
+                        .with(fmt::layer().with_ansi(false).with_writer(file))
+                        .with(filter)
+                        .init();
+                }
+                _ => {
+                    tracing_subscriber::registry()
+                        .with(fmt::layer().with_writer(std::io::sink))
+                        .with(filter)
+                        .init();
+                }
+            }
         }
         RunMode::Gui | RunMode::Cli => {
             tracing_subscriber::registry()

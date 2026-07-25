@@ -1725,4 +1725,26 @@ mod tests {
         );
         drop(held);
     }
+
+    /// The TUI builds its manager with new_fast() and searches through
+    /// search_catalog(); the CLI uses new() and search(). Check the TUI's exact
+    /// combination, since that is the one reported as returning nothing.
+    #[tokio::test]
+    #[ignore = "hits real package manager backends"]
+    async fn fast_manager_search_catalog_finds_results() {
+        let manager = PackageManager::new_fast();
+        println!("enabled sources: {:?}", manager.available_sources());
+        let catalog = manager
+            .search_catalog("ripgrep")
+            .await
+            .expect("search should succeed");
+        println!("matches: {}", catalog.matches.len());
+        for provider in &catalog.providers {
+            println!(
+                "  {:?}: {} results, error={:?}",
+                provider.source, provider.result_count, provider.error
+            );
+        }
+        assert!(!catalog.matches.is_empty(), "ripgrep must match something");
+    }
 }

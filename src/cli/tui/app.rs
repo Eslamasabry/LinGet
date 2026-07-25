@@ -4770,12 +4770,25 @@ impl App {
     }
 
     async fn queue_retry_for_parent_task(&mut self, task: &TaskQueueEntry) {
-        let retry = TaskQueueEntry::new(
+        let mut retry = TaskQueueEntry::new(
             task.action,
             task.package_id.clone(),
             task.package_name.clone(),
             task.package_source,
         );
+
+        // Carry the reviewed plan across. Stable-provider sources — apt,
+        // flatpak, npm — refuse to run without one, so a retry that dropped it
+        // failed instantly every time, which is every retry a user is likely to
+        // attempt. Reusing the plan is what the executor's resume_reviewed_plan
+        // is for: it is the same operation, on the same exact argv the user
+        // already reviewed.
+        retry
+            .reviewed_operation_id
+            .clone_from(&task.reviewed_operation_id);
+        retry
+            .reviewed_plan_json
+            .clone_from(&task.reviewed_plan_json);
 
         let state = self
             .task_recovery_states
@@ -6006,6 +6019,74 @@ mod tests {
             !app.task_awaiting_authentication(&fresh),
             "a task that just started has not had time to be blocked"
         );
+    }
+
+    /// Retrying an apt/flatpak/npm task used to fail instantly with "no
+    /// reviewed plan", because the retry was built from scratch and dropped it.
+    #[tokio::test]
+    async fn a_retry_keeps_the_reviewed_plan_of_the_task_it_repeats() {
+        let mut app = test_app();
+        let mut failed = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "apt:libk5crypto3".to_string(),
+            "libk5crypto3".to_string(),
+            PackageSource::Apt,
+        );
+        failed.reviewed_operation_id = Some("operation-1".to_string());
+        failed.reviewed_plan_json = Some("{\"id\":\"plan-1\"}".to_string());
+        failed.mark_failed("Interrupted".to_string());
+
+        app.queue_retry_for_parent_task(&failed).await;
+
+        let retry = app
+            .tasks
+            .iter()
+            .find(|task| task.id != failed.id)
+            .expect("a retry should have been queued");
+        assert_eq!(
+            retry.reviewed_operation_id.as_deref(),
+            Some("operation-1"),
+            "without the operation id the executor rejects the task"
+        );
+        assert_eq!(
+            retry.reviewed_plan_json.as_deref(),
+            Some("{\"id\":\"plan-1\"}"),
+            "without the plan a Stable-provider retry fails instantly"
+        );
+    }
+
+    /// Reproduce the TUI's own search path: start_search + poll_search, exactly
+    /// as pressing Enter in the search bar does.
+    #[tokio::test]
+    #[ignore = "hits real backends"]
+    async fn tui_provider_search_populates_packages() {
+        let mut app = test_app();
+        app.search = "htop".to_string();
+        let started = app.start_search();
+        println!("start_search returned: {started}");
+        println!("catalog_activity: {:?}", app.catalog_activity.is_some());
+
+        for _ in 0..200 {
+            app.poll_search();
+            if app.search_rx.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        println!("status: {}", app.status);
+        println!(
+            "search_results: {:?}",
+            app.search_results.as_ref().map(|r| r.len())
+        );
+        println!("packages: {}", app.packages.len());
+        println!("filtered: {}", app.filtered.len());
+        for provider in &app.search_provider_summaries {
+            println!(
+                "  {:?}: {} results err={:?}",
+                provider.source, provider.result_count, provider.error
+            );
+        }
     }
 
     #[test]
