@@ -26,7 +26,6 @@ data/icons/hicolor/icon-theme.cache
 experiments/*/target/
 .rustup
 .cargo
-linget-gtk/target/
 packages/*/target/
 logs
 .ralph-tui
