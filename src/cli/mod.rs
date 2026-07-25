@@ -1,6 +1,7 @@
 mod commands;
 mod output;
 pub mod tui;
+pub mod tui_next;
 
 use crate::backend::PackageManager;
 use crate::models::PackageSource;
@@ -161,7 +162,11 @@ pub enum Commands {
     Runtimes,
 
     /// Launch interactive TUI mode
-    Tui,
+    Tui {
+        /// Launch the reimagined next-generation TUI
+        #[arg(long = "next")]
+        next: bool,
+    },
 
     /// Launch the optional graphical user interface
     Gui,
@@ -401,7 +406,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             commands::permissions::run(pm, &app_id, action, &writer).await
         }
         Commands::Runtimes => commands::permissions::list_runtimes(pm, &writer).await,
-        Commands::Tui => tui::run().await,
+        Commands::Tui { next } => {
+            if next {
+                tui_next::run().await
+            } else {
+                tui::run().await
+            }
+        }
         Commands::Gui => {
             unreachable!("GUI command should be handled in main.rs")
         }

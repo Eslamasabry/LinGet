@@ -61,7 +61,7 @@ indicatif = "0.17"
 
 # TUI dependencies
 ratatui = "0.29"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
 
 [profile.dev]
 opt-level = 0

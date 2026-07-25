@@ -110,7 +110,14 @@ fn run_tui(runtime: tokio::runtime::Runtime) {
         product::APP_VERSION
     );
 
-    let result = runtime.block_on(cli::tui::run());
+    // This path is reached both by `linget tui --next` and by a bare `linget`
+    // invocation, which never goes through clap — so read the flag directly.
+    let next = std::env::args().any(|arg| arg == "--next");
+    let result = if next {
+        runtime.block_on(cli::tui_next::run())
+    } else {
+        runtime.block_on(cli::tui::run())
+    };
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
@@ -136,7 +143,7 @@ fn run_cli(runtime: tokio::runtime::Runtime) {
     }
 
     // Handle TUI command specially (redirect to TUI mode)
-    if matches!(cli.command, cli::Commands::Tui) {
+    if matches!(cli.command, cli::Commands::Tui { .. }) {
         drop(cli);
         run_tui(runtime);
         return;
