@@ -27,6 +27,7 @@ experiments/*/target/
 .rustup
 .cargo
 linget-gtk/target/
+packages/*/target/
 logs
 .ralph-tui
 .beads
@@ -47,6 +48,12 @@ linget-electron/dist/
 session-ses_*.md
 temp_*.rs
 autoremove
+/tmp*
+.codex
+
+# Python virtualenvs
+.venv/
+venv/
 
 # Python validation caches
 __pycache__/
