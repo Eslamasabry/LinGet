@@ -141,6 +141,9 @@ impl PackageBackend for PacmanBackend {
             packages.push(current_pkg);
         }
 
+        // A failed listing that parsed nothing is not an empty system.
+        crate::backend::exec::ensure_listing_succeeded("pacman", &output, packages.len())?;
+
         Ok(packages)
     }
 

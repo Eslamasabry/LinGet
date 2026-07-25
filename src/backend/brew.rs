@@ -311,6 +311,9 @@ impl PackageBackend for BrewBackend {
             });
         }
 
+        // A failed listing that parsed nothing is not an empty system.
+        crate::backend::exec::ensure_listing_succeeded("brew", &output, packages.len())?;
+
         Ok(packages)
     }
 

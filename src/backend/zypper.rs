@@ -77,6 +77,9 @@ impl PackageBackend for ZypperBackend {
             });
         }
 
+        // A failed listing that parsed nothing is not an empty system.
+        crate::backend::exec::ensure_listing_succeeded("rpm", &output, packages.len())?;
+
         Ok(packages)
     }
 

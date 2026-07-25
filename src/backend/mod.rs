@@ -7,6 +7,7 @@ mod conda;
 mod dart;
 mod deb;
 mod dnf;
+pub mod exec;
 mod flatpak;
 pub mod history_tracker;
 mod mamba;

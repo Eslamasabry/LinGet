@@ -79,6 +79,9 @@ impl PackageBackend for DnfBackend {
             }
         }
 
+        // A failed listing that parsed nothing is not an empty system.
+        crate::backend::exec::ensure_listing_succeeded("dnf", &output, packages.len())?;
+
         Ok(packages)
     }
 

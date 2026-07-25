@@ -26,7 +26,19 @@ impl AptBackend {
             .await
             .context("Failed to execute dpkg-query command")?;
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        // A failed query that printed nothing must not be mistaken for a
+        // machine with no packages installed.
+        crate::backend::exec::ensure_listing_succeeded(
+            "dpkg-query",
+            &output,
+            stdout
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count(),
+        )?;
+
+        Ok(stdout)
     }
 
     /// Parse APT sources list files to extract repository information.
