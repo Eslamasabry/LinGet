@@ -6089,6 +6089,47 @@ mod tests {
         }
     }
 
+    /// The help lists the filter keys under a global heading. They used to do
+    /// nothing at all in the Today view, whose key handler returned early.
+    #[tokio::test]
+    async fn filter_keys_work_from_the_today_view() {
+        for (digit, expected) in [
+            ('1', Filter::All),
+            ('2', Filter::Installed),
+            ('3', Filter::Updates),
+            ('4', Filter::Favorites),
+            ('5', Filter::SecurityUpdates),
+            ('6', Filter::Duplicates),
+        ] {
+            let mut app = test_app();
+            app.navigate_to(ViewMode::Today);
+            app.handle_key(key(KeyCode::Char(digit))).await;
+
+            assert_eq!(
+                app.filter, expected,
+                "key {digit} selected the wrong filter"
+            );
+            assert_eq!(
+                app.view_mode,
+                ViewMode::Browse,
+                "picking a filter from the summary should land on the list it describes"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn alt_digits_still_switch_details_tabs_rather_than_filtering() {
+        use crate::cli::tui::state::filters::DetailsTab;
+
+        let mut app = test_app();
+        app.navigate_to(ViewMode::Browse);
+        app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT))
+            .await;
+
+        assert_eq!(app.active_details_tab, DetailsTab::Dependencies);
+        assert_eq!(app.filter, Filter::All, "Alt+2 must not change the filter");
+    }
+
     #[test]
     fn parse_apt_dry_run_impact_extracts_counts() {
         let output = "0 upgraded, 2 newly installed, 1 to remove and 3 not upgraded.";

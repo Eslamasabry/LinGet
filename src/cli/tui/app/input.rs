@@ -332,6 +332,22 @@ impl App {
         self.clamp_palette_cursor();
     }
 
+    /// The filter a number key selects.
+    ///
+    /// Shared so the Today and Browse handlers cannot drift apart on what "3"
+    /// means, and so the help stays honest about these being global.
+    fn filter_command_for_digit(digit: char) -> Option<CommandId> {
+        match digit {
+            '1' => Some(CommandId::FilterAll),
+            '2' => Some(CommandId::FilterInstalled),
+            '3' => Some(CommandId::FilterUpdates),
+            '4' => Some(CommandId::FilterFavorites),
+            '5' => Some(CommandId::FilterSecurityUpdates),
+            '6' => Some(CommandId::FilterDuplicates),
+            _ => None,
+        }
+    }
+
     async fn handle_normal_key(&mut self, key: KeyEvent) {
         // Ctrl+C cancels running task when in queue view, otherwise is ignored
         // We never quit on Ctrl+C - use 'q' to quit instead
@@ -393,6 +409,19 @@ impl App {
                 KeyCode::Char('w') => self.execute_command(CommandId::RunRecommended).await,
                 KeyCode::Char('r') => self.execute_command(CommandId::Refresh).await,
                 KeyCode::Char('l') => self.navigate_to(ViewMode::Queue),
+                // The help lists the filter keys under a global heading, but
+                // this arm used to swallow them, so they silently did nothing
+                // here. From a summary screen "5 Security" reads as "show me
+                // those", so apply the filter and go where the list is.
+                KeyCode::Char(digit)
+                    if !key.modifiers.contains(KeyModifiers::ALT)
+                        && Self::filter_command_for_digit(digit).is_some() =>
+                {
+                    let command = Self::filter_command_for_digit(digit)
+                        .expect("guarded by the match arm above");
+                    self.navigate_to(ViewMode::Browse);
+                    self.execute_command(command).await;
+                }
                 _ => {}
             }
             return;
@@ -511,12 +540,11 @@ impl App {
             KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.active_details_tab = crate::cli::tui::state::filters::DetailsTab::Changelog;
             }
-            KeyCode::Char('1') => self.execute_command(CommandId::FilterAll).await,
-            KeyCode::Char('2') => self.execute_command(CommandId::FilterInstalled).await,
-            KeyCode::Char('3') => self.execute_command(CommandId::FilterUpdates).await,
-            KeyCode::Char('4') => self.execute_command(CommandId::FilterFavorites).await,
-            KeyCode::Char('5') => self.execute_command(CommandId::FilterSecurityUpdates).await,
-            KeyCode::Char('6') => self.execute_command(CommandId::FilterDuplicates).await,
+            KeyCode::Char(digit) if Self::filter_command_for_digit(digit).is_some() => {
+                let command =
+                    Self::filter_command_for_digit(digit).expect("guarded by the match arm above");
+                self.execute_command(command).await;
+            }
             KeyCode::Char('f') => self.execute_command(CommandId::ToggleFavorite).await,
             KeyCode::Char('F') => self.execute_command(CommandId::BulkToggleFavorite).await,
             KeyCode::Char('v') => {
