@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error};
 
 pub const MIN_WIDTH: u16 = 60;
@@ -715,7 +715,7 @@ pub struct App {
     pub source_counts: HashMap<PackageSource, [usize; 6]>,
     pub duplicate_peer_sources: HashMap<String, Vec<PackageSource>>,
 
-    pub pm: Arc<Mutex<PackageManager>>,
+    pub pm: Arc<RwLock<PackageManager>>,
     pub history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
     pub load_rx: Option<mpsc::Receiver<LoadEvent>>,
     pub search_rx: Option<mpsc::Receiver<SearchResult>>,
@@ -743,7 +743,7 @@ pub struct App {
 
 impl App {
     pub fn new(
-        pm: Arc<Mutex<PackageManager>>,
+        pm: Arc<RwLock<PackageManager>>,
         history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
         task_events_rx: Option<mpsc::Receiver<TaskQueueEvent>>,
         task_events_tx: Option<mpsc::Sender<TaskQueueEvent>>,
@@ -1063,7 +1063,7 @@ impl App {
     }
 
     pub async fn load_sources(&mut self) {
-        let manager = self.pm.lock().await;
+        let manager = self.pm.read().await;
         self.available_sources = manager.available_sources().into_iter().collect();
         self.available_sources
             .sort_by_key(|source| source.to_string());
@@ -2309,7 +2309,7 @@ impl App {
             });
 
             let installed = {
-                let manager = pm.lock().await;
+                let manager = pm.read().await;
                 manager
                     .list_all_installed_progressive(progress_tx.clone())
                     .await
@@ -2334,7 +2334,7 @@ impl App {
             }
 
             let updates = {
-                let manager = pm.lock().await;
+                let manager = pm.read().await;
                 manager
                     .check_all_updates_progressive(progress_tx.clone())
                     .await
@@ -2382,7 +2382,7 @@ impl App {
 
         tokio::spawn(async move {
             let result: SearchResult = {
-                let manager = pm.lock().await;
+                let manager = pm.read().await;
                 match manager.search_catalog(&query).await {
                     Ok(results) => Ok(results),
                     Err(error) => Err(error.to_string()),
@@ -2588,7 +2588,7 @@ impl App {
 
         tokio::spawn(async move {
             let result: RepositoriesResult = {
-                let manager = pm.lock().await;
+                let manager = pm.read().await;
                 match manager.list_repositories(source).await {
                     Ok(repos) => Ok(repos),
                     Err(error) => Err(error.to_string()),
@@ -2636,7 +2636,7 @@ impl App {
         let pm = self.pm.clone();
         tokio::spawn(async move {
             let result = {
-                let manager = pm.lock().await;
+                let manager = pm.read().await;
                 manager.get_changelog(&package).await
             }
             .map_err(|error| error.to_string());
@@ -2840,7 +2840,7 @@ impl App {
     }
 
     async fn plan_stable_transactions(
-        pm: Arc<Mutex<PackageManager>>,
+        pm: Arc<RwLock<PackageManager>>,
         action: TaskQueueAction,
         packages: Vec<Package>,
     ) -> Result<Vec<ProviderPlan>, String> {
@@ -2888,7 +2888,7 @@ impl App {
     }
 
     async fn run_preflight_verification_probe(
-        pm: Arc<Mutex<PackageManager>>,
+        pm: Arc<RwLock<PackageManager>>,
         action: TaskQueueAction,
         packages: Vec<Package>,
     ) -> (bool, Option<PreflightDependencyImpact>, Option<String>) {
@@ -2923,7 +2923,7 @@ impl App {
                     remove_count: packages.len(),
                     ..PreflightDependencyImpact::default()
                 };
-                let manager = pm.lock().await;
+                let manager = pm.read().await;
                 for package in &packages {
                     if let Err(error) = manager.get_reverse_dependencies(package).await {
                         let detail = error
@@ -5251,7 +5251,7 @@ pub async fn run() -> Result<()> {
         default_hook(info);
     }));
 
-    let pm = Arc::new(Mutex::new(PackageManager::new_fast()));
+    let pm = Arc::new(RwLock::new(PackageManager::new_fast()));
     let history_tracker = Arc::new(Mutex::new(None));
     let (task_tx, task_rx) = mpsc::channel(200);
 
@@ -5413,7 +5413,7 @@ mod tests {
     #[test]
     fn application_defaults_to_today() {
         let app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(RwLock::new(PackageManager::new())),
             Arc::new(Mutex::new(None)),
             None,
             None,
@@ -5445,7 +5445,7 @@ mod tests {
 
     fn test_app() -> App {
         let mut app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(RwLock::new(PackageManager::new())),
             Arc::new(Mutex::new(None)),
             None,
             None,

@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 #[derive(Clone)]
 struct ImportPackage {
@@ -22,7 +22,7 @@ struct ImportPackage {
     selected: bool,
 }
 
-pub fn show_export_dialog(window: &impl IsA<gtk::Window>, pm: Arc<Mutex<PackageManager>>) {
+pub fn show_export_dialog(window: &impl IsA<gtk::Window>, pm: Arc<RwLock<PackageManager>>) {
     let dialog = gtk::FileChooserNative::builder()
         .title("Export Packages")
         .action(gtk::FileChooserAction::Save)
@@ -52,14 +52,14 @@ pub fn show_export_dialog(window: &impl IsA<gtk::Window>, pm: Arc<Mutex<PackageM
     dialog.show();
 }
 
-fn run_export(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, path: PathBuf) {
+fn run_export(window: gtk::Window, pm: Arc<RwLock<PackageManager>>, path: PathBuf) {
     let toast_overlay = find_toast_overlay(&window);
 
     glib::spawn_future_local(async move {
         let config = Config::load();
 
         let all_packages = {
-            let manager = pm.lock().await;
+            let manager = pm.read().await;
             manager.list_all_installed().await
         };
 
@@ -140,7 +140,7 @@ fn escape_csv_field(field: &str) -> String {
     }
 }
 
-pub fn show_import_dialog(window: &impl IsA<gtk::Window>, pm: Arc<Mutex<PackageManager>>) {
+pub fn show_import_dialog(window: &impl IsA<gtk::Window>, pm: Arc<RwLock<PackageManager>>) {
     let dialog = gtk::FileChooserNative::builder()
         .title("Import Packages")
         .action(gtk::FileChooserAction::Open)
@@ -168,7 +168,7 @@ pub fn show_import_dialog(window: &impl IsA<gtk::Window>, pm: Arc<Mutex<PackageM
     dialog.show();
 }
 
-fn show_import_diff_dialog(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, path: PathBuf) {
+fn show_import_diff_dialog(window: gtk::Window, pm: Arc<RwLock<PackageManager>>, path: PathBuf) {
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
@@ -197,7 +197,7 @@ fn show_import_diff_dialog(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, 
 
     glib::spawn_future_local(async move {
         let installed_packages = {
-            let manager = pm_clone.lock().await;
+            let manager = pm_clone.read().await;
             match manager.list_all_installed().await {
                 Ok(pkgs) => pkgs,
                 Err(e) => {
@@ -259,7 +259,7 @@ fn show_import_diff_dialog(window: gtk::Window, pm: Arc<Mutex<PackageManager>>, 
 
 fn build_import_dialog(
     window: gtk::Window,
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     backup: PackageListExport,
     import_packages: Vec<ImportPackage>,
     missing_count: usize,
@@ -527,7 +527,7 @@ fn build_import_dialog(
 
 fn run_selective_import(
     window: gtk::Window,
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     packages: Vec<ImportPackage>,
     backup: PackageListExport,
 ) {
@@ -555,7 +555,7 @@ fn run_selective_import(
             .to_install_stub();
 
             let result = {
-                let manager = pm.lock().await;
+                let manager = pm.read().await;
                 manager.install(&stub_pkg).await
             };
 

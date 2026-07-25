@@ -58,7 +58,7 @@ use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -108,13 +108,13 @@ pub enum PackageLoadProgress {
 
 #[derive(Clone)]
 pub struct TaskQueueExecutor {
-    package_manager: Arc<Mutex<PackageManager>>,
+    package_manager: Arc<RwLock<PackageManager>>,
     history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
 }
 
 impl TaskQueueExecutor {
     pub fn new(
-        package_manager: Arc<Mutex<PackageManager>>,
+        package_manager: Arc<RwLock<PackageManager>>,
         history_tracker: Arc<Mutex<Option<HistoryTracker>>>,
     ) -> Self {
         Self {
@@ -149,7 +149,7 @@ impl TaskQueueExecutor {
             } else {
                 let (log_sender, log_task) = Self::spawn_log_forwarder(&event_sender, &entry);
                 let result = {
-                    let manager = self.package_manager.lock().await;
+                    let manager = self.package_manager.read().await;
                     let pkg = Self::package_from_entry(&entry);
                     match entry.action {
                         TaskQueueAction::Install => {
@@ -1664,5 +1664,32 @@ mod tests {
             .iter()
             .any(|provider| provider.source == PackageSource::Snap
                 && provider.error.as_deref() == Some("backend unavailable")));
+    }
+
+    /// The manager is shared behind an RwLock precisely so that its read-only
+    /// operations — listing, update checks, search, transaction planning — can
+    /// overlap. Under the exclusive Mutex this used to be, the second reader
+    /// here would block until the first released, which is what let a slow
+    /// refresh pin the preflight confirm dialog open.
+    #[tokio::test]
+    async fn read_only_operations_do_not_serialise() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let manager = Arc::new(RwLock::new(PackageManager::new_fast()));
+        let first = manager.clone();
+        let second = manager.clone();
+
+        let held = first.read().await;
+        let concurrent = tokio::time::timeout(std::time::Duration::from_millis(250), async move {
+            second.read().await.available_sources().len()
+        })
+        .await;
+
+        assert!(
+            concurrent.is_ok(),
+            "a second reader was blocked while the first held the lock"
+        );
+        drop(held);
     }
 }

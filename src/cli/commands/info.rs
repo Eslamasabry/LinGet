@@ -7,10 +7,10 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::{self, Write};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub async fn run(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     package_name: &str,
     source: Option<PackageSource>,
     writer: &OutputWriter,
@@ -29,7 +29,7 @@ pub async fn run(
         None
     };
 
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
 
     // First check installed packages
     let installed = manager.list_all_installed().await?;

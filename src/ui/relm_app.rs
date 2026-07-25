@@ -51,7 +51,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{watch, Mutex, RwLock};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum View {
@@ -293,7 +293,7 @@ pub enum AppMsg {
 }
 
 pub struct AppModel {
-    pub package_manager: Arc<Mutex<PackageManager>>,
+    pub package_manager: Arc<RwLock<PackageManager>>,
     pub config: Rc<RefCell<Config>>,
     pub packages: Vec<Package>,
     pub package_rows: FactoryVecDeque<PackageRowModel>,
@@ -618,7 +618,7 @@ impl AppModel {
         let pm = self.package_manager.clone();
         let enabled_sources = self.enabled_sources.clone();
         relm4::spawn(async move {
-            let mut manager = pm.lock().await;
+            let mut manager = pm.write().await;
             manager.set_enabled_sources(enabled_sources);
         });
     }
@@ -948,7 +948,7 @@ impl SimpleComponent for AppModel {
         let (shutdown_signal, _shutdown_rx) = watch::channel(false);
 
         let model = AppModel {
-            package_manager: Arc::new(Mutex::new(manager)),
+            package_manager: Arc::new(RwLock::new(manager)),
             config: config.clone(),
             packages: Vec::new(),
             package_rows,
@@ -2326,7 +2326,7 @@ impl SimpleComponent for AppModel {
                 relm4::spawn(async move {
                     let mut shutdown_rx = shutdown.subscribe();
                     let fut = async {
-                        let manager = pm.lock().await;
+                        let manager = pm.read().await;
                         manager.list_all_installed().await
                     };
 
@@ -2383,7 +2383,7 @@ impl SimpleComponent for AppModel {
                 relm4::spawn(async move {
                     let mut shutdown_rx = shutdown.subscribe();
                     let fut = async {
-                        let manager = pm.lock().await;
+                        let manager = pm.read().await;
                         manager.check_all_updates().await
                     };
 
@@ -2494,7 +2494,7 @@ impl SimpleComponent for AppModel {
 
                     relm4::spawn(async move {
                         let reverse_deps = {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             if let Some(backend) = manager.get_backend(pkg_clone.source) {
                                 backend
                                     .get_reverse_dependencies(&pkg_clone.name)
@@ -2548,7 +2548,7 @@ impl SimpleComponent for AppModel {
                     relm4::spawn(async move {
                         let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
                         let result = {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             manager.remove_streaming(&pkg, Some(log_tx)).await
                         };
 
@@ -2597,7 +2597,7 @@ impl SimpleComponent for AppModel {
                     relm4::spawn(async move {
                         let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
                         let result = {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             manager.update_streaming(&pkg, Some(log_tx)).await
                         };
 
@@ -2645,7 +2645,7 @@ impl SimpleComponent for AppModel {
                     relm4::spawn(async move {
                         let log_tx = AppModel::spawn_task_log_relay(task_id, sender.clone());
                         let result = {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             manager.install_streaming(&pkg, Some(log_tx)).await
                         };
 
@@ -2961,7 +2961,7 @@ impl SimpleComponent for AppModel {
 
                 relm4::spawn(async move {
                     let result = {
-                        let manager = pm.lock().await;
+                        let manager = pm.read().await;
                         manager.search_catalog(&query).await
                     };
                     match result {
@@ -3093,7 +3093,7 @@ impl SimpleComponent for AppModel {
                     let mut stats = CleanupStats::default();
 
                     for source in enabled_sources {
-                        let manager = pm.lock().await;
+                        let manager = pm.read().await;
                         let Some(backend) = manager.get_backend(source) else {
                             continue;
                         };
@@ -3171,7 +3171,7 @@ impl SimpleComponent for AppModel {
                         });
 
                         relm4::spawn(async move {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             if let Some(backend) = manager.get_backend(source) {
                                 match backend.cleanup_cache().await {
                                     Ok(freed) => {
@@ -3207,7 +3207,7 @@ impl SimpleComponent for AppModel {
                         });
 
                         relm4::spawn(async move {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             if let Some(backend) = manager.get_backend(source) {
                                 match backend.cleanup_cache().await {
                                     Ok(freed) => {
@@ -3307,7 +3307,7 @@ impl SimpleComponent for AppModel {
                 let sender = sender.clone();
 
                 relm4::spawn(async move {
-                    let manager = pm.lock().await;
+                    let manager = pm.read().await;
                     let mut orphaned: std::collections::HashMap<PackageSource, usize> =
                         std::collections::HashMap::new();
 
@@ -4105,7 +4105,7 @@ impl SimpleComponent for AppModel {
 
                     let mut shutdown_rx = shutdown.subscribe();
                     let fut = async {
-                        let manager = pm.lock().await;
+                        let manager = pm.read().await;
                         manager.get_package_commands(&pkg_name, pkg_source).await
                     };
 
@@ -4436,7 +4436,7 @@ impl SimpleComponent for AppModel {
                     glib::spawn_future_local(async move {
                         let _execution_lock = execution_lock;
                         let result = {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             execute_scheduled_task(&manager, &task).await
                         };
 
@@ -4760,7 +4760,7 @@ impl SimpleComponent for AppModel {
 
                 relm4::spawn(async move {
                     let result = {
-                        let manager = pm.lock().await;
+                        let manager = pm.read().await;
                         manager.downgrade_to(&package, &target_version).await
                     };
 
@@ -5778,7 +5778,7 @@ pub fn run_relm4_app() {
             move |_, _| {
                 if let Some(window) = app.active_window() {
                     let manager = PackageManager::new();
-                    let pm = Arc::new(Mutex::new(manager));
+                    let pm = Arc::new(RwLock::new(manager));
                     crate::ui::show_import_dialog(&window, pm);
                 }
             }
@@ -5791,7 +5791,7 @@ pub fn run_relm4_app() {
             move |_, _| {
                 if let Some(window) = app.active_window() {
                     let manager = PackageManager::new();
-                    let pm = Arc::new(Mutex::new(manager));
+                    let pm = Arc::new(RwLock::new(manager));
                     crate::ui::show_export_dialog(&window, pm);
                 }
             }

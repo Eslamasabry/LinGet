@@ -2701,7 +2701,7 @@ mod tests {
     use chrono::{Duration, Local};
     use std::collections::VecDeque;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, RwLock};
 
     #[test]
     fn truncate_middle_preserves_edges() {
@@ -2823,7 +2823,7 @@ mod tests {
     #[test]
     fn sources_panel_width_defaults_to_minimum() {
         let app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(RwLock::new(PackageManager::new())),
             Arc::new(Mutex::new(None)),
             None,
             None,
@@ -2834,7 +2834,7 @@ mod tests {
     #[test]
     fn sources_panel_width_expands_for_long_source_counts() {
         let mut app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(RwLock::new(PackageManager::new())),
             Arc::new(Mutex::new(None)),
             None,
             None,
@@ -2851,7 +2851,7 @@ mod tests {
     #[test]
     fn sources_panel_width_respects_available_space() {
         let mut app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(RwLock::new(PackageManager::new())),
             Arc::new(Mutex::new(None)),
             None,
             None,
@@ -2945,7 +2945,7 @@ mod tests {
     #[test]
     fn queue_performance_hint_requires_sample_size() {
         let app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(RwLock::new(PackageManager::new())),
             Arc::new(Mutex::new(None)),
             None,
             None,
@@ -2999,7 +2999,7 @@ mod tests {
     fn running_task_phase_tracks_log_progression() {
         let now = Local::now();
         let mut app = App::new(
-            Arc::new(Mutex::new(PackageManager::new())),
+            Arc::new(RwLock::new(PackageManager::new())),
             Arc::new(Mutex::new(None)),
             None,
             None,

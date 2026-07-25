@@ -6,17 +6,17 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::{self, Write};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub async fn run(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     package_name: &str,
     source: Option<PackageSource>,
     skip_confirm: bool,
     writer: &OutputWriter,
 ) -> Result<()> {
     // First, search for the package to find which source(s) have it
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
     let search_results = manager.search(package_name).await?;
 
     // Filter to exact matches (or very close)

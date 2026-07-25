@@ -5,12 +5,12 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 const DEFAULT_BACKUP_FILE: &str = "linget-backup.json";
 
 pub async fn run(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     action: BackupAction,
     writer: &OutputWriter,
 ) -> Result<()> {
@@ -21,7 +21,7 @@ pub async fn run(
 }
 
 async fn create_backup(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     output: Option<String>,
     writer: &OutputWriter,
 ) -> Result<()> {
@@ -30,7 +30,7 @@ async fn create_backup(
 
     writer.message("Collecting installed packages...");
 
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
     let all_packages = manager.list_all_installed().await?;
     let backup = PackageListExport::from_installed_with_config(&all_packages, Some(&config));
 
@@ -50,7 +50,7 @@ async fn create_backup(
 }
 
 async fn restore_backup(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     file: &str,
     skip_confirm: bool,
     writer: &OutputWriter,
@@ -83,7 +83,7 @@ async fn restore_backup(
         return Ok(());
     }
 
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
     let mut installed = 0;
     let mut failed = 0;
     let mut packages_by_source = BTreeMap::new();

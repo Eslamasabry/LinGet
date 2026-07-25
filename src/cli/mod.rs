@@ -9,7 +9,7 @@ use crate::product::{APP_NAME, APP_VERSION};
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub use output::{OutputFormat, OutputWriter};
 
@@ -343,7 +343,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
     crate::models::load_cache();
 
-    let pm = Arc::new(Mutex::new(PackageManager::new()));
+    let pm = Arc::new(RwLock::new(PackageManager::new()));
 
     match cli.command {
         Commands::List { source, updates } => {

@@ -4,10 +4,10 @@ use crate::models::PackageSource;
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub async fn run(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     query: &str,
     source: Option<PackageSource>,
     writer: &OutputWriter,
@@ -26,7 +26,7 @@ pub async fn run(
         None
     };
 
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
     let packages = manager.search(query).await?;
 
     if let Some(pb) = spinner {

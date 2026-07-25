@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 pub const TRANSACTION_SCHEMA_VERSION: u16 = 1;
@@ -618,7 +618,7 @@ impl CancellationFlag {
 }
 
 pub struct TransactionEngine {
-    package_manager: Arc<Mutex<PackageManager>>,
+    package_manager: Arc<RwLock<PackageManager>>,
     store: Arc<Mutex<TransactionStore>>,
     store_path: PathBuf,
     execution_lock: Mutex<()>,
@@ -626,7 +626,7 @@ pub struct TransactionEngine {
 
 impl TransactionEngine {
     pub async fn load(
-        package_manager: Arc<Mutex<PackageManager>>,
+        package_manager: Arc<RwLock<PackageManager>>,
         store_path: PathBuf,
     ) -> Result<Self, ProviderError> {
         let mut store = TransactionStore::load(&store_path).await?;
@@ -796,7 +796,7 @@ impl TransactionEngine {
                 return Err(error);
             }
             let result = {
-                let manager = self.package_manager.lock().await;
+                let manager = self.package_manager.read().await;
                 let package = target.as_package(plan.action);
                 match plan.action {
                     OperationAction::Install => manager.install(&package).await,
@@ -836,7 +836,7 @@ impl TransactionEngine {
     }
 
     async fn inventory(&self, source: PackageSource) -> Result<Vec<Package>, ProviderError> {
-        let manager = self.package_manager.lock().await;
+        let manager = self.package_manager.read().await;
         manager
             .list_installed_for_source(source)
             .await
@@ -1489,7 +1489,7 @@ mod tests {
                     Uuid::new_v4()
                 ));
                 let store_path = root.join("transactions.json");
-                let engine = TransactionEngine::load(Arc::new(Mutex::new(manager)), store_path)
+                let engine = TransactionEngine::load(Arc::new(RwLock::new(manager)), store_path)
                     .await
                     .expect("load contract engine");
                 let request = OperationRequest::new(
@@ -1667,7 +1667,7 @@ mod tests {
 
         let previous_path = std::env::var_os("PATH");
         std::env::set_var("PATH", &root);
-        let manager = Arc::new(Mutex::new(PackageManager::new_fast()));
+        let manager = Arc::new(RwLock::new(PackageManager::new_fast()));
         let store_path = root.join("transactions.json");
         let engine = TransactionEngine::load(manager.clone(), store_path.clone())
             .await

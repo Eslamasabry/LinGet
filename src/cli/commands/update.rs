@@ -6,17 +6,17 @@ use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::io::{self, Write};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub async fn run(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     package_name: Option<&str>,
     source: Option<PackageSource>,
     update_all: bool,
     skip_confirm: bool,
     writer: &OutputWriter,
 ) -> Result<()> {
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
 
     if update_all || package_name.is_none() {
         // Update all packages with available updates

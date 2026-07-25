@@ -23,7 +23,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 pub async fn run() -> Result<()> {
     enable_raw_mode().context("failed to enable raw mode")?;
@@ -50,7 +50,7 @@ pub async fn run() -> Result<()> {
 }
 
 async fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    let pm = Arc::new(Mutex::new(PackageManager::new_fast()));
+    let pm = Arc::new(RwLock::new(PackageManager::new_fast()));
 
     let tracker = HistoryTracker::load().await.ok();
     let history = Arc::new(Mutex::new(tracker));
@@ -68,7 +68,7 @@ async fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resu
         executor_done_tx,
         executor_done_rx,
     );
-    app.sources_total = pm.lock().await.available_sources().len();
+    app.sources_total = pm.read().await.available_sources().len();
     app.sync_queue_from_history().await;
     App::spawn_loader(pm, load_tx);
 

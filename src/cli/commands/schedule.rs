@@ -6,10 +6,10 @@ use crate::scheduler_runtime::{
 };
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub async fn run(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     action: ScheduleAction,
     writer: &OutputWriter,
 ) -> Result<()> {
@@ -18,7 +18,7 @@ pub async fn run(
     }
 }
 
-async fn run_due(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter) -> Result<()> {
+async fn run_due(pm: Arc<RwLock<PackageManager>>, writer: &OutputWriter) -> Result<()> {
     let Some(_lock) = ScheduledTaskExecutionLock::try_acquire()? else {
         writer.verbose("Another LinGet scheduler execution is already running");
         return Ok(());
@@ -46,7 +46,7 @@ async fn run_due(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter) -> Resul
     }
 
     {
-        let mut manager = pm.lock().await;
+        let mut manager = pm.write().await;
         manager.set_enabled_sources(config.enabled_sources.to_sources());
     }
 
@@ -65,7 +65,7 @@ async fn run_due(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter) -> Resul
         };
 
         let result = {
-            let manager = pm.lock().await;
+            let manager = pm.read().await;
             execute_scheduled_task(&manager, &task).await
         };
 

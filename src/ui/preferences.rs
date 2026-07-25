@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, RwLock};
 
 thread_local! {
     static ACCENT_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
@@ -95,7 +95,7 @@ where
         .build();
 
     let repository_sources = manageable_repository_sources(&repository_manager);
-    let repository_manager = Arc::new(Mutex::new(repository_manager));
+    let repository_manager = Arc::new(RwLock::new(repository_manager));
 
     let general_page = build_general_page(config.clone());
     let repositories_page =
@@ -212,7 +212,7 @@ fn manageable_repository_sources(manager: &PackageManager) -> Vec<PackageSource>
 
 fn build_repositories_page(
     parent: &adw::PreferencesWindow,
-    repository_manager: Arc<Mutex<PackageManager>>,
+    repository_manager: Arc<RwLock<PackageManager>>,
     repository_sources: &[PackageSource],
 ) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::builder()
@@ -275,7 +275,7 @@ fn build_repositories_page(
 
 fn open_repository_dialog(
     parent: &adw::PreferencesWindow,
-    repository_manager: Arc<Mutex<PackageManager>>,
+    repository_manager: Arc<RwLock<PackageManager>>,
     source: PackageSource,
 ) {
     let dialog = adw::Dialog::builder()
@@ -595,7 +595,7 @@ fn populate_repository_rows(
     list_box: &gtk::ListBox,
     repositories: &[Repository],
     source: PackageSource,
-    repository_manager: Arc<Mutex<PackageManager>>,
+    repository_manager: Arc<RwLock<PackageManager>>,
     sender: mpsc::UnboundedSender<RepositoryDialogEvent>,
     spinner: gtk::Spinner,
     status_label: gtk::Label,
@@ -834,13 +834,13 @@ fn clear_list_box(list_box: &gtk::ListBox) {
 }
 
 fn spawn_repository_load(
-    repository_manager: Arc<Mutex<PackageManager>>,
+    repository_manager: Arc<RwLock<PackageManager>>,
     source: PackageSource,
     sender: mpsc::UnboundedSender<RepositoryDialogEvent>,
 ) {
     tokio::spawn(async move {
         let result = {
-            let manager = repository_manager.lock().await;
+            let manager = repository_manager.read().await;
             manager
                 .list_repositories(source)
                 .await
@@ -851,7 +851,7 @@ fn spawn_repository_load(
 }
 
 fn spawn_repository_add(
-    repository_manager: Arc<Mutex<PackageManager>>,
+    repository_manager: Arc<RwLock<PackageManager>>,
     source: PackageSource,
     location: String,
     name: Option<String>,
@@ -859,7 +859,7 @@ fn spawn_repository_add(
 ) {
     tokio::spawn(async move {
         let result = {
-            let manager = repository_manager.lock().await;
+            let manager = repository_manager.read().await;
             manager
                 .add_repository(source, &location, name.as_deref())
                 .await
@@ -870,14 +870,14 @@ fn spawn_repository_add(
 }
 
 fn spawn_repository_remove(
-    repository_manager: Arc<Mutex<PackageManager>>,
+    repository_manager: Arc<RwLock<PackageManager>>,
     source: PackageSource,
     repository_name: String,
     sender: mpsc::UnboundedSender<RepositoryDialogEvent>,
 ) {
     tokio::spawn(async move {
         let result = {
-            let manager = repository_manager.lock().await;
+            let manager = repository_manager.read().await;
             manager
                 .remove_repository(source, &repository_name)
                 .await

@@ -3,14 +3,14 @@ use crate::cli::{OutputWriter, SourcesAction};
 use crate::models::{Config, PackageSource};
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub async fn run(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     action: Option<SourcesAction>,
     writer: &OutputWriter,
 ) -> Result<()> {
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
     let available: Vec<PackageSource> = manager.available_sources().into_iter().collect();
     let mut config = Config::load();
 

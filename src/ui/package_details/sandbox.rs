@@ -5,9 +5,9 @@ use gtk4::{self as gtk, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
-pub fn build_sandbox_section(pm: Arc<Mutex<PackageManager>>, app_id: String) -> gtk::Box {
+pub fn build_sandbox_section(pm: Arc<RwLock<PackageManager>>, app_id: String) -> gtk::Box {
     let section = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
@@ -35,7 +35,7 @@ pub fn build_sandbox_section(pm: Arc<Mutex<PackageManager>>, app_id: String) -> 
 
     relm4::spawn(async move {
         let result = {
-            let manager = pm.lock().await;
+            let manager = pm.read().await;
             manager.get_flatpak_metadata(&app_id).await
         };
         let _ = tx.send(result.map_err(|e| e.to_string())).await;

@@ -5,7 +5,7 @@ use anyhow::Result;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 /// Subcommand actions for permissions
 pub enum PermissionsAction {
@@ -18,7 +18,7 @@ pub enum PermissionsAction {
 }
 
 pub async fn run(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     app_id: &str,
     action: PermissionsAction,
     writer: &OutputWriter,
@@ -37,7 +37,7 @@ pub async fn run(
         None
     };
 
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
 
     match action {
         PermissionsAction::Show => {
@@ -222,11 +222,11 @@ pub async fn run(
 
 /// Show a quick sandbox summary for a Flatpak app
 pub async fn show_sandbox_summary(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     app_id: &str,
     writer: &OutputWriter,
 ) -> Result<()> {
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
     let metadata = manager.get_flatpak_metadata(app_id).await?;
     let summary = metadata.sandbox_summary();
 
@@ -254,7 +254,7 @@ pub async fn show_sandbox_summary(
 }
 
 /// List all Flatpak runtimes
-pub async fn list_runtimes(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter) -> Result<()> {
+pub async fn list_runtimes(pm: Arc<RwLock<PackageManager>>, writer: &OutputWriter) -> Result<()> {
     let spinner = if !writer.is_quiet() && !writer.is_json() {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
@@ -269,7 +269,7 @@ pub async fn list_runtimes(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter
         None
     };
 
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
     let runtimes = manager.list_flatpak_runtimes().await?;
 
     if let Some(pb) = spinner {

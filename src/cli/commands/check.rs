@@ -3,9 +3,9 @@ use crate::cli::OutputWriter;
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
-pub async fn run(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter) -> Result<()> {
+pub async fn run(pm: Arc<RwLock<PackageManager>>, writer: &OutputWriter) -> Result<()> {
     let spinner = if !writer.is_quiet() && !writer.is_json() {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
@@ -20,7 +20,7 @@ pub async fn run(pm: Arc<Mutex<PackageManager>>, writer: &OutputWriter) -> Resul
         None
     };
 
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
     let updates = manager.check_all_updates().await?;
 
     if let Some(pb) = spinner {

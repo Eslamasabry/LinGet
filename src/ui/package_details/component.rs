@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub enum DetailsPanelInput {
@@ -91,13 +91,13 @@ pub enum DetailsPanelOutput {
 }
 
 pub struct DetailsPanelInit {
-    pub pm: Arc<Mutex<PackageManager>>,
+    pub pm: Arc<RwLock<PackageManager>>,
     pub config: Rc<RefCell<Config>>,
 }
 
 pub struct DetailsPanelModel {
     package: Option<Package>,
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     config: Rc<RefCell<Config>>,
     enrichment: Option<PackageEnrichment>,
     enrichment_loading: bool,
@@ -896,7 +896,7 @@ impl SimpleComponent for DetailsPanelModel {
                 let pkg_for_insights = pkg.clone();
                 let pm_for_insights = self.pm.clone();
                 relm4::spawn(async move {
-                    let manager = pm_for_insights.lock().await;
+                    let manager = pm_for_insights.read().await;
                     let reverse_deps = manager
                         .get_reverse_dependencies(&pkg_for_insights)
                         .await
@@ -1076,7 +1076,7 @@ impl SimpleComponent for DetailsPanelModel {
                     let sender = sender.clone();
                     relm4::spawn(async move {
                         let result = {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             manager.get_changelog(&pkg).await
                         };
                         let mapped = result.map_err(|e| e.to_string());
@@ -1164,7 +1164,7 @@ impl SimpleComponent for DetailsPanelModel {
                     let sender = sender.clone();
                     relm4::spawn(async move {
                         let result = {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             manager.update(&pkg).await
                         };
                         match result {
@@ -1237,7 +1237,7 @@ impl SimpleComponent for DetailsPanelModel {
 
                             relm4::spawn(async move {
                                 let result = {
-                                    let manager = pm.lock().await;
+                                    let manager = pm.read().await;
                                     manager.remove(&pkg).await
                                 };
                                 match result {
@@ -1298,7 +1298,7 @@ impl SimpleComponent for DetailsPanelModel {
                     let sender = sender.clone();
                     relm4::spawn(async move {
                         let result = {
-                            let manager = pm.lock().await;
+                            let manager = pm.read().await;
                             manager.downgrade(&pkg).await
                         };
                         let past = if matches!(pkg.source, PackageSource::Snap) {

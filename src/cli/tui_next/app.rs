@@ -16,7 +16,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 pub const MIN_WIDTH: u16 = 60;
 pub const MIN_HEIGHT: u16 = 16;
@@ -101,7 +101,7 @@ pub enum Overlay {
 }
 
 pub struct App {
-    pub pm: Arc<Mutex<PackageManager>>,
+    pub pm: Arc<RwLock<PackageManager>>,
     pub history: Arc<Mutex<Option<HistoryTracker>>>,
     queue_tx: mpsc::Sender<TaskQueueEvent>,
     queue_rx: mpsc::Receiver<TaskQueueEvent>,
@@ -142,7 +142,7 @@ pub struct App {
 
 impl App {
     pub fn new(
-        pm: Arc<Mutex<PackageManager>>,
+        pm: Arc<RwLock<PackageManager>>,
         history: Arc<Mutex<Option<HistoryTracker>>>,
         load_rx: mpsc::Receiver<LoadMsg>,
         queue_tx: mpsc::Sender<TaskQueueEvent>,
@@ -188,10 +188,10 @@ impl App {
     // Catalog loading
     // ------------------------------------------------------------------
 
-    pub fn spawn_loader(pm: Arc<Mutex<PackageManager>>, tx: mpsc::Sender<LoadMsg>) {
+    pub fn spawn_loader(pm: Arc<RwLock<PackageManager>>, tx: mpsc::Sender<LoadMsg>) {
         tokio::spawn(async move {
             {
-                let guard = pm.lock().await;
+                let guard = pm.read().await;
                 let (progress_tx, mut progress_rx) = mpsc::channel(200);
                 let forward = tokio::spawn(async move {
                     while let Some(event) = progress_rx.recv().await {

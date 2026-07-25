@@ -4,10 +4,10 @@ use crate::models::PackageSource;
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub async fn run(
-    pm: Arc<Mutex<PackageManager>>,
+    pm: Arc<RwLock<PackageManager>>,
     source: Option<PackageSource>,
     updates_only: bool,
     writer: &OutputWriter,
@@ -30,7 +30,7 @@ pub async fn run(
         None
     };
 
-    let manager = pm.lock().await;
+    let manager = pm.read().await;
     writer.verbose("Querying package backends...");
 
     let packages = if updates_only {

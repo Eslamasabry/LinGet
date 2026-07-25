@@ -251,7 +251,7 @@ async fn open_changelog(app: &mut App) -> Result<()> {
         None => return Ok(()),
     };
     let result = {
-        let guard = pm.lock().await;
+        let guard = pm.read().await;
         guard.get_changelog(&package).await
     };
     match result {
