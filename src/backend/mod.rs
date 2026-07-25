@@ -40,7 +40,8 @@ pub use pacman::PacmanBackend;
 pub use pip::PipBackend;
 pub use pipx::PipxBackend;
 pub use pkexec::{
-    graphical_prompt_available, run_pkexec, run_pkexec_with_logs, Suggest, SUGGEST_PREFIX,
+    graphical_prompt_available, install_terminal_handover, run_pkexec, run_pkexec_with_logs,
+    Suggest, TerminalHandover, SUGGEST_PREFIX,
 };
 pub use providers::{
     detect_available_providers, detect_providers, detect_providers_fast, ProviderStatus,

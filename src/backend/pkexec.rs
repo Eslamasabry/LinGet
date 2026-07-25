@@ -1,16 +1,183 @@
 use super::streaming::{run_streaming, StreamLine};
 use anyhow::{Context, Result};
+use once_cell::sync::OnceCell;
+use std::io::{self, IsTerminal};
+use std::os::fd::{FromRawFd, RawFd};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
+
+/// Registration is a D-Bus round trip; it should be immediate.
+const AGENT_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub const SUGGEST_PREFIX: &str = "LINGET_SUGGEST:";
 
 #[derive(Debug, Clone)]
 pub struct Suggest {
     pub command: String,
+}
+
+/// A request from a background operation to borrow the terminal.
+///
+/// A TUI owns the alternate screen, raw mode and stdin, so a password prompt
+/// printed underneath it is both invisible and unanswerable. The UI hands the
+/// terminal back for the duration of the prompt and takes it again afterwards.
+pub struct TerminalHandover {
+    /// Signalled by the UI once the terminal is usable.
+    pub granted: tokio::sync::oneshot::Sender<()>,
+    /// Awaited by the UI; resolves when the prompt is done.
+    pub finished: tokio::sync::oneshot::Receiver<()>,
+}
+
+static TERMINAL_HANDOVER: OnceCell<mpsc::Sender<TerminalHandover>> = OnceCell::new();
+
+/// Let privileged operations borrow the terminal from the UI that owns it.
+pub fn install_terminal_handover(sender: mpsc::Sender<TerminalHandover>) {
+    let _ = TERMINAL_HANDOVER.set(sender);
+}
+
+/// Returned by [`borrow_terminal`]; dropping or sending on it returns the
+/// terminal to the UI.
+type TerminalReturn = tokio::sync::oneshot::Sender<()>;
+
+async fn borrow_terminal() -> Option<TerminalReturn> {
+    let sender = TERMINAL_HANDOVER.get()?;
+    let (granted, granted_rx) = tokio::sync::oneshot::channel();
+    let (finished_tx, finished) = tokio::sync::oneshot::channel();
+
+    sender
+        .send(TerminalHandover { granted, finished })
+        .await
+        .ok()?;
+    // Do not prompt until the UI has actually stepped aside.
+    granted_rx.await.ok()?;
+    Some(finished_tx)
+}
+
+/// A polkit agent that prompts on this terminal.
+///
+/// polkit sends an authentication request to whichever agent is registered for
+/// the requesting subject. On a desktop that is the shell's graphical dialog,
+/// which draws on the seat's screen — useless over SSH, in a detached tmux, or
+/// anywhere without a display, where it leaves the operation waiting forever on
+/// an answer that cannot arrive.
+///
+/// `pkttyagent` registers a text agent for this process, taking precedence over
+/// the desktop one (no `--fallback`), so the password prompt lands here.
+struct TtyAgent {
+    child: tokio::process::Child,
+    /// Returned to the UI when the prompt is finished with.
+    terminal: Option<TerminalReturn>,
+}
+
+impl TtyAgent {
+    /// Register, and wait until polkit has actually accepted the registration.
+    ///
+    /// The wait matters: if pkexec asked for authorisation first, polkit would
+    /// route to the desktop agent and the prompt would vanish again. pkttyagent
+    /// closes `--notify-fd` once registered, which is the sanctioned way to
+    /// observe that without racing.
+    async fn register() -> Option<Self> {
+        if !io::stdin().is_terminal() {
+            return None;
+        }
+
+        // Take the terminal from the UI first: pkttyagent draws the prompt and
+        // reads the password itself, so it needs the real screen and stdin.
+        let terminal = borrow_terminal().await;
+
+        let (mut ready, notify_fd) = notify_pipe()?;
+
+        let child = Command::new("pkttyagent")
+            .arg("--process")
+            .arg(std::process::id().to_string())
+            .arg("--notify-fd")
+            .arg(notify_fd.to_string())
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|error| {
+                debug!(%error, "pkttyagent unavailable; leaving polkit to pick an agent");
+            })
+            .ok()?;
+
+        // Our copy of the write end must go, or the read below never sees EOF.
+        unsafe { libc::close(notify_fd) };
+
+        let registered = tokio::time::timeout(AGENT_REGISTRATION_TIMEOUT, async {
+            let mut buf = [0u8; 1];
+            let _ = ready.read(&mut buf).await;
+        })
+        .await;
+
+        let mut agent = TtyAgent { child, terminal };
+        if registered.is_err() {
+            warn!("pkttyagent did not register in time; the prompt may not appear here");
+            agent.stop().await;
+            return None;
+        }
+
+        debug!("Registered terminal polkit agent for this process");
+        Some(agent)
+    }
+
+    fn holds_terminal(&self) -> bool {
+        self.terminal.is_some()
+    }
+
+    /// Give the terminal back while leaving the agent registered.
+    ///
+    /// Once the privileged command produces output it is past authentication,
+    /// and there is nothing left to prompt for. Holding the terminal beyond
+    /// that point would leave a TUI suspended in front of a blank screen for
+    /// the whole of a long install.
+    fn release_terminal(&mut self) {
+        if let Some(terminal) = self.terminal.take() {
+            let _ = terminal.send(());
+        }
+    }
+
+    async fn stop(&mut self) {
+        let _ = self.child.start_kill();
+        let _ = self.child.wait().await;
+        self.release_terminal();
+    }
+}
+
+/// A pipe whose write end survives exec, for `pkttyagent --notify-fd`.
+///
+/// Rust marks new descriptors close-on-exec, which would make the child close
+/// it immediately and look like instant registration.
+fn notify_pipe() -> Option<(tokio::net::unix::pipe::Receiver, RawFd)> {
+    let mut fds = [0 as RawFd; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let (read_fd, write_fd) = (fds[0], fds[1]);
+
+    let flags = unsafe { libc::fcntl(write_fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(write_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+        return None;
+    }
+
+    // Safety: read_fd is freshly created above and not owned elsewhere.
+    let receiver = unsafe { std::fs::File::from_raw_fd(read_fd) };
+    match tokio::net::unix::pipe::Receiver::from_file(receiver) {
+        Ok(receiver) => Some((receiver, write_fd)),
+        Err(_) => {
+            unsafe { libc::close(write_fd) };
+            None
+        }
+    }
 }
 
 /// Whether this session could display a graphical polkit prompt.
@@ -86,6 +253,10 @@ pub async fn run_pkexec(
         "Executing privileged command"
     );
 
+    // Held for the whole call: polkit must still find the terminal agent when
+    // pkexec asks, and the prompt has to stay answerable until it is answered.
+    let mut tty_agent = TtyAgent::register().await;
+
     let output = Command::new("pkexec")
         .arg(program)
         .args(args)
@@ -93,6 +264,10 @@ pub async fn run_pkexec(
         .stderr(Stdio::piped())
         .output()
         .await;
+
+    if let Some(agent) = tty_agent.as_mut() {
+        agent.stop().await;
+    }
 
     let output = match output {
         Ok(o) => o,
@@ -223,8 +398,16 @@ pub async fn run_pkexec_with_logs(
     let stderr_acc = Arc::new(Mutex::new(String::new()));
     let stderr_acc_clone = stderr_acc.clone();
 
+    // Output means pkexec is past authentication, so the terminal can go back
+    // to the UI even though the command itself is still running.
+    let (first_output_tx, first_output_rx) = tokio::sync::oneshot::channel();
+    let mut first_output_tx = Some(first_output_tx);
+
     let forward_task = tokio::spawn(async move {
         while let Some(line) = internal_rx.recv().await {
+            if let Some(signal) = first_output_tx.take() {
+                let _ = signal.send(());
+            }
             if let StreamLine::Stderr(ref s) = line {
                 let mut guard = stderr_acc_clone.lock().await;
                 if !guard.is_empty() {
@@ -237,7 +420,31 @@ pub async fn run_pkexec_with_logs(
         }
     });
 
-    let output = match run_streaming("pkexec", &full_args, internal_tx).await {
+    // Held for the whole call: polkit must still find the terminal agent when
+    // pkexec asks, and the prompt has to stay answerable until it is answered.
+    let mut tty_agent = TtyAgent::register().await;
+
+    let streamed = {
+        let stream = run_streaming("pkexec", &full_args, internal_tx);
+        tokio::pin!(stream);
+        tokio::pin!(first_output_rx);
+        loop {
+            tokio::select! {
+                result = &mut stream => break result,
+                _ = &mut first_output_rx, if tty_agent.as_ref().is_some_and(|a| a.holds_terminal()) => {
+                    if let Some(agent) = tty_agent.as_mut() {
+                        agent.release_terminal();
+                    }
+                }
+            }
+        }
+    };
+
+    if let Some(agent) = tty_agent.as_mut() {
+        agent.stop().await;
+    }
+
+    let output = match streamed {
         Ok(o) => o,
         Err(e) => {
             let _ = forward_task.await;
@@ -386,5 +593,33 @@ mod tests {
             detect_auth_error("some random error", Some(1)),
             AuthErrorKind::Unknown
         );
+    }
+}
+
+#[cfg(test)]
+mod tty_agent_tests {
+    use super::*;
+
+    /// Exercises the real privileged path with a command that changes nothing,
+    /// to confirm the polkit prompt lands on this terminal rather than on a
+    /// desktop session. Needs a tty and a human (or a fed password), so it is
+    /// ignored by default:
+    ///
+    /// ```text
+    /// script -qec "cargo test prompts_on_this_terminal -- --ignored --nocapture" /dev/null
+    /// ```
+    #[tokio::test]
+    #[ignore = "prompts for a password; run under a tty"]
+    async fn prompts_on_this_terminal() {
+        let result = run_pkexec(
+            "/bin/true",
+            &[],
+            "verify terminal authentication",
+            Suggest {
+                command: "sudo /bin/true".to_string(),
+            },
+        )
+        .await;
+        println!("run_pkexec returned: {result:?}");
     }
 }

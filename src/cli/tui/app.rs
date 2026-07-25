@@ -5305,6 +5305,11 @@ pub async fn run() -> Result<()> {
     let history_tracker = Arc::new(Mutex::new(None));
     let (task_tx, task_rx) = mpsc::channel(200);
 
+    // Privileged operations run on background tasks but need this terminal to
+    // prompt for a password, so give them a way to ask for it.
+    let (handover_tx, handover_rx) = mpsc::channel(1);
+    crate::backend::install_terminal_handover(handover_tx);
+
     let mut app = App::new(pm, history_tracker, Some(task_rx), Some(task_tx));
     app.initialize_history_tracker().await;
     app.sync_task_queue_from_history().await;
@@ -5315,7 +5320,7 @@ pub async fn run() -> Result<()> {
     app.load_catalog_cache();
     let _ = app.start_loading();
 
-    let result = run_app(&mut terminal, &mut app).await;
+    let result = run_app(&mut terminal, &mut app, handover_rx).await;
 
     if let Err(error) = app.persist_favorites() {
         error!(error = %error, "Failed to persist favorites");
@@ -5343,12 +5348,53 @@ pub async fn run() -> Result<()> {
 /// regardless of how fast events arrive.
 const ANIMATION_FRAME_MS: u128 = 80;
 
+/// Hand the terminal to an interactive prompt and take it back afterwards.
+///
+/// Leaving the alternate screen is what makes the polkit prompt visible; giving
+/// up raw mode and mouse capture is what lets it read the password. The UI
+/// blocks here on purpose — someone is typing.
+async fn serve_terminal_handover(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    handover: crate::backend::TerminalHandover,
+) -> Result<()> {
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
+    terminal.show_cursor()?;
+
+    println!("\nLinGet needs administrator access to continue.");
+
+    let _ = handover.granted.send(());
+    // An Err here means the operation dropped its side without signalling,
+    // which still means the terminal is ours again.
+    let _ = handover.finished.await;
+
+    enable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        EnableMouseCapture
+    )?;
+    terminal.clear()?;
+    Ok(())
+}
+
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
+    mut handovers: mpsc::Receiver<crate::backend::TerminalHandover>,
 ) -> Result<()> {
     let animation_epoch = Instant::now();
     loop {
+        // Before drawing: if a privileged operation needs the screen, give it
+        // up rather than painting over its prompt.
+        if let Ok(handover) = handovers.try_recv() {
+            serve_terminal_handover(terminal, handover).await?;
+        }
+
         app.tick = (animation_epoch.elapsed().as_millis() / ANIMATION_FRAME_MS) as u64;
 
         let size = terminal.size()?;

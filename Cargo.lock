@@ -1672,6 +1672,7 @@ dependencies = [
  "indicatif",
  "ksni",
  "libadwaita",
+ "libc",
  "notify-rust",
  "once_cell",
  "open",
