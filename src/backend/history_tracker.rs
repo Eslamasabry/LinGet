@@ -40,16 +40,57 @@ impl HistoryTracker {
                 .context("Failed to create data directory")?;
         }
 
-        let history = load_history().await.unwrap_or_default();
+        let mut history = load_history().await.unwrap_or_default();
         let snapshot = load_snapshot().await.ok();
+
+        let interrupted = Self::reclaim_interrupted_tasks(&mut history);
 
         debug!(
             history_entries = history.entries.len(),
             has_snapshot = snapshot.is_some(),
+            interrupted_tasks = interrupted,
             "Loaded history tracker"
         );
 
-        Ok(Self { history, snapshot })
+        let tracker = Self { history, snapshot };
+        if interrupted > 0 {
+            warn!(
+                count = interrupted,
+                "Reclaimed tasks left running by a previous session"
+            );
+            tracker
+                .save()
+                .await
+                .context("Failed to persist reclaimed task state")?;
+        }
+
+        Ok(tracker)
+    }
+
+    /// Fail any task still marked running from a previous process.
+    ///
+    /// Only one executor runs per process, and it has not started yet at load
+    /// time, so a `Running` entry on disk cannot have anything behind it: the
+    /// app was closed or killed mid-task. Left alone these sit in the queue
+    /// forever, showing "started 54m ago" with no process to show for it and no
+    /// way to retry, because a terminal status is what makes a task actionable
+    /// again.
+    fn reclaim_interrupted_tasks(history: &mut OperationHistory) -> usize {
+        let mut reclaimed = 0;
+        for entry in history
+            .task_queue
+            .entries
+            .iter_mut()
+            .filter(|entry| entry.status == TaskQueueStatus::Running)
+        {
+            entry.mark_failed(
+                "Interrupted — LinGet exited while this task was running. It may or may not have \
+                 completed; check the package before retrying."
+                    .to_string(),
+            );
+            reclaimed += 1;
+        }
+        reclaimed
     }
 
     pub fn history(&self) -> &OperationHistory {
@@ -384,4 +425,114 @@ async fn save_snapshot(snapshot: &PackageSnapshot) -> Result<()> {
     fs::write(&path, content)
         .await
         .context("Failed to write snapshot file")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::history::TaskQueueAction;
+    use crate::models::PackageSource;
+
+    fn running_entry(name: &str) -> TaskQueueEntry {
+        let mut entry = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            format!("apt:{name}"),
+            name.to_string(),
+            PackageSource::Apt,
+        );
+        entry.mark_running();
+        entry
+    }
+
+    /// Reproduces a task left as Running by a previous session: the queue
+    /// showed "libk5crypto3 · APT update · started 54m ago" with no process
+    /// anywhere on the machine, and no way to retry it.
+    #[test]
+    fn tasks_left_running_by_a_dead_session_are_reclaimed() {
+        let mut history = OperationHistory::default();
+        history.task_queue.enqueue(running_entry("libk5crypto3"));
+
+        let reclaimed = HistoryTracker::reclaim_interrupted_tasks(&mut history);
+
+        assert_eq!(reclaimed, 1);
+        let entry = &history.task_queue.entries[0];
+        assert_eq!(entry.status, TaskQueueStatus::Failed);
+        assert!(
+            entry
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("Interrupted")),
+            "the user needs to know why it failed: {:?}",
+            entry.error
+        );
+        assert!(
+            entry.completed_at.is_some(),
+            "a terminal task needs an end time"
+        );
+    }
+
+    #[test]
+    fn queued_and_finished_tasks_are_left_alone() {
+        let mut history = OperationHistory::default();
+        let queued = TaskQueueEntry::new(
+            TaskQueueAction::Install,
+            "apt:vim".to_string(),
+            "vim".to_string(),
+            PackageSource::Apt,
+        );
+        let mut done = running_entry("curl");
+        done.mark_completed();
+        history.task_queue.enqueue(queued);
+        history.task_queue.enqueue(done);
+
+        assert_eq!(HistoryTracker::reclaim_interrupted_tasks(&mut history), 0);
+        assert_eq!(
+            history.task_queue.entries[0].status,
+            TaskQueueStatus::Queued
+        );
+        assert_eq!(
+            history.task_queue.entries[1].status,
+            TaskQueueStatus::Completed
+        );
+    }
+
+    /// End-to-end through the real load path: a Running entry on disk must come
+    /// back terminal and be persisted that way. Serialised via the shared env
+    /// lock because it repoints XDG_DATA_HOME. Run with `--ignored`.
+    #[tokio::test]
+    #[ignore = "mutates XDG_DATA_HOME"]
+    async fn load_persists_reclaimed_tasks_to_disk() {
+        let _guard = crate::backend::TEST_PATH_ENV_LOCK.lock().await;
+        let previous = std::env::var_os("XDG_DATA_HOME");
+
+        let root = std::env::temp_dir().join(format!("linget-reclaim-{}", std::process::id()));
+        let dir = root.join("linget");
+        std::fs::create_dir_all(&dir).expect("create data dir");
+        std::env::set_var("XDG_DATA_HOME", &root);
+
+        let mut history = OperationHistory::default();
+        history.task_queue.enqueue(running_entry("libk5crypto3"));
+        std::fs::write(
+            dir.join(HISTORY_FILE),
+            serde_json::to_string(&history).expect("serialise history"),
+        )
+        .expect("write history");
+
+        HistoryTracker::load().await.expect("load tracker");
+
+        let reloaded: OperationHistory =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(HISTORY_FILE)).unwrap())
+                .expect("reparse history");
+        assert_eq!(
+            reloaded.task_queue.entries[0].status,
+            TaskQueueStatus::Failed,
+            "the reclaimed status must survive on disk, not just in memory"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        match previous {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+    }
 }

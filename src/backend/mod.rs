@@ -69,6 +69,10 @@ pub(crate) static TEST_PATH_ENV_LOCK: Lazy<tokio::sync::Mutex<()>> =
 
 const BACKEND_LIST_TIMEOUT: Duration = Duration::from_secs(8);
 const BACKEND_UPDATE_TIMEOUT: Duration = Duration::from_secs(15);
+/// A lock check reads a lockfile; it should never take seconds.
+const BACKEND_LOCK_TIMEOUT: Duration = Duration::from_secs(3);
+/// Longer than listing: most backends resolve a search over the network.
+const BACKEND_SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn sort_packages(packages: &mut [Package]) {
     packages.sort_by(|a, b| {
@@ -1146,7 +1150,22 @@ impl PackageManager {
             })
             .map(|(source, backend)| {
                 let source = *source;
-                async move { (source, backend.search(query).await) }
+                async move {
+                    // Search is the one fan-out that reaches the network for
+                    // most backends, so it is also the one most likely to hang.
+                    // An unbounded wait here means the search never returns at
+                    // all rather than returning what the other backends found.
+                    let result = match timeout(BACKEND_SEARCH_TIMEOUT, backend.search(query)).await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(anyhow::anyhow!(
+                            "{} search timed out after {}s",
+                            source,
+                            BACKEND_SEARCH_TIMEOUT.as_secs()
+                        )),
+                    };
+                    (source, result)
+                }
             })
             .collect();
 
@@ -1434,7 +1453,17 @@ impl PackageManager {
             })
             .map(|(source, backend)| {
                 let source = *source;
-                async move { (source, backend.check_lock_status().await) }
+                async move {
+                    // A lock check that hangs is the worst possible place to
+                    // wait without a bound: the tool being probed is the one
+                    // already stuck. Time out to "not locked" rather than
+                    // blocking the caller — a stale lock surfaces on the next
+                    // real operation anyway.
+                    let status = timeout(BACKEND_LOCK_TIMEOUT, backend.check_lock_status())
+                        .await
+                        .unwrap_or_default();
+                    (source, status)
+                }
             })
             .collect();
 
