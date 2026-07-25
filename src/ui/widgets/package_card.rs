@@ -352,6 +352,15 @@ impl FactoryComponent for PackageCardModel {
                                 #[watch]
                                 set_tooltip_text: Some(&self.source_badge_tooltip()),
                             },
+
+                            gtk::Label {
+                                #[watch]
+                                set_label: &self.package.size_display(),
+                                #[watch]
+                                set_visible: self.package.size.is_some() && !self.compact,
+                                add_css_class: "chip",
+                                add_css_class: "chip-muted",
+                            },
                         },
 
                         gtk::Label {
