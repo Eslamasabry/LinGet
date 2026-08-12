@@ -1,5 +1,4 @@
 use crate::models::{Package, PackageSource, UpdateCategory};
-use std::collections::{BTreeMap, HashSet};
 
 const RISKY_PACKAGE_KEYWORDS: [&str; 12] = [
     "linux", "kernel", "systemd", "glibc", "libc", "openssl", "gnutls", "firmware", "mesa", "grub",
@@ -29,16 +28,6 @@ impl UpdateLane {
 pub struct UpdateCandidate {
     pub package: Package,
     pub lane: UpdateLane,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct UpdateSummary {
-    pub total: usize,
-    pub security: usize,
-    pub recommended: usize,
-    pub optional: usize,
-    pub risky: usize,
-    pub by_source: Vec<(PackageSource, usize)>,
 }
 
 pub fn classify_updates(packages: &[Package]) -> Vec<UpdateCandidate> {
@@ -126,57 +115,6 @@ fn has_major_version_jump(pkg: &Package) -> bool {
     next.major > current.major
 }
 
-pub fn build_summary(candidates: &[UpdateCandidate]) -> UpdateSummary {
-    let mut by_source = BTreeMap::new();
-    let mut summary = UpdateSummary::default();
-
-    for candidate in candidates {
-        summary.total += 1;
-        *by_source.entry(candidate.package.source).or_insert(0usize) += 1;
-
-        match candidate.lane {
-            UpdateLane::Security => summary.security += 1,
-            UpdateLane::Recommended => summary.recommended += 1,
-            UpdateLane::Optional => summary.optional += 1,
-            UpdateLane::Risky => summary.risky += 1,
-        }
-    }
-
-    summary.by_source = by_source.into_iter().collect();
-    summary
-}
-
-pub fn recommended_packages(candidates: &[UpdateCandidate]) -> Vec<Package> {
-    candidates
-        .iter()
-        .filter(|item| matches!(item.lane, UpdateLane::Security | UpdateLane::Recommended))
-        .map(|item| item.package.clone())
-        .collect()
-}
-
-pub fn all_packages(candidates: &[UpdateCandidate]) -> Vec<Package> {
-    candidates.iter().map(|item| item.package.clone()).collect()
-}
-
-pub fn by_source_packages(candidates: &[UpdateCandidate], source: PackageSource) -> Vec<Package> {
-    candidates
-        .iter()
-        .filter(|item| item.package.source == source)
-        .map(|item| item.package.clone())
-        .collect()
-}
-
-pub fn selected_packages(
-    candidates: &[UpdateCandidate],
-    selected_ids: &HashSet<String>,
-) -> Vec<Package> {
-    candidates
-        .iter()
-        .filter(|item| selected_ids.contains(&item.package.id()))
-        .map(|item| item.package.clone())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,59 +181,5 @@ mod tests {
         assert_eq!(candidates[1].lane, UpdateLane::Recommended);
         assert_eq!(candidates[2].lane, UpdateLane::Optional);
         assert_eq!(candidates[3].lane, UpdateLane::Risky);
-    }
-
-    #[test]
-    fn recommended_filters_out_optional_and_risky() {
-        let security = make_pkg(
-            "openssl",
-            PackageSource::Apt,
-            "3.0.0",
-            "3.0.1",
-            Some(UpdateCategory::Security),
-        );
-        let recommended = make_pkg(
-            "ripgrep",
-            PackageSource::Cargo,
-            "14.0.0",
-            "14.0.1",
-            Some(UpdateCategory::Bugfix),
-        );
-        let optional = make_pkg(
-            "bat",
-            PackageSource::Cargo,
-            "0.24.0",
-            "0.25.0",
-            Some(UpdateCategory::Feature),
-        );
-
-        let candidates = classify_updates(&[security, recommended, optional]);
-        let picked = recommended_packages(&candidates);
-        assert_eq!(picked.len(), 2);
-        assert!(picked.iter().any(|p| p.name == "openssl"));
-        assert!(picked.iter().any(|p| p.name == "ripgrep"));
-    }
-
-    #[test]
-    fn source_filter_only_returns_matching_source() {
-        let apt = make_pkg(
-            "openssl",
-            PackageSource::Apt,
-            "3.0.0",
-            "3.0.1",
-            Some(UpdateCategory::Security),
-        );
-        let cargo = make_pkg(
-            "ripgrep",
-            PackageSource::Cargo,
-            "14.0.0",
-            "14.1.0",
-            Some(UpdateCategory::Bugfix),
-        );
-
-        let candidates = classify_updates(&[apt, cargo]);
-        let apt_only = by_source_packages(&candidates, PackageSource::Apt);
-        assert_eq!(apt_only.len(), 1);
-        assert_eq!(apt_only[0].source, PackageSource::Apt);
     }
 }

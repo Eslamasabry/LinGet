@@ -257,6 +257,25 @@ impl HistoryTracker {
         Ok(Some(entry_clone))
     }
 
+    pub async fn attach_task_reviewed_plan(
+        &mut self,
+        entry_id: &str,
+        operation_id: String,
+        plan_json: String,
+    ) -> Result<Option<TaskQueueEntry>> {
+        let entry = self.history.task_queue.get_mut(entry_id);
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        entry.reviewed_operation_id = Some(operation_id);
+        entry.reviewed_plan_json = Some(plan_json);
+        let entry_clone = entry.clone();
+        self.save()
+            .await
+            .context("Failed to save refreshed retry plan")?;
+        Ok(Some(entry_clone))
+    }
+
     pub async fn mark_task_failed(
         &mut self,
         entry_id: &str,

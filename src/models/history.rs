@@ -312,6 +312,9 @@ impl FailureCategory {
         let normalized = error_text.to_ascii_lowercase();
         if normalized.contains("lock")
             || normalized.contains("conflict")
+            || normalized.contains("ebadengine")
+            || normalized.contains("unsupported engine")
+            || normalized.contains("runtime requirements")
             || normalized.contains("held broken")
             || normalized.contains("another process")
             || normalized.contains("already running")
@@ -445,6 +448,11 @@ pub struct TaskQueueEntry {
     pub reviewed_plan_json: Option<String>,
     #[serde(default)]
     pub verification_receipt_json: Option<String>,
+    /// Task id of the failed attempt this entry retries. The reviewed plan is
+    /// refreshed by the executor before a retry runs; this durable link keeps
+    /// the queue journey coherent across restarts.
+    #[serde(default)]
+    pub retry_of: Option<String>,
     /// The process that started this task, so a second LinGet instance can tell
     /// a genuinely running task from one orphaned by a dead session. Absent on
     /// entries written before this was recorded.
@@ -473,6 +481,7 @@ impl TaskQueueEntry {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            retry_of: None,
             owner_pid: None,
         }
     }
@@ -767,6 +776,10 @@ mod tests {
     fn classifies_conflict_failures() {
         assert_eq!(
             FailureCategory::classify("dpkg was interrupted and another process holds the lock"),
+            FailureCategory::Conflict
+        );
+        assert_eq!(
+            FailureCategory::classify("npm ERR! code EBADENGINE: Unsupported engine"),
             FailureCategory::Conflict
         );
     }

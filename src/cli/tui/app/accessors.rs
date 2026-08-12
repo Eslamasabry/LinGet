@@ -161,7 +161,8 @@ impl App {
         let mut next = 0usize;
         let mut attention = 0usize;
         let mut done = 0usize;
-        for task in &self.tasks {
+        for index in self.queue_journey_task_indices() {
+            let task = &self.tasks[index];
             match self.queue_lane_for_task(task) {
                 QueueJourneyLane::Now => now += 1,
                 QueueJourneyLane::Next => next += 1,
@@ -177,20 +178,36 @@ impl App {
     }
 
     pub fn queue_visible_task_indices(&self) -> Vec<usize> {
+        let journey = self.queue_journey_task_indices();
         if self.queue_failure_filter == QueueFailureFilter::All {
-            return (0..self.tasks.len()).collect();
+            return journey;
         }
 
-        self.tasks
-            .iter()
-            .enumerate()
-            .filter(|(_, task)| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention)
-            .filter(|(_, task)| {
+        journey
+            .into_iter()
+            .filter(|index| {
+                self.queue_lane_for_task(&self.tasks[*index]) == QueueJourneyLane::NeedsAttention
+            })
+            .filter(|index| {
+                let task = &self.tasks[*index];
                 self.failure_category_for_task(task)
                     .is_some_and(|category| self.queue_failure_filter.matches(category))
             })
-            .map(|(index, _)| index)
             .collect()
+    }
+
+    /// Raw attempts remain available in persisted history, while the Queue
+    /// board and its counts show one current journey per logical operation.
+    /// Retry entries keep the same package id, so the newest attempt naturally
+    /// supersedes the older failure card.
+    pub fn queue_journey_task_indices(&self) -> Vec<usize> {
+        let mut latest_by_package: HashMap<&str, usize> = HashMap::new();
+        for (index, task) in self.tasks.iter().enumerate() {
+            latest_by_package.insert(task.package_id.as_str(), index);
+        }
+        let mut indices: Vec<usize> = latest_by_package.into_values().collect();
+        indices.sort_unstable();
+        indices
     }
 
     pub fn queue_visible_cursor_position(&self, visible_indices: &[usize]) -> usize {
@@ -201,21 +218,25 @@ impl App {
     }
 
     pub fn unresolved_failure_count(&self) -> usize {
-        self.tasks
-            .iter()
-            .filter(|task| self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention)
+        self.queue_journey_task_indices()
+            .into_iter()
+            .filter(|index| {
+                self.queue_lane_for_task(&self.tasks[*index]) == QueueJourneyLane::NeedsAttention
+            })
             .count()
     }
 
     pub fn retryable_failed_task_count(&self) -> usize {
         let mut seen = HashSet::new();
-        self.tasks
-            .iter()
+        self.queue_journey_task_indices()
+            .into_iter()
+            .map(|index| &self.tasks[index])
             .filter(|task| {
                 self.queue_lane_for_task(task) == QueueJourneyLane::NeedsAttention
                     && self
                         .failure_category_for_task(task)
                         .is_some_and(Self::safe_retry_category)
+                    && !Self::task_requires_guided_recovery(task)
                     && !self.has_active_task_for_package(&task.package_id)
                     && seen.insert(task.package_id.clone())
             })

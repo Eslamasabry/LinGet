@@ -59,6 +59,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_changelog_overlay(frame, app);
     } else if app.showing_help {
         draw_help_overlay(frame, app);
+    } else if app.showing_recovery_prompt {
+        draw_recovery_prompt(frame, app);
     } else if app.showing_onboarding {
         draw_onboarding_overlay(frame, app);
     } else if let Some(confirming) = &app.confirming {
@@ -66,6 +68,71 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.showing_import_preview {
         draw_import_preview_overlay(frame, app, frame.area());
     }
+}
+
+fn draw_recovery_prompt(frame: &mut Frame, app: &App) {
+    let actionability = app.queue_clinic_actionability();
+    let area = centered_rect(frame.area(), 64, 52, 62, 14);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border_set())
+        .border_style(warning())
+        .title(" Queue recovery ")
+        .title_style(warning());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let actionable = actionability.remediation_actionable_count();
+    let lines = vec![
+        Line::from(Span::styled(
+            format!(
+                "LinGet found {} unresolved issue{} from the previous run.",
+                actionability.failed_in_scope,
+                if actionability.failed_in_scope == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            text().add_modifier(ratatui::style::Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Auto-fix / retry  ", dim()),
+            Span::styled(actionability.remediation_retry_count.to_string(), success()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Guided fixes      ", dim()),
+            Span::styled(
+                actionability.remediation_guidance_count.to_string(),
+                warning(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Already active    ", dim()),
+            Span::styled(actionability.remediation_skipped_count.to_string(), muted()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            if actionable > 0 {
+                "Apply every known recovery now?"
+            } else {
+                "No automatic recovery is currently safe; review the queue."
+            },
+            text(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Enter / M", key_hint()),
+            Span::styled(" fix all   ", footer_label()),
+            Span::styled("V", key_hint()),
+            Span::styled(" review   ", footer_label()),
+            Span::styled("Esc", key_hint()),
+            Span::styled(" later", footer_label()),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn draw_too_small(frame: &mut Frame, area: Rect) {
@@ -102,7 +169,17 @@ fn draw_horizontal_rule(frame: &mut Frame, area: Rect) {
     );
 }
 
-pub fn preflight_modal_hit_test(modal_rect: Rect, col: u16, row: u16) -> Option<bool> {
+/// Hit-test for the preflight modal's `[y] confirm / [n] cancel` controls.
+///
+/// `high_risk_pending_ack` must mirror the renderer's label choice: the
+/// high-risk gate swaps the " confirm" label for " acknowledge", which moves
+/// the cancel button four columns to the right.
+pub fn preflight_modal_hit_test(
+    modal_rect: Rect,
+    col: u16,
+    row: u16,
+    high_risk_pending_ack: bool,
+) -> Option<bool> {
     if modal_rect.width <= 4 || modal_rect.height <= 4 {
         return None;
     }
@@ -117,28 +194,38 @@ pub fn preflight_modal_hit_test(modal_rect: Rect, col: u16, row: u16) -> Option<
         vertical: 1,
         horizontal: 1,
     });
-    if inner.height == 0 || inner.width == 0 {
+    // Mirror the renderer, which draws nothing (including the controls row)
+    // when the inner area is too small.
+    if inner.width <= 2 || inner.height <= 4 {
         return None;
     }
 
-    let footer_row = inner.y + inner.height.saturating_sub(1);
-    if row != footer_row {
+    // The controls render into the last row of a body whose height is
+    // `inner.height - 1` (see the sections layout in the draw path), i.e. one
+    // row above the inner area's final row.
+    let controls_row = inner.y + inner.height.saturating_sub(2);
+    if row != controls_row {
         return None;
     }
     if col < inner.x || col >= inner.x + inner.width {
         return None;
     }
 
+    let confirm_label = if high_risk_pending_ack {
+        " acknowledge"
+    } else {
+        " confirm"
+    };
     let rel_col = (col - inner.x) as usize;
-    let confirm_start = 0usize;
-    let confirm_width = UnicodeWidthStr::width("[y] confirm");
-    if rel_col >= confirm_start && rel_col < confirm_start + confirm_width {
+    let confirm_end = UnicodeWidthStr::width("[y]") + UnicodeWidthStr::width(confirm_label);
+    if rel_col < confirm_end {
         return Some(true);
     }
 
-    let cancel_start = UnicodeWidthStr::width("[y] confirm  ");
-    let cancel_width = UnicodeWidthStr::width("[n] cancel");
-    if rel_col >= cancel_start && rel_col < cancel_start + cancel_width {
+    // The rendered line places "  [n] cancel" right after the confirm label.
+    let cancel_start = confirm_end + 2;
+    let cancel_end = cancel_start + UnicodeWidthStr::width("[n] cancel");
+    if rel_col >= cancel_start && rel_col < cancel_end {
         return Some(false);
     }
 
@@ -1020,7 +1107,7 @@ fn preflight_touched_package_estimate(preflight: &PreflightSummary) -> usize {
         let probed_total = impact.install_count
             + impact.upgrade_count
             + impact.remove_count
-            + impact.held_back_count;
+            + impact.not_upgraded_count;
         if probed_total > 0 {
             return probed_total;
         }
@@ -1036,20 +1123,15 @@ fn preflight_touched_package_estimate(preflight: &PreflightSummary) -> usize {
 }
 
 fn preflight_conflict_signal(preflight: &PreflightSummary) -> (String, bool) {
-    let held_back = preflight
-        .dependency_impact
-        .as_ref()
-        .map(|impact| impact.held_back_count)
-        .unwrap_or(0);
-    if held_back > 0 {
-        return (format!("possible ({} held back)", held_back), true);
-    }
-
+    // "Not upgraded" counts are intentionally not a conflict signal: they
+    // mean the transaction evaluated packages and left them untouched, not
+    // that anything was blocked or kept back.
     if preflight.risk_reasons.iter().any(|reason| {
         let lowered = reason.to_ascii_lowercase();
         lowered.contains("conflict")
             || lowered.contains("lock")
             || lowered.contains("held back")
+            || lowered.contains("kept back")
             || lowered.contains("dependency problem")
     }) {
         return ("possible (provider signal)".to_string(), true);
@@ -2925,6 +3007,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            retry_of: None,
             owner_pid: None,
         };
 
@@ -2971,6 +3054,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            retry_of: None,
             owner_pid: None,
         };
 
@@ -3020,6 +3104,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            retry_of: None,
             owner_pid: None,
         };
         app.tasks = vec![running.clone()];
@@ -3075,7 +3160,7 @@ mod tests {
                 install_count: 1,
                 upgrade_count: 4,
                 remove_count: 0,
-                held_back_count: 2,
+                not_upgraded_count: 2,
             }),
             verification_in_progress: false,
             provider_plans: Vec::new(),
@@ -3085,7 +3170,7 @@ mod tests {
         let (forecast, attention) = preflight_forecast_text(&preflight);
         assert!(attention);
         assert!(forecast.contains("~7 packages touched"));
-        assert!(forecast.contains("possible (2 held back)"));
+        assert!(forecast.contains("possible (provider signal)"));
         assert!(forecast.contains("verified"));
     }
 
@@ -3149,6 +3234,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            retry_of: None,
             owner_pid: None,
         };
 
@@ -3166,6 +3252,7 @@ mod tests {
             reviewed_operation_id: None,
             reviewed_plan_json: None,
             verification_receipt_json: None,
+            retry_of: None,
             owner_pid: None,
         };
 

@@ -591,7 +591,7 @@ impl App {
                         .iter()
                         .any(|t| t.status == TaskQueueStatus::Failed)
                 {
-                    self.dismiss_all_failed_tasks();
+                    self.dismiss_all_failed_tasks().await;
                 } else {
                     self.execute_command(CommandId::QueueCancel).await;
                 }
@@ -623,6 +623,27 @@ impl App {
         }
         if self.showing_help {
             self.handle_help_key(key).await;
+            return;
+        }
+        if self.showing_recovery_prompt {
+            match key.code {
+                KeyCode::Enter
+                | KeyCode::Char('y')
+                | KeyCode::Char('Y')
+                | KeyCode::Char('m')
+                | KeyCode::Char('M') => self.confirm_startup_recovery().await,
+                KeyCode::Char('v') | KeyCode::Char('V') => {
+                    self.showing_recovery_prompt = false;
+                    self.set_status(
+                        "Reviewing unresolved issues — press M to fix all known issues",
+                        true,
+                    );
+                }
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.dismiss_startup_recovery()
+                }
+                _ => {}
+            }
             return;
         }
         if self.showing_onboarding {
@@ -757,6 +778,12 @@ impl App {
                 }
                 _ => {}
             }
+            return;
+        }
+
+        if self.showing_recovery_prompt {
+            // Keep the startup recovery decision explicit; pointer input must
+            // not mutate the queue underneath the modal.
             return;
         }
 
@@ -1131,35 +1158,24 @@ impl App {
                     self.set_task_cursor(index);
                 }
             }
-            Some(RowTarget::RetrySafeAll) => {
-                self.execute_command(CommandId::QueueRetrySafe).await;
+            Some(RowTarget::FixAll) => {
+                self.execute_command(CommandId::QueueRemediate).await;
             }
             None => {}
         }
     }
 
     async fn handle_mouse_confirm(&mut self, col: u16, row: u16, modal_rect: &Rect) {
-        match ui::preflight_modal_hit_test(*modal_rect, col, row) {
+        let high_risk_pending_ack = self.confirming.as_ref().is_some_and(|confirming| {
+            confirming.preflight.risk_level == PreflightRiskLevel::High
+                && !confirming.risk_acknowledged
+        });
+        match ui::preflight_modal_hit_test(*modal_rect, col, row, high_risk_pending_ack) {
             Some(true) => {
-                if let Some(confirming) = self.confirming.as_mut() {
-                    if confirming.preflight.risk_level == PreflightRiskLevel::High
-                        && !confirming.risk_acknowledged
-                    {
-                        confirming.risk_acknowledged = true;
-                        self.set_status(
-                            "High-risk operation acknowledged. Click confirm again to queue.",
-                            true,
-                        );
-                        return;
-                    }
-                }
-
-                if let Some(action) = self.confirming.take() {
-                    self.clear_preflight_verification_tracking();
-                    let queued = self.queue_tasks(action.packages, action.action).await;
-                    self.clear_selection();
-                    self.set_status(Self::queued_result_message(action.action, queued), true);
-                }
+                self.confirm_pending_action(
+                    "High-risk operation acknowledged. Click confirm again to queue.",
+                )
+                .await;
             }
             Some(false) => {
                 self.confirming = None;

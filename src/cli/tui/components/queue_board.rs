@@ -44,8 +44,8 @@ use ratatui::{
 pub enum RowTarget {
     /// A specific task; the payload is the task id.
     Task(String),
-    /// The "[A] retry all" bulk action in the attention lane.
-    RetrySafeAll,
+    /// The "[M] fix all" bulk action in the attention lane.
+    FixAll,
 }
 
 /// One rendered lane row plus what it refers to, so mouse hit-testing reads
@@ -184,12 +184,17 @@ fn queue_recommendation(
     actionability: crate::cli::tui::state::queue::QueueClinicActionability,
 ) -> QueueRecommendation {
     let scope = app.queue_failure_filter_label();
+    let scope_suffix = if scope == "all" {
+        String::new()
+    } else {
+        format!(" {scope}")
+    };
     if actionability.safe_retry_count > 0 {
         return QueueRecommendation {
             title: format!(
-                "Retry {} safe {} failure{}",
+                "Retry {} safe{} failure{}",
                 actionability.safe_retry_count,
-                scope,
+                scope_suffix,
                 if actionability.safe_retry_count == 1 {
                     ""
                 } else {
@@ -205,9 +210,9 @@ fn queue_recommendation(
     if fix_count > 0 {
         return QueueRecommendation {
             title: format!(
-                "Fix {} {} failure{}",
+                "Fix {}{} failure{}",
                 fix_count,
-                scope,
+                scope_suffix,
                 if fix_count == 1 { "" } else { "s" }
             ),
             prompt: "Press M to apply the filtered fixes or guidance.".to_string(),
@@ -218,9 +223,9 @@ fn queue_recommendation(
     if actionability.failed_in_scope > 0 {
         return QueueRecommendation {
             title: format!(
-                "Review {} {} failure{}",
+                "Review {}{} failure{}",
                 actionability.failed_in_scope,
-                scope,
+                scope_suffix,
                 if actionability.failed_in_scope == 1 {
                     ""
                 } else {
@@ -265,16 +270,28 @@ fn draw_divider(frame: &mut Frame, area: Rect) {
 
 /// The three lane columns (with their 1-cell gutters skipped) for a lanes
 /// area. Index 0/1/2 → Running / Needs attention / Done.
-fn lane_columns(area: Rect) -> [Rect; 3] {
+fn lane_columns(app: &App, area: Rect) -> [Rect; 3] {
+    let attention = app.queue_lane_counts().2;
+    let ratios = if attention > 0 {
+        [
+            Constraint::Ratio(1, 4),
+            Constraint::Length(1),
+            Constraint::Ratio(2, 4),
+            Constraint::Length(1),
+            Constraint::Ratio(1, 4),
+        ]
+    } else {
+        [
+            Constraint::Ratio(1, 3),
+            Constraint::Length(1),
+            Constraint::Ratio(1, 3),
+            Constraint::Length(1),
+            Constraint::Ratio(1, 3),
+        ]
+    };
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Ratio(1, 3),
-            Constraint::Length(1),
-            Constraint::Ratio(1, 3),
-            Constraint::Length(1),
-            Constraint::Ratio(1, 3),
-        ])
+        .constraints(ratios)
         .split(area);
     [cols[0], cols[2], cols[4]]
 }
@@ -304,7 +321,7 @@ fn with_lane_specs(app: &App, mut visit: impl FnMut(usize, &LaneSpec)) {
     let failed_visible: Vec<&TaskQueueEntry> = failed.iter().take(6).copied().collect();
     let failed_overflow = failed.len().saturating_sub(failed_visible.len());
     let bulk = if failed.len() > 1 {
-        Some(("A", format!("retry all ({})", failed.len())))
+        Some(("M", format!("fix all ({})", failed.len())))
     } else {
         None
     };
@@ -353,7 +370,7 @@ fn with_lane_specs(app: &App, mut visit: impl FnMut(usize, &LaneSpec)) {
 }
 
 fn draw_lanes(frame: &mut Frame, app: &App, area: Rect) {
-    let columns = lane_columns(area);
+    let columns = lane_columns(app, area);
     with_lane_specs(app, |index, spec| {
         draw_lane(frame, app, columns[index], spec);
     });
@@ -373,7 +390,7 @@ pub fn queue_click_target(app: &App, lanes: Rect, col: u16, row: u16) -> Option<
         return None;
     }
 
-    let columns = lane_columns(lanes);
+    let columns = lane_columns(app, lanes);
     let lane_index = columns
         .iter()
         .position(|c| c.width > 0 && col >= c.x && col < c.x.saturating_add(c.width))?;
@@ -401,7 +418,8 @@ fn partition_tasks(
     let mut pending = Vec::new();
     let mut failed = Vec::new();
     let mut done = Vec::new();
-    for task in &app.tasks {
+    for index in app.queue_journey_task_indices() {
+        let task = &app.tasks[index];
         match app.queue_lane_for_task(task) {
             QueueJourneyLane::Now => running.push(task),
             QueueJourneyLane::Next => pending.push(task),
@@ -486,8 +504,8 @@ fn lane_rows(app: &App, spec: &LaneSpec, inner_width: usize) -> Vec<LaneRow> {
     }
 
     if let Some((key, label)) = &spec.bulk_action {
-        // Only the attention lane's "[A] retry all" is a click target.
-        let target = (*key == "A").then_some(RowTarget::RetrySafeAll);
+        // Only the attention lane's "[M] fix all" is a click target.
+        let target = (*key == "M").then_some(RowTarget::FixAll);
         rows.push(LaneRow {
             line: Line::from(vec![
                 Span::styled(" › ", dim()),
@@ -562,7 +580,10 @@ fn append_task_rows(rows: &mut Vec<LaneRow>, app: &App, task: &TaskQueueEntry, w
         Span::styled(" ", dim()),
         Span::styled(verb, muted()),
     ];
-    if !timing.is_empty() && used + 2 + timing.chars().count() <= width {
+    if lane != QueueJourneyLane::NeedsAttention
+        && !timing.is_empty()
+        && used + 2 + timing.chars().count() <= width
+    {
         sub_spans.push(Span::styled("  ", dim()));
         sub_spans.push(Span::styled(timing, dim()));
     }
@@ -596,15 +617,17 @@ fn append_task_rows(rows: &mut Vec<LaneRow>, app: &App, task: &TaskQueueEntry, w
                 Span::styled(short, error()),
             ]));
         }
-        lines.push(Line::from(vec![
-            Span::styled(" › ", dim()),
-            Span::styled("[R]", accent().add_modifier(Modifier::BOLD)),
-            Span::styled(" retry  ", text()),
-            Span::styled("[M]", accent().add_modifier(Modifier::BOLD)),
-            Span::styled(" fix  ", text()),
-            Span::styled("[X]", accent().add_modifier(Modifier::BOLD)),
-            Span::styled(" cancel", text()),
-        ]));
+        if is_cursor {
+            lines.push(Line::from(vec![
+                Span::styled(" › ", dim()),
+                Span::styled("[R]", accent().add_modifier(Modifier::BOLD)),
+                Span::styled(" retry  ", text()),
+                Span::styled("[M]", accent().add_modifier(Modifier::BOLD)),
+                Span::styled(" fix  ", text()),
+                Span::styled("[X]", accent().add_modifier(Modifier::BOLD)),
+                Span::styled(" dismiss", text()),
+            ]));
+        }
     } else {
         lines.push(Line::from(sub_spans));
     }
@@ -647,7 +670,7 @@ fn right_meta(task: &TaskQueueEntry) -> String {
             }
         }
         TaskQueueStatus::Cancelled => "cancelled".into(),
-        TaskQueueStatus::Failed => "failed".into(),
+        TaskQueueStatus::Failed => task_timing(task),
     }
 }
 

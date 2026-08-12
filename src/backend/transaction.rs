@@ -2,6 +2,7 @@ use super::PackageManager;
 use crate::models::{Package, PackageSource, PackageStatus};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -17,6 +18,20 @@ pub const STABLE_PROVIDERS: [PackageSource; 3] = [
     PackageSource::Flatpak,
     PackageSource::Npm,
 ];
+
+/// Read-only lookup used to restore actionable queue diagnostics after a
+/// restart. Queue entries historically persisted only `safe_message`, while
+/// the transaction journal retained the provider's actual diagnostic.
+pub async fn recorded_operation_errors(
+    store_path: &Path,
+) -> Result<HashMap<String, ProviderError>, ProviderError> {
+    let store = TransactionStore::load(store_path).await?;
+    Ok(store
+        .operations
+        .into_iter()
+        .filter_map(|record| record.error.map(|error| (record.operation_id, error)))
+        .collect())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationAction {
@@ -399,6 +414,16 @@ impl ProviderError {
                     "The package manager is busy",
                     true,
                     "Wait for the other package operation to finish",
+                )
+            } else if lower.contains("ebadengine")
+                || lower.contains("unsupported engine")
+                || (lower.contains("notsup") && lower.contains("required:"))
+            {
+                (
+                    ProviderErrorCode::DependencyConflict,
+                    "The package runtime requirements are not satisfied",
+                    false,
+                    "Upgrade the required runtime or choose a compatible package version",
                 )
             } else if lower.contains("dependency") || lower.contains("conflict") {
                 (
@@ -1456,6 +1481,21 @@ mod tests {
             Utc::now(),
         );
         assert_eq!(receipt.outcome, VerificationOutcome::Mismatch);
+    }
+
+    #[test]
+    fn npm_engine_mismatch_is_actionable_and_not_blindly_retryable() {
+        let error = ProviderError::classify(
+            PackageSource::Npm,
+            "npm ERR! code EBADENGINE\nnpm ERR! engine Unsupported engine\nnpm ERR! notsup Required: node >=24.15.0",
+        );
+        assert_eq!(error.code, ProviderErrorCode::DependencyConflict);
+        assert_eq!(
+            error.safe_message,
+            "The package runtime requirements are not satisfied"
+        );
+        assert!(!error.retryable);
+        assert!(error.recovery_actions[0].contains("Upgrade"));
     }
 
     #[tokio::test]

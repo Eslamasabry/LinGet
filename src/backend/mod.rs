@@ -227,27 +227,63 @@ impl TaskQueueExecutor {
         event_sender: &Option<mpsc::Sender<TaskQueueEvent>>,
     ) -> Result<()> {
         use transaction::{
-            CancellationFlag, ProviderPlan, RiskAssessment, RiskLevel, TransactionEngine,
-            VerificationOutcome,
+            CancellationFlag, OperationRequest, ProviderPlan, RequestedBy, RiskAssessment,
+            RiskLevel, TransactionEngine, VerificationOutcome,
         };
 
         let plan_json = entry.reviewed_plan_json.as_deref().ok_or_else(|| {
             anyhow::anyhow!("This Stable-provider task has no reviewed plan; review it again")
         })?;
-        let plan: ProviderPlan = serde_json::from_str(plan_json)
+        let reviewed_plan: ProviderPlan = serde_json::from_str(plan_json)
             .context("Reviewed provider plan could not be decoded")?;
-        if entry.reviewed_operation_id.as_deref() != Some(plan.operation_id.as_str()) {
+        if entry.reviewed_operation_id.as_deref() != Some(reviewed_plan.operation_id.as_str()) {
             anyhow::bail!("Queued task does not match the reviewed operation ID");
         }
-        let risk = RiskAssessment::for_plan(&plan);
         let engine =
             TransactionEngine::load(self.package_manager.clone(), transaction_store_path())
                 .await
-                .map_err(|error| anyhow::anyhow!(error.safe_message))?;
-        engine
-            .resume_reviewed_plan(&plan)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.safe_message))?;
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+        // A retry is a new transaction, not permission to resume a terminal
+        // record. Re-plan against the current inventory, persist that exact
+        // plan on the queue entry, then execute it normally.
+        let plan = if entry.retry_of.is_some() {
+            let request = OperationRequest::new(
+                reviewed_plan.action,
+                reviewed_plan.targets.clone(),
+                RequestedBy::Tui,
+            );
+            let (fresh_plan, fresh_risk) = engine
+                .plan(request)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            if fresh_risk.level == RiskLevel::Blocked {
+                anyhow::bail!("The refreshed provider transaction plan is blocked");
+            }
+            let fresh_json = serde_json::to_string(&fresh_plan)
+                .context("Refreshed provider plan could not be serialized")?;
+            {
+                let mut guard = self.history_tracker.lock().await;
+                let tracker = guard
+                    .as_mut()
+                    .context("History tracker missing while saving refreshed retry plan")?;
+                tracker
+                    .attach_task_reviewed_plan(
+                        &entry.id,
+                        fresh_plan.operation_id.clone(),
+                        fresh_json,
+                    )
+                    .await?;
+            }
+            fresh_plan
+        } else {
+            engine
+                .resume_reviewed_plan(&reviewed_plan)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            reviewed_plan
+        };
+        let risk = RiskAssessment::for_plan(&plan);
 
         self.send_transaction_log(
             event_sender,
@@ -273,7 +309,7 @@ impl TaskQueueExecutor {
         let receipt = engine
             .execute(plan, CancellationFlag::default())
             .await
-            .map_err(|error| anyhow::anyhow!(error.safe_message))?;
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         self.send_transaction_log(
             event_sender,
             entry,
