@@ -147,11 +147,17 @@ fn draw_ambient(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("   ", fg()),
     ];
 
-    if app.is_loading() {
-        left.push(Span::styled(
-            format!("{} loading…", app.spinner_frame()),
-            amber(),
-        ));
+    if app.is_loading() || app.refreshing {
+        let verb = if app.rows.is_empty() {
+            "loading"
+        } else {
+            "refreshing"
+        };
+        let mut text = format!("{} {verb}…", app.spinner_frame());
+        if let Some(saved_at) = &app.cached_at {
+            text.push_str(&format!(" (cached {})", age_text(*saved_at)));
+        }
+        left.push(Span::styled(text, amber()));
     } else {
         if updates > 0 {
             left.push(Span::styled(format!("↑ {updates}"), amber()));
@@ -442,6 +448,14 @@ fn package_row(
             ("⚠", if is_cursor { cursor_style() } else { red() })
         }
         PackageStatus::UpdateAvailable => ("↑", if is_cursor { cursor_style() } else { amber() }),
+        _ if app.favorites.contains(&id) => (
+            "★",
+            if is_cursor {
+                cursor_style()
+            } else {
+                amber().add_modifier(Modifier::BOLD)
+            },
+        ),
         _ => ("·", if is_cursor { cursor_style() } else { faint() }),
     };
 
@@ -727,6 +741,15 @@ fn draw_empty(frame: &mut Frame, app: &App, area: Rect) {
                 dim(),
             )),
             Line::from(Span::styled("esc clears the search", faint())),
+        ]
+    } else if app.filter == Filter::Favorites {
+        vec![
+            Line::from(""),
+            Line::from(Span::styled("no favorites yet", dim())),
+            Line::from(Span::styled(
+                "   f stars the package under the cursor",
+                faint(),
+            )),
         ]
     } else if app.filter == Filter::Updates && app.load_phase == LoadPhase::Done {
         vec![
@@ -1112,14 +1135,15 @@ fn draw_help(frame: &mut Frame) {
                 ("space", "select"),
                 ("u", "queue update"),
                 ("a", "queue all updates"),
+                ("f", "star / unstar"),
             ],
         ),
         (
             "find",
             &[
-                ("/", "search"),
+                ("/", "search — src:npm scopes to npm"),
                 (":", "command palette"),
-                ("1 2 3", "updates · security · installed"),
+                ("1 2 3 4", "updates · security · installed · favorites"),
             ],
         ),
         (
@@ -1295,6 +1319,10 @@ fn elapsed(since: Option<chrono::DateTime<Local>>) -> String {
     } else {
         format!("{}d", seconds / 86_400)
     }
+}
+
+fn age_text(saved_at: chrono::DateTime<Local>) -> String {
+    elapsed(Some(saved_at))
 }
 
 fn action_label(action: crate::models::history::TaskQueueAction) -> &'static str {

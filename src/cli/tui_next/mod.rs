@@ -6,6 +6,7 @@
 //! `linget tui --classic`.
 
 mod app;
+mod cache;
 mod palette;
 mod ui;
 
@@ -70,7 +71,14 @@ async fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resu
         executor_done_rx,
     );
     app.sources_total = pm.read().await.available_sources().len();
+    app.favorites = crate::models::Config::load()
+        .favorite_packages
+        .into_iter()
+        .collect();
     app.sync_queue_from_history().await;
+    // Serve the last catalog immediately (if any), then revalidate in the
+    // background. First paint should never wait on package backends.
+    app.load_cached_catalog();
     App::spawn_loader(pm, load_tx);
 
     let mut events = EventStream::new();

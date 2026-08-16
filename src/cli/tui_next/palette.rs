@@ -1,8 +1,8 @@
-//! Command palette: every verb that isn't one of the 13 core keys.
+//! Command palette: every verb that isn't one of the core keys.
 
 use crate::cli::tui_next::app::{App, ConfirmAction, Filter, Overlay};
 use crate::models::history::TaskQueueAction;
-use crate::models::PackageStatus;
+use crate::models::{PackageSource, PackageStatus};
 use anyhow::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,12 +11,15 @@ pub enum PaletteAction {
     QueueAllUpdates,
     Remove,
     Changelog,
+    ToggleFavorite,
     RetryFailed,
     ReapOrphans,
     Refresh,
     FilterUpdates,
     FilterSecurity,
     FilterInstalled,
+    FilterFavorites,
+    FilterProvider(PackageSource),
     ToggleQueue,
     Help,
     Quit,
@@ -87,6 +90,14 @@ pub fn commands_for(app: &App) -> Vec<PaletteCommand> {
         });
     }
     if current.is_some() {
+        let starred = current
+            .map(|p| app.favorites.contains(&p.id()))
+            .unwrap_or(false);
+        commands.push(PaletteCommand {
+            title: format!("{} · {target}", if starred { "Unstar" } else { "Star" }),
+            hint: "f",
+            action: PaletteAction::ToggleFavorite,
+        });
         commands.push(PaletteCommand {
             title: format!("Changelog · {target}"),
             hint: "",
@@ -132,6 +143,11 @@ pub fn commands_for(app: &App) -> Vec<PaletteCommand> {
             Filter::Installed,
             PaletteAction::FilterInstalled,
         ),
+        (
+            "View: favorites",
+            Filter::Favorites,
+            PaletteAction::FilterFavorites,
+        ),
     ] {
         if app.filter != filter {
             commands.push(PaletteCommand {
@@ -140,6 +156,14 @@ pub fn commands_for(app: &App) -> Vec<PaletteCommand> {
                 action,
             });
         }
+    }
+    for (source, count) in app.provider_counts() {
+        let label = source.to_string().to_lowercase();
+        commands.push(PaletteCommand {
+            title: format!("View: {label} ({count})"),
+            hint: "",
+            action: PaletteAction::FilterProvider(source),
+        });
     }
     commands.push(PaletteCommand {
         title: if app.queue_open {
@@ -219,6 +243,9 @@ pub async fn run(app: &mut App, action: PaletteAction) -> Result<()> {
         PaletteAction::Changelog => {
             open_changelog(app).await?;
         }
+        PaletteAction::ToggleFavorite => {
+            app.toggle_favorite().await?;
+        }
         PaletteAction::RetryFailed => {
             app.retry_failed().await?;
         }
@@ -231,6 +258,15 @@ pub async fn run(app: &mut App, action: PaletteAction) -> Result<()> {
         PaletteAction::FilterUpdates => set_filter(app, Filter::Updates),
         PaletteAction::FilterSecurity => set_filter(app, Filter::Security),
         PaletteAction::FilterInstalled => set_filter(app, Filter::Installed),
+        PaletteAction::FilterFavorites => set_filter(app, Filter::Favorites),
+        PaletteAction::FilterProvider(source) => {
+            app.filter = Filter::Installed;
+            app.expanded = None;
+            app.search.text = format!("src:{}", source.to_string().to_lowercase());
+            app.search.focused = false;
+            app.rebuild_rows();
+            app.set_cursor(0);
+        }
         PaletteAction::ToggleQueue => {
             app.queue_open = !app.queue_open;
         }

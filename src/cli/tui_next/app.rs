@@ -18,6 +18,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
+use super::cache;
+
 pub const MIN_WIDTH: u16 = 60;
 pub const MIN_HEIGHT: u16 = 16;
 /// Running tasks older than this are considered orphaned (the process that
@@ -31,6 +33,7 @@ pub enum Filter {
     Updates,
     Security,
     Installed,
+    Favorites,
 }
 
 impl Filter {
@@ -39,6 +42,7 @@ impl Filter {
             Self::Updates => "updates",
             Self::Security => "security",
             Self::Installed => "installed",
+            Self::Favorites => "favorites",
         }
     }
 }
@@ -116,6 +120,19 @@ pub struct App {
     pub load_phase: LoadPhase,
     pub sources_total: usize,
     pub sources_done: usize,
+    /// A background catalog load is in flight (cold start or revalidate).
+    pub refreshing: bool,
+    /// The on-screen catalog is a stale snapshot (cache or pre-refresh
+    /// state). Fresh data is buffered in `fresh_installed` and swapped in
+    /// atomically when the refresh completes — never mid-flight, so the
+    /// user's list never flickers or collapses to a skeleton.
+    pub stale_showing: bool,
+    /// Buffered fresh listings collected while a stale snapshot is shown.
+    fresh_installed: Vec<Package>,
+    /// When the displayed catalog came from disk, for the "cached 2h" hint.
+    pub cached_at: Option<chrono::DateTime<chrono::Local>>,
+    /// Starred package ids, persisted via Config.favorite_packages.
+    pub favorites: HashSet<String>,
 
     pub filter: Filter,
     pub rows: Vec<Row>,
@@ -165,6 +182,11 @@ impl App {
             load_phase: LoadPhase::Installed,
             sources_total: 0,
             sources_done: 0,
+            refreshing: false,
+            stale_showing: false,
+            fresh_installed: Vec::new(),
+            cached_at: None,
+            favorites: HashSet::new(),
             filter: Filter::Updates,
             rows: Vec::new(),
             cursor: 0,
@@ -230,12 +252,29 @@ impl App {
         });
     }
 
+    /// Serves the last catalog from disk so the first paint already has
+    /// data. The caller must follow up with `spawn_loader` — the cache stays
+    /// on screen until the full refresh lands, then swaps in atomically.
+    pub fn load_cached_catalog(&mut self) {
+        if let Some(cached) = cache::load() {
+            self.cached_at = Some(cached.saved_at);
+            self.stale_showing = true;
+            self.refreshing = true;
+            self.load_phase = LoadPhase::Done;
+            self.merge_packages(cached.packages, false);
+            self.rebuild_rows();
+        }
+    }
+
     pub fn refresh(&mut self) {
-        if self.load_phase != LoadPhase::Done {
+        if self.is_loading() || self.refreshing {
             return;
         }
-        self.packages.clear();
-        self.pkg_by_id.clear();
+        // Keep the current catalog on screen while it re-validates; clearing
+        // to a skeleton on a manual refresh would throw away information the
+        // user is looking at. Fresh data swaps in when the refresh completes.
+        self.refreshing = true;
+        self.stale_showing = true;
         self.load_phase = LoadPhase::Installed;
         self.sources_done = 0;
         self.expanded = None;
@@ -248,7 +287,13 @@ impl App {
         match msg {
             LoadMsg::Progress(PackageLoadProgress::SourceLoaded { source, packages }) => {
                 self.sources_done += 1;
-                self.merge_packages(packages, false);
+                if self.stale_showing {
+                    // A stale snapshot is on screen; buffer instead of
+                    // merging half a catalog in under the user's cursor.
+                    self.fresh_installed.extend(packages);
+                } else {
+                    self.merge_packages(packages, false);
+                }
                 let _ = source;
             }
             LoadMsg::Progress(PackageLoadProgress::SourceFailed { .. }) => {
@@ -266,14 +311,37 @@ impl App {
             }
             LoadMsg::UpdatesDone(updates) => {
                 self.load_phase = LoadPhase::Done;
+                self.refreshing = false;
+                self.cached_at = None;
+                if self.stale_showing && !self.fresh_installed.is_empty() {
+                    // Atomic swap: the buffered listings replace the stale
+                    // snapshot in one step, then the fresh update statuses
+                    // apply to the new set.
+                    self.packages = std::mem::take(&mut self.fresh_installed);
+                    self.pkg_by_id.clear();
+                    self.reindex_packages();
+                    self.stale_showing = false;
+                }
+                self.fresh_installed.clear();
                 self.merge_packages(updates, true);
+                cache::save_async(self.packages.clone());
             }
             LoadMsg::UpdatesFailed(error) => {
                 self.load_phase = LoadPhase::Done;
+                self.refreshing = false;
+                // The snapshot on screen is all we have; keep showing it
+                // (with its cached age) rather than half-swapping.
+                self.fresh_installed.clear();
                 self.set_status(format!("update check failed: {error}"));
             }
         }
         self.rebuild_rows();
+    }
+
+    fn reindex_packages(&mut self) {
+        for (index, package) in self.packages.iter().enumerate() {
+            self.pkg_by_id.insert(package.id(), index);
+        }
     }
 
     fn merge_packages(&mut self, incoming: Vec<Package>, are_updates: bool) {
@@ -301,13 +369,16 @@ impl App {
     // ------------------------------------------------------------------
 
     pub fn rebuild_rows(&mut self) {
-        let needle = self.search.text.trim().to_lowercase();
+        let query = parse_query(&self.search.text);
         let matches = |package: &Package| -> bool {
-            if needle.is_empty() {
-                return true;
+            if let Some(source) = &query.source {
+                if !package.source.to_string().to_lowercase().contains(source) {
+                    return false;
+                }
             }
-            package.name.to_lowercase().contains(&needle)
-                || package.description.to_lowercase().contains(&needle)
+            query.text.is_empty()
+                || package.name.to_lowercase().contains(&query.text)
+                || package.description.to_lowercase().contains(&query.text)
         };
 
         let mut rows = Vec::new();
@@ -346,10 +417,13 @@ impl App {
                     push_section(&mut rows, "updates", "UPDATES", &regular, &self.collapsed);
                 }
             }
-            Filter::Installed => {
+            Filter::Installed | Filter::Favorites => {
                 let mut by_source: HashMap<PackageSource, Vec<&Package>> = HashMap::new();
                 for package in &self.packages {
                     if !matches(package) {
+                        continue;
+                    }
+                    if self.filter == Filter::Favorites && !self.favorites.contains(&package.id()) {
                         continue;
                     }
                     by_source.entry(package.source).or_default().push(package);
@@ -416,6 +490,18 @@ impl App {
         (updates, security, installed)
     }
 
+    /// Providers present in the catalog, biggest first — the palette's
+    /// "View: npm" entries.
+    pub fn provider_counts(&self) -> Vec<(PackageSource, usize)> {
+        let mut by_source: HashMap<PackageSource, usize> = HashMap::new();
+        for package in &self.packages {
+            *by_source.entry(package.source).or_default() += 1;
+        }
+        let mut providers: Vec<_> = by_source.into_iter().collect();
+        providers.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.to_string().cmp(&b.0.to_string())));
+        providers
+    }
+
     // ------------------------------------------------------------------
     // Input
     // ------------------------------------------------------------------
@@ -475,6 +561,8 @@ impl App {
             KeyCode::Char('1') => self.set_filter(Filter::Updates),
             KeyCode::Char('2') => self.set_filter(Filter::Security),
             KeyCode::Char('3') => self.set_filter(Filter::Installed),
+            KeyCode::Char('4') => self.set_filter(Filter::Favorites),
+            KeyCode::Char('f') => self.toggle_favorite().await?,
             KeyCode::Esc => {
                 if !self.search.text.is_empty() {
                     self.search.text.clear();
@@ -663,7 +751,7 @@ impl App {
         self.set_cursor(next as usize);
     }
 
-    fn set_cursor(&mut self, index: usize) {
+    pub fn set_cursor(&mut self, index: usize) {
         if self.rows.is_empty() {
             self.cursor = 0;
             return;
@@ -701,6 +789,44 @@ impl App {
             }
             self.move_cursor(1);
         }
+    }
+
+    /// Stars or unstars the package under the cursor. Persistence goes
+    /// through a freshly loaded config (not a cached copy) so a
+    /// concurrently-running scheduler never gets clobbered.
+    pub async fn toggle_favorite(&mut self) -> Result<()> {
+        let Some(package) = self.cursor_package().cloned() else {
+            return Ok(());
+        };
+        let id = package.id();
+        let now_favorite = !self.favorites.contains(&id);
+        if now_favorite {
+            self.favorites.insert(id.clone());
+        } else {
+            self.favorites.remove(&id);
+        }
+        self.set_status(if now_favorite {
+            format!("starred {}", package.name)
+        } else {
+            format!("unstarred {}", package.name)
+        });
+        self.rebuild_rows();
+
+        tokio::task::spawn_blocking(move || {
+            let mut config = crate::models::Config::load();
+            let mut ids: std::collections::BTreeSet<String> =
+                config.favorite_packages.iter().cloned().collect();
+            if now_favorite {
+                ids.insert(id);
+            } else {
+                ids.remove(&id);
+            }
+            config.favorite_packages = ids.into_iter().collect();
+            if let Err(error) = config.save() {
+                tracing::warn!(error = %error, "failed to persist favorite");
+            }
+        });
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1030,6 +1156,30 @@ impl App {
     }
 }
 
+/// Search grammar: plain words match name/description; a `src:<provider>`
+/// token (e.g. `src:npm`) scopes matching to one provider. Both combine.
+fn parse_query(raw: &str) -> ParsedQuery {
+    let mut source = None;
+    let mut words = Vec::new();
+    for token in raw.split_whitespace() {
+        match token.strip_prefix("src:") {
+            Some(provider) if !provider.is_empty() => {
+                source = Some(provider.to_lowercase());
+            }
+            _ => words.push(token.to_string()),
+        }
+    }
+    ParsedQuery {
+        source,
+        text: words.join(" ").to_lowercase(),
+    }
+}
+
+struct ParsedQuery {
+    source: Option<String>,
+    text: String,
+}
+
 fn push_section(
     rows: &mut Vec<Row>,
     key: &str,
@@ -1091,6 +1241,24 @@ mod tests {
     use super::*;
     use chrono::Local;
 
+    impl App {
+        fn new_test() -> Self {
+            let pm = Arc::new(RwLock::new(PackageManager::new_fast()));
+            let (_load_tx, load_rx) = mpsc::channel(1);
+            let (queue_tx, queue_rx) = mpsc::channel(1);
+            let (executor_done_tx, executor_done_rx) = mpsc::channel(1);
+            Self::new(
+                pm,
+                Arc::new(Mutex::new(None)),
+                load_rx,
+                queue_tx,
+                queue_rx,
+                executor_done_tx,
+                executor_done_rx,
+            )
+        }
+    }
+
     fn task(name: &str, action: TaskQueueAction, status: TaskQueueStatus) -> TaskQueueEntry {
         let mut entry = TaskQueueEntry::new(
             action,
@@ -1136,5 +1304,137 @@ mod tests {
 
         assert!(App::is_orphan(&stale));
         assert!(!App::is_orphan(&recent));
+    }
+
+    fn sample_package(name: &str, source: PackageSource) -> Package {
+        Package {
+            name: name.to_string(),
+            version: "1.0".to_string(),
+            description: String::new(),
+            source,
+            status: PackageStatus::Installed,
+            size: None,
+            homepage: None,
+            license: None,
+            maintainer: None,
+            dependencies: Vec::new(),
+            install_date: None,
+            available_version: None,
+            update_category: None,
+            enrichment: None,
+        }
+    }
+
+    #[test]
+    fn search_query_parses_provider_scoping() {
+        let query = parse_query("src:npm fire");
+        assert_eq!(query.source.as_deref(), Some("npm"));
+        assert_eq!(query.text, "fire");
+
+        let plain = parse_query("firefox");
+        assert!(plain.source.is_none());
+        assert_eq!(plain.text, "firefox");
+    }
+
+    #[test]
+    fn favorites_view_shows_only_starred_packages() {
+        let mut app = App::new_test();
+        app.merge_packages(
+            vec![
+                sample_package("playwright", PackageSource::Npm),
+                sample_package("openssl", PackageSource::Apt),
+            ],
+            false,
+        );
+        app.favorites.insert("npm:playwright".to_string());
+        app.filter = Filter::Favorites;
+        app.rebuild_rows();
+
+        let items: Vec<&str> = app
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Item { id } => Some(id.as_str()),
+                Row::Header { .. } => None,
+            })
+            .collect();
+        assert_eq!(items, vec!["npm:playwright"]);
+    }
+
+    #[test]
+    fn provider_scoped_search_narrows_to_that_source() {
+        let mut app = App::new_test();
+        app.merge_packages(
+            vec![
+                sample_package("playwright", PackageSource::Npm),
+                sample_package("openssl", PackageSource::Apt),
+            ],
+            false,
+        );
+        app.search.text = "src:npm".to_string();
+        app.filter = Filter::Installed;
+        app.rebuild_rows();
+
+        let items: Vec<&str> = app
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Item { id } => Some(id.as_str()),
+                Row::Header { .. } => None,
+            })
+            .collect();
+        assert_eq!(items, vec!["npm:playwright"]);
+    }
+
+    #[tokio::test]
+    async fn stale_snapshot_is_swapped_atomically_not_incrementally() {
+        // Redirect cache writes so this test never clobbers the user's real
+        // catalog cache.
+        let data_dir = std::env::temp_dir().join(format!("linget-app-test-{}", std::process::id()));
+        std::env::set_var("LINGET_DATA_DIR", &data_dir);
+        let mut app = App::new_test();
+        app.merge_packages(vec![sample_package("openssl", PackageSource::Apt)], false);
+        app.stale_showing = true;
+
+        // Fresh listings arriving mid-refresh must NOT touch the screen.
+        app.handle_load_msg(LoadMsg::Progress(PackageLoadProgress::SourceLoaded {
+            source: PackageSource::Npm,
+            packages: vec![sample_package("playwright", PackageSource::Npm)],
+        }));
+        assert_eq!(app.packages.len(), 1);
+        assert_eq!(app.packages[0].name, "openssl");
+
+        // Completion swaps the whole catalog in one step and applies updates.
+        let mut update = sample_package("playwright", PackageSource::Npm);
+        update.status = PackageStatus::UpdateAvailable;
+        update.available_version = Some("2.0".to_string());
+        app.handle_load_msg(LoadMsg::UpdatesDone(vec![update]));
+        assert!(!app.stale_showing);
+        assert_eq!(app.packages.len(), 1);
+        assert_eq!(app.packages[0].name, "playwright");
+        assert_eq!(app.packages[0].status, PackageStatus::UpdateAvailable);
+
+        // Give the spawned cache write a beat, then clean the sandbox.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        std::env::remove_var("LINGET_DATA_DIR");
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    #[test]
+    fn failed_refresh_keeps_the_stale_snapshot() {
+        let mut app = App::new_test();
+        app.merge_packages(vec![sample_package("openssl", PackageSource::Apt)], false);
+        app.stale_showing = true;
+
+        app.handle_load_msg(LoadMsg::Progress(PackageLoadProgress::SourceLoaded {
+            source: PackageSource::Npm,
+            packages: vec![sample_package("playwright", PackageSource::Npm)],
+        }));
+        app.handle_load_msg(LoadMsg::UpdatesFailed("network down".to_string()));
+
+        // Half a refresh must never replace what the user is looking at.
+        assert_eq!(app.packages.len(), 1);
+        assert_eq!(app.packages[0].name, "openssl");
+        assert!(!app.refreshing);
     }
 }
