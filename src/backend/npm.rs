@@ -3,6 +3,7 @@ use crate::backend::SUGGEST_PREFIX;
 use crate::models::{Package, PackageEnrichment, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::Deserialize;
 use std::process::Stdio;
 use std::time::Duration;
@@ -170,15 +171,6 @@ struct NpmPackageInfo {
     _resolved: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct NpmOutdatedEntry {
-    current: Option<String>,
-    #[serde(rename = "wanted")]
-    _wanted: Option<String>,
-    latest: Option<String>,
-}
-
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum NpmVersions {
@@ -369,38 +361,76 @@ impl PackageBackend for NpmBackend {
     }
 
     async fn check_updates(&self) -> Result<Vec<Package>> {
-        let output = Command::new("npm")
-            .args(["outdated", "-g", "--json"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("Failed to check npm updates")?;
+        // `npm outdated` pays a full Node boot to answer a question the
+        // registry answers directly. Listing is local (`npm ls -g`), and the
+        // latest-version lookups go through the shared TTL cache with
+        // parallel HTTP for the misses.
+        let installed = self.list_installed().await?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .user_agent(concat!("LinGet/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .context("failed to build npm registry client")?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut packages = Vec::new();
-
-        if let Ok(parsed) =
-            serde_json::from_str::<std::collections::HashMap<String, NpmOutdatedEntry>>(&stdout)
-        {
-            for (name, info) in parsed {
-                packages.push(Package {
-                    name,
-                    version: info.current.unwrap_or_default(),
-                    available_version: info.latest,
-                    description: String::new(),
-                    source: PackageSource::Npm,
-                    status: PackageStatus::UpdateAvailable,
-                    size: None,
-                    homepage: None,
-                    license: None,
-                    maintainer: None,
-                    dependencies: Vec::new(),
-                    install_date: None,
-                    update_category: None,
-                    enrichment: None,
-                });
+        const CONCURRENCY: usize = 16;
+        let findings: Vec<Option<(String, String, Option<String>)>> = futures::stream::iter(
+            installed
+                .into_iter()
+                .filter(|package| !package.name.is_empty()),
+        )
+        .map(|package| {
+            let client = &client;
+            let name = package.name;
+            let current = package.version;
+            let cache_key = format!("npm:{name}");
+            async move {
+                let latest = if let Some(cached) = super::latest_cache::get(&cache_key) {
+                    cached
+                } else {
+                    let response = client
+                        .get(format!("https://registry.npmjs.org/{name}"))
+                        .send()
+                        .await
+                        .ok()?;
+                    if !response.status().is_success() {
+                        return None;
+                    }
+                    let payload: serde_json::Value = response.json().await.ok()?;
+                    let latest = payload.pointer("/dist-tags/latest")?.as_str()?.to_string();
+                    super::latest_cache::put(cache_key, latest.clone());
+                    latest
+                };
+                Some((name, current, Some(latest)))
             }
+        })
+        .buffer_unordered(CONCURRENCY)
+        .collect()
+        .await;
+
+        let mut packages = Vec::new();
+        for (name, current, latest) in findings.into_iter().flatten() {
+            let Some(latest) = latest else {
+                continue;
+            };
+            if latest.is_empty() || latest == current {
+                continue;
+            }
+            packages.push(Package {
+                name,
+                version: current,
+                available_version: Some(latest),
+                description: String::new(),
+                source: PackageSource::Npm,
+                status: PackageStatus::UpdateAvailable,
+                size: None,
+                homepage: None,
+                license: None,
+                maintainer: None,
+                dependencies: Vec::new(),
+                install_date: None,
+                update_category: None,
+                enrichment: None,
+            });
         }
 
         self.enrich(&mut packages).await;

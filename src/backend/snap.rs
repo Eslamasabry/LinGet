@@ -176,6 +176,14 @@ impl PackageBackend for SnapBackend {
     }
 
     async fn check_updates(&self) -> Result<Vec<Package>> {
+        // `snap refresh --list` is a snapd daemon round trip (~1.3s) whose
+        // answer rarely changes; cache the whole result with a short TTL.
+        // Refreshing snaps always goes through the real command.
+        const CACHE_KEY: &str = "snap:__updates__";
+        if let Some(cached) = super::latest_cache::get_json::<Vec<(String, String)>>(CACHE_KEY) {
+            return Ok(update_packages_from(cached));
+        }
+
         let output = Command::new("snap")
             .args(["refresh", "--list"])
             .stdout(Stdio::piped())
@@ -185,7 +193,7 @@ impl PackageBackend for SnapBackend {
             .context("Failed to check snap updates")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut packages = Vec::new();
+        let mut findings: Vec<(String, String)> = Vec::new();
 
         // Skip header line if present
         for line in stdout.lines() {
@@ -197,29 +205,12 @@ impl PackageBackend for SnapBackend {
 
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
-                let name = parts[0].to_string();
-                let new_version = parts[1].to_string();
-
-                packages.push(Package {
-                    name,
-                    version: String::new(),
-                    available_version: Some(new_version),
-                    description: String::new(),
-                    source: PackageSource::Snap,
-                    status: PackageStatus::UpdateAvailable,
-                    size: None,
-                    homepage: None,
-                    license: None,
-                    maintainer: None,
-                    dependencies: Vec::new(),
-                    install_date: None,
-                    update_category: None,
-                    enrichment: None,
-                });
+                findings.push((parts[0].to_string(), parts[1].to_string()));
             }
         }
 
-        Ok(packages)
+        super::latest_cache::put_json(CACHE_KEY, &findings);
+        Ok(update_packages_from(findings))
     }
 
     async fn install(&self, name: &str) -> Result<()> {
@@ -456,6 +447,30 @@ impl PackageBackend for SnapBackend {
 
         Ok(commands)
     }
+}
+
+/// Builds update `Package` rows from cached or freshly-parsed
+/// (name, new_version) findings.
+fn update_packages_from(findings: Vec<(String, String)>) -> Vec<Package> {
+    findings
+        .into_iter()
+        .map(|(name, new_version)| Package {
+            name,
+            version: String::new(),
+            available_version: Some(new_version),
+            description: String::new(),
+            source: PackageSource::Snap,
+            status: PackageStatus::UpdateAvailable,
+            size: None,
+            homepage: None,
+            license: None,
+            maintainer: None,
+            dependencies: Vec::new(),
+            install_date: None,
+            update_category: None,
+            enrichment: None,
+        })
+        .collect()
 }
 
 impl SnapBackend {

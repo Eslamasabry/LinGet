@@ -539,6 +539,17 @@ impl PackageBackend for FlatpakBackend {
     }
 
     async fn check_updates(&self) -> Result<Vec<Package>> {
+        // `flatpak remote-ls --updates` costs a flathub network round trip
+        // (~3s) to answer a question whose answer rarely changes. The
+        // whole result is cached with a short TTL; applying updates always
+        // goes through the real backend commands.
+        const CACHE_KEY: &str = "flatpak:__updates__";
+        if let Some(cached) =
+            super::latest_cache::get_json::<Vec<(String, String, String)>>(CACHE_KEY)
+        {
+            return Ok(update_packages_from(cached));
+        }
+
         let output = Command::new("flatpak")
             .args([
                 "remote-ls",
@@ -553,37 +564,21 @@ impl PackageBackend for FlatpakBackend {
             .context("Failed to check flatpak updates")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut packages = Vec::new();
+        let mut findings: Vec<(String, String, String)> = Vec::new();
 
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() >= 3 {
-                let app_id = parts[0].to_string();
-                let new_version = parts[1].to_string();
-                let name = parts[2].to_string();
-
-                let mut pkg = Package {
-                    name: app_id,
-                    version: String::new(),
-                    available_version: Some(new_version),
-                    description: name,
-                    source: PackageSource::Flatpak,
-                    status: PackageStatus::UpdateAvailable,
-                    size: None,
-                    homepage: None,
-                    license: None,
-                    maintainer: None,
-                    dependencies: Vec::new(),
-                    install_date: None,
-                    update_category: None,
-                    enrichment: None,
-                };
-                pkg.update_category = Some(pkg.detect_update_category());
-                packages.push(pkg);
+                findings.push((
+                    parts[0].to_string(),
+                    parts[1].to_string(),
+                    parts[2].to_string(),
+                ));
             }
         }
 
-        Ok(packages)
+        super::latest_cache::put_json(CACHE_KEY, &findings);
+        Ok(update_packages_from(findings))
     }
 
     async fn install(&self, name: &str) -> Result<()> {
@@ -987,6 +982,34 @@ impl PackageBackend for FlatpakBackend {
 
         Ok(commands)
     }
+}
+
+/// Builds update `Package` rows from cached or freshly-parsed
+/// (app_id, new_version, display_name) findings.
+fn update_packages_from(findings: Vec<(String, String, String)>) -> Vec<Package> {
+    findings
+        .into_iter()
+        .map(|(app_id, new_version, name)| {
+            let mut pkg = Package {
+                name: app_id,
+                version: String::new(),
+                available_version: Some(new_version),
+                description: name,
+                source: PackageSource::Flatpak,
+                status: PackageStatus::UpdateAvailable,
+                size: None,
+                homepage: None,
+                license: None,
+                maintainer: None,
+                dependencies: Vec::new(),
+                install_date: None,
+                update_category: None,
+                enrichment: None,
+            };
+            pkg.update_category = Some(pkg.detect_update_category());
+            pkg
+        })
+        .collect()
 }
 
 impl FlatpakBackend {

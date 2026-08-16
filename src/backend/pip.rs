@@ -4,11 +4,12 @@ use crate::backend::SUGGEST_PREFIX;
 use crate::models::{Package, PackageSource, PackageStatus};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::Deserialize;
 use std::process::Stdio;
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 
 pub struct PipBackend;
 
@@ -107,35 +108,6 @@ impl PipBackend {
             detail
         )
     }
-
-    async fn run_pip_output_with_timeout(
-        args: &[&str],
-        context_msg: &str,
-        timeout_duration: Duration,
-    ) -> Result<std::process::Output> {
-        let pip = Self::get_pip_command();
-        let mut command = Command::new(pip);
-        command
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        let child = command.spawn().with_context(|| {
-            format!("{}: {}", context_msg, Self::pip_command_display(pip, args))
-        })?;
-
-        timeout(timeout_duration, child.wait_with_output())
-            .await
-            .with_context(|| {
-                format!(
-                    "{} timed out after {}s",
-                    Self::pip_command_display(pip, args),
-                    timeout_duration.as_secs()
-                )
-            })?
-            .with_context(|| context_msg.to_string())
-    }
 }
 
 impl Default for PipBackend {
@@ -148,13 +120,6 @@ impl Default for PipBackend {
 struct PipPackageInfo {
     name: String,
     version: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct PipOutdatedInfo {
-    name: String,
-    version: String,
-    latest_version: String,
 }
 
 #[async_trait]
@@ -209,37 +174,79 @@ impl PackageBackend for PipBackend {
     }
 
     async fn check_updates(&self) -> Result<Vec<Package>> {
-        let output = Self::run_pip_output_with_timeout(
-            &["list", "--outdated", "--format=json"],
-            "Failed to check pip updates",
-            Duration::from_secs(8),
-        )
-        .await?;
+        // `pip list --outdated` probes PyPI sequentially, one package at a
+        // time, and on any real system blows past whatever timeout we give
+        // it — producing nothing after stalling the whole update check.
+        // Instead: take the (local, fast) installed listing as the candidate
+        // set, consult the short-TTL latest-version cache first, and query
+        // the PyPI index in parallel only for the misses.
+        let installed = self.list_installed().await?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .user_agent(concat!("LinGet/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .context("failed to build PyPI client")?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        const CONCURRENCY: usize = 16;
+        let findings: Vec<Option<(String, String, String, String)>> =
+            futures::stream::iter(installed.into_iter().filter_map(|package| {
+                if package.version.is_empty() {
+                    return None;
+                }
+                Some((package.name, package.version))
+            }))
+            .map(|(name, version)| {
+                let client = &client;
+                let cache_key = format!("pypi:{name}");
+                async move {
+                    if let Some(latest) = super::latest_cache::get(&cache_key) {
+                        return Some((name, version, latest, String::new()));
+                    }
+                    let response = client
+                        .get(format!("https://pypi.org/pypi/{name}/json"))
+                        .send()
+                        .await
+                        .ok()?;
+                    if !response.status().is_success() {
+                        return None;
+                    }
+                    let payload: serde_json::Value = response.json().await.ok()?;
+                    let latest = payload.pointer("/info/version")?.as_str()?.to_string();
+                    let summary = payload
+                        .pointer("/info/summary")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    super::latest_cache::put(cache_key, latest.clone());
+                    Some((name, version, latest, summary))
+                }
+            })
+            .buffer_unordered(CONCURRENCY)
+            .collect()
+            .await;
+
         let mut packages = Vec::new();
-
-        if let Ok(parsed) = serde_json::from_str::<Vec<PipOutdatedInfo>>(&stdout) {
-            for pkg in parsed {
-                packages.push(Package {
-                    name: pkg.name,
-                    version: pkg.version,
-                    available_version: Some(pkg.latest_version),
-                    description: String::new(),
-                    source: PackageSource::Pip,
-                    status: PackageStatus::UpdateAvailable,
-                    size: None,
-                    homepage: None,
-                    license: None,
-                    maintainer: None,
-                    dependencies: Vec::new(),
-                    install_date: None,
-                    update_category: None,
-                    enrichment: None,
-                });
+        for (name, version, latest, summary) in findings.into_iter().flatten() {
+            if version == latest {
+                continue;
             }
+            packages.push(Package {
+                name,
+                version,
+                available_version: Some(latest),
+                description: summary,
+                source: PackageSource::Pip,
+                status: PackageStatus::UpdateAvailable,
+                size: None,
+                homepage: None,
+                license: None,
+                maintainer: None,
+                dependencies: Vec::new(),
+                install_date: None,
+                update_category: None,
+                enrichment: None,
+            });
         }
-
         Ok(packages)
     }
 
