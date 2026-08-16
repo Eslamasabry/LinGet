@@ -158,6 +158,11 @@ fn draw_ambient(frame: &mut Frame, app: &App, area: Rect) {
             text.push_str(&format!(" (cached {})", age_text(*saved_at)));
         }
         left.push(Span::styled(text, amber()));
+    } else if app.planning > 0 {
+        left.push(Span::styled(
+            format!("{} planning…", app.spinner_frame()),
+            amber(),
+        ));
     } else {
         if updates > 0 {
             left.push(Span::styled(format!("↑ {updates}"), amber()));

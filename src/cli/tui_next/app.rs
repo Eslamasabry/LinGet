@@ -82,6 +82,23 @@ pub enum LoadMsg {
     UpdatesFailed(String),
 }
 
+/// Result of a background stable-provider planning run, drained by the event
+/// loop and turned into status + executor startup.
+#[derive(Debug)]
+pub enum PlanOutcome {
+    Queued { queued: usize, label: String },
+    Failed(String),
+}
+
+/// Sources whose queue tasks run as verified transactions: they must carry a
+/// reviewed provider plan, planned per source-batch, not per package.
+pub fn stable_transaction_source(source: PackageSource) -> bool {
+    matches!(
+        source,
+        PackageSource::Apt | PackageSource::Flatpak | PackageSource::Npm
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     RemoveSelected,
@@ -148,6 +165,11 @@ pub struct App {
     pub queue_open: bool,
     pub live_logs: HashMap<String, String>,
     pub executor_running: bool,
+    /// Background stable-provider planning runs in flight; the ambient line
+    /// shows a spinner while any are active.
+    pub planning: usize,
+    plan_tx: mpsc::Sender<PlanOutcome>,
+    plan_rx: mpsc::Receiver<PlanOutcome>,
 
     pub overlay: Option<Overlay>,
     pub palette_cursor: usize,
@@ -169,6 +191,7 @@ impl App {
         executor_done_tx: mpsc::Sender<()>,
         executor_done_rx: mpsc::Receiver<()>,
     ) -> Self {
+        let (plan_tx, plan_rx) = mpsc::channel(8);
         Self {
             pm,
             history,
@@ -199,6 +222,9 @@ impl App {
             queue_open: false,
             live_logs: HashMap::new(),
             executor_running: false,
+            planning: 0,
+            plan_tx,
+            plan_rx,
             overlay: None,
             palette_cursor: 0,
             visible_rows: 20,
@@ -909,6 +935,22 @@ impl App {
     ) -> Result<usize> {
         let mut queued = 0;
         let mut entries = Vec::new();
+        let mut stable: HashMap<PackageSource, Vec<crate::backend::transaction::PackageRef>> =
+            HashMap::new();
+        // (source, name) pairs already covered by an active transaction
+        // entry, parsed from its attached plan.
+        let mut covered: HashSet<(PackageSource, String)> = HashSet::new();
+        for entry in &self.queue {
+            let active = matches!(
+                entry.status,
+                TaskQueueStatus::Queued | TaskQueueStatus::Running
+            );
+            if active && entry.package_id.starts_with("transaction:") {
+                if let Some(targets) = transaction_targets(entry) {
+                    covered.extend(targets);
+                }
+            }
+        }
         for id in ids {
             let Some(package) = self.package(&id) else {
                 continue;
@@ -924,6 +966,15 @@ impl App {
                 TaskQueueAction::Install => package.status == PackageStatus::NotInstalled,
             };
             if !allowed {
+                continue;
+            }
+            if stable_transaction_source(package.source) {
+                if covered.contains(&(package.source, package.name.clone())) {
+                    continue;
+                }
+                stable.entry(package.source).or_default().push(
+                    crate::backend::transaction::PackageRef::from_package(package),
+                );
                 continue;
             }
             let already_queued = self.queue.iter().any(|entry| {
@@ -945,25 +996,128 @@ impl App {
             queued += 1;
         }
 
-        if queued == 0 {
+        let planned = stable.values().map(|targets| targets.len()).sum::<usize>();
+        if planned > 0 {
+            self.spawn_stable_planning(action, stable);
+        }
+
+        if queued == 0 && planned == 0 {
             self.set_status("nothing to queue");
             return Ok(0);
         }
 
-        {
-            let mut guard = self.history.lock().await;
-            let tracker = guard.as_mut().context("history tracker not initialized")?;
-            for entry in entries {
-                tracker
-                    .enqueue_task(entry)
-                    .await
-                    .context("failed to enqueue task")?;
+        if queued > 0 {
+            {
+                let mut guard = self.history.lock().await;
+                let tracker = guard.as_mut().context("history tracker not initialized")?;
+                for entry in entries {
+                    tracker
+                        .enqueue_task(entry)
+                        .await
+                        .context("failed to enqueue task")?;
+                }
+                tracker.save().await.context("failed to save task queue")?;
             }
-            tracker.save().await.context("failed to save task queue")?;
+            self.sync_queue_from_history().await;
+            self.ensure_executor();
         }
-        self.sync_queue_from_history().await;
-        self.ensure_executor();
         Ok(queued)
+    }
+
+    /// Plans stable-provider batches off the render loop: `engine.plan`
+    /// consults the package backends and can take seconds, and freezing the
+    /// event loop for that was the old "confirm dialog stuck" failure mode.
+    fn spawn_stable_planning(
+        &mut self,
+        action: TaskQueueAction,
+        groups: HashMap<PackageSource, Vec<crate::backend::transaction::PackageRef>>,
+    ) {
+        use crate::backend::transaction::{
+            OperationRequest, RequestedBy, RiskLevel, TransactionEngine,
+        };
+
+        self.planning += 1;
+        let planned: usize = groups.values().map(|targets| targets.len()).sum();
+        self.set_status(format!("planning {planned} package(s) for review…"));
+        let pm = self.pm.clone();
+        let history = self.history.clone();
+        let plan_tx = self.plan_tx.clone();
+
+        tokio::spawn(async move {
+            let outcome = async {
+                let store = dirs::data_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("linget")
+                    .join("transactions.json");
+                let engine = TransactionEngine::load(pm, store)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.safe_message))?;
+                let operation_action = match action {
+                    TaskQueueAction::Install => {
+                        crate::backend::transaction::OperationAction::Install
+                    }
+                    TaskQueueAction::Remove => crate::backend::transaction::OperationAction::Remove,
+                    TaskQueueAction::Update => crate::backend::transaction::OperationAction::Update,
+                };
+
+                let mut sources: Vec<_> = groups.into_iter().collect();
+                sources.sort_by_key(|(source, _)| source.to_string());
+                let mut entries = Vec::new();
+                let mut planned = 0;
+                for (_source, targets) in sources {
+                    let request =
+                        OperationRequest::new(operation_action, targets, RequestedBy::Tui);
+                    let (plan, risk) = engine
+                        .plan(request)
+                        .await
+                        .map_err(|error| anyhow::anyhow!(error.safe_message))?;
+                    if risk.level == RiskLevel::Blocked {
+                        anyhow::bail!("{} provider plan is blocked", plan.provider.source);
+                    }
+                    let plan_json = serde_json::to_string(&plan)
+                        .context("provider plan could not be serialized")?;
+                    let package_name = if plan.targets.len() == 1 {
+                        plan.targets[0].name.clone()
+                    } else {
+                        format!("{} {} packages", plan.targets.len(), plan.provider.source)
+                    };
+                    let mut entry = TaskQueueEntry::new(
+                        action,
+                        format!("transaction:{}", plan.operation_id),
+                        package_name,
+                        plan.provider.source,
+                    );
+                    entry.reviewed_operation_id = Some(plan.operation_id.clone());
+                    entry.reviewed_plan_json = Some(plan_json);
+                    planned += plan.targets.len();
+                    entries.push(entry);
+                }
+
+                {
+                    let mut guard = history.lock().await;
+                    let tracker = guard.as_mut().context("history tracker not initialized")?;
+                    for entry in entries {
+                        tracker
+                            .enqueue_task(entry)
+                            .await
+                            .context("failed to enqueue transaction task")?;
+                    }
+                    tracker.save().await.context("failed to save task queue")?;
+                }
+                Ok::<usize, anyhow::Error>(planned)
+            }
+            .await;
+
+            let _ = plan_tx
+                .send(match outcome {
+                    Ok(planned) => PlanOutcome::Queued {
+                        queued: planned,
+                        label: "reviewed".to_string(),
+                    },
+                    Err(error) => PlanOutcome::Failed(error.to_string()),
+                })
+                .await;
+        });
     }
 
     async fn queue_selected_updates(&mut self) -> Result<()> {
@@ -1010,19 +1164,31 @@ impl App {
     }
 
     pub async fn retry_failed(&mut self) -> Result<()> {
-        let failed: Vec<(String, TaskQueueAction, String, PackageSource)> =
-            retryable_failed_entries(&self.queue)
-                .into_iter()
-                .map(|entry| {
-                    (
-                        entry.package_id.clone(),
-                        entry.action,
-                        entry.package_name.clone(),
-                        entry.package_source,
-                    )
-                })
-                .collect();
-        if failed.is_empty() {
+        // Entries that failed *with* a plan re-queue carrying that plan (and
+        // `retry_of`), so the executor re-plans against current inventory.
+        // Entries that failed because they never had a plan (enqueued by an
+        // older build) route through fresh planning instead of failing the
+        // same guard again.
+        let mut replan_ids: Vec<String> = Vec::new();
+        let mut retries: Vec<TaskQueueEntry> = Vec::new();
+        for entry in retryable_failed_entries(&self.queue) {
+            let stable = stable_transaction_source(entry.package_source);
+            if stable && entry.reviewed_plan_json.is_none() {
+                replan_ids.push(entry.package_id.clone());
+                continue;
+            }
+            let mut retry = TaskQueueEntry::new(
+                entry.action,
+                entry.package_id.clone(),
+                entry.package_name.clone(),
+                entry.package_source,
+            );
+            retry.reviewed_operation_id = entry.reviewed_operation_id.clone();
+            retry.reviewed_plan_json = entry.reviewed_plan_json.clone();
+            retry.retry_of = Some(entry.id.clone());
+            retries.push(retry);
+        }
+        if retries.is_empty() && replan_ids.is_empty() {
             self.set_status("no failed tasks to retry");
             return Ok(());
         }
@@ -1030,18 +1196,36 @@ impl App {
         {
             let mut guard = self.history.lock().await;
             let tracker = guard.as_mut().context("history tracker not initialized")?;
-            for (id, action, name, source) in failed {
+            for entry in retries {
                 tracker
-                    .enqueue_task(TaskQueueEntry::new(action, id, name, source))
+                    .enqueue_task(entry)
                     .await
                     .context("failed to re-enqueue task")?;
                 queued += 1;
             }
-            tracker.save().await.context("failed to save task queue")?;
+            if queued > 0 {
+                tracker.save().await.context("failed to save task queue")?;
+            }
+        }
+        if !replan_ids.is_empty() {
+            // Deduplicate: one failed update per package is enough.
+            replan_ids.sort();
+            replan_ids.dedup();
+            let actions: std::collections::HashMap<String, TaskQueueAction> = self
+                .queue
+                .iter()
+                .filter(|entry| replan_ids.contains(&entry.package_id))
+                .map(|entry| (entry.package_id.clone(), entry.action))
+                .collect();
+            for (id, action) in actions {
+                self.queue_action_for(vec![id], action).await?;
+            }
         }
         self.sync_queue_from_history().await;
         self.ensure_executor();
-        self.set_status(format!("re-queued {queued} failed task(s)"));
+        if queued > 0 {
+            self.set_status(format!("re-queued {queued} failed task(s)"));
+        }
         Ok(())
     }
 
@@ -1127,6 +1311,19 @@ impl App {
         while let Ok(event) = self.queue_rx.try_recv() {
             self.handle_queue_event(event);
         }
+        while let Ok(outcome) = self.plan_rx.try_recv() {
+            self.planning = self.planning.saturating_sub(1);
+            match outcome {
+                PlanOutcome::Queued { queued, label } => {
+                    self.set_status(format!("queued {queued} package(s) ({label})"));
+                    self.sync_queue_from_history().await;
+                    self.ensure_executor();
+                }
+                PlanOutcome::Failed(error) => {
+                    self.set_status(format!("planning failed: {error}"));
+                }
+            }
+        }
         while self.executor_done_rx.try_recv().is_ok() {
             self.executor_running = false;
             self.set_status("queue finished");
@@ -1178,6 +1375,19 @@ fn parse_query(raw: &str) -> ParsedQuery {
 struct ParsedQuery {
     source: Option<String>,
     text: String,
+}
+
+/// (source, name) targets of a queue entry's attached provider plan, so a
+/// new queue request can skip packages an active transaction already covers.
+fn transaction_targets(entry: &TaskQueueEntry) -> Option<Vec<(PackageSource, String)>> {
+    let plan_json = entry.reviewed_plan_json.as_deref()?;
+    let plan: crate::backend::transaction::ProviderPlan = serde_json::from_str(plan_json).ok()?;
+    Some(
+        plan.targets
+            .into_iter()
+            .map(|target| (target.source, target.name))
+            .collect(),
+    )
 }
 
 fn push_section(
@@ -1304,6 +1514,71 @@ mod tests {
 
         assert!(App::is_orphan(&stale));
         assert!(!App::is_orphan(&recent));
+    }
+
+    #[tokio::test]
+    async fn stable_sources_route_to_planning_not_bare_entries() {
+        let mut app = App::new_test();
+        let mut npm_pkg = sample_package("playwright", PackageSource::Npm);
+        npm_pkg.status = PackageStatus::UpdateAvailable;
+        npm_pkg.available_version = Some("2.0".to_string());
+        app.merge_packages(
+            vec![npm_pkg, sample_package("beads_rust", PackageSource::Cargo)],
+            false,
+        );
+
+        // npm goes to background planning; cargo enqueues per-package — but
+        // the tracker is absent, so the per-package half would error. Verify
+        // routing with a stable-only batch instead.
+        let queued = app
+            .queue_action_for(vec!["npm:playwright".to_string()], TaskQueueAction::Update)
+            .await
+            .unwrap();
+        assert_eq!(queued, 0, "stable packages are not enqueued directly");
+        assert_eq!(app.planning, 1);
+        assert!(app.queue.is_empty(), "no bare npm entry was enqueued");
+    }
+
+    #[test]
+    fn transaction_targets_parses_an_attached_plan() {
+        let plan = crate::backend::transaction::ProviderPlan {
+            id: "plan-1".to_string(),
+            operation_id: "op-1".to_string(),
+            provider: crate::backend::transaction::ProviderDescriptor::for_source(
+                PackageSource::Npm,
+            ),
+            action: crate::backend::transaction::OperationAction::Update,
+            targets: vec![crate::backend::transaction::PackageRef {
+                name: "npm".to_string(),
+                source: PackageSource::Npm,
+                installed_version: Some("11.0".to_string()),
+                available_version: Some("12.0".to_string()),
+            }],
+            exact_commands: Vec::new(),
+            expected_changes: Vec::new(),
+            inventory_fingerprint: String::new(),
+            created_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+        };
+        let mut entry = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "transaction:op-1".to_string(),
+            "npm".to_string(),
+            PackageSource::Npm,
+        );
+        entry.reviewed_plan_json = Some(serde_json::to_string(&plan).unwrap());
+
+        let targets = transaction_targets(&entry).unwrap();
+        assert_eq!(targets, vec![(PackageSource::Npm, "npm".to_string())]);
+
+        // Planless entries parse to nothing — they cannot cover anything.
+        let bare = TaskQueueEntry::new(
+            TaskQueueAction::Update,
+            "npm:foo".to_string(),
+            "foo".to_string(),
+            PackageSource::Npm,
+        );
+        assert!(transaction_targets(&bare).is_none());
     }
 
     fn sample_package(name: &str, source: PackageSource) -> Package {
