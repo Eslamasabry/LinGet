@@ -539,10 +539,13 @@ impl PackageBackend for FlatpakBackend {
     }
 
     async fn check_updates(&self) -> Result<Vec<Package>> {
-        // `flatpak remote-ls --updates` costs a flathub network round trip
-        // (~3s) to answer a question whose answer rarely changes. The
-        // whole result is cached with a short TTL; applying updates always
-        // goes through the real backend commands.
+        // `flatpak remote-ls --updates` with no remote argument queries
+        // every configured remote serially (3s+ on a system with flathub in
+        // two installations plus a second remote) — sum of all remotes.
+        // Enumerate remotes locally and query each in parallel instead:
+        // wall time becomes the slowest single remote (~1.2s). The whole
+        // result is cached with a short TTL; applying updates always goes
+        // through the real backend commands.
         const CACHE_KEY: &str = "flatpak:__updates__";
         if let Some(cached) =
             super::latest_cache::get_json::<Vec<(String, String, String)>>(CACHE_KEY)
@@ -550,32 +553,7 @@ impl PackageBackend for FlatpakBackend {
             return Ok(update_packages_from(cached));
         }
 
-        let output = Command::new("flatpak")
-            .args([
-                "remote-ls",
-                "--updates",
-                "--app",
-                "--columns=application,version,name",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("Failed to check flatpak updates")?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut findings: Vec<(String, String, String)> = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 3 {
-                findings.push((
-                    parts[0].to_string(),
-                    parts[1].to_string(),
-                    parts[2].to_string(),
-                ));
-            }
-        }
+        let findings = self.collect_update_findings().await;
 
         super::latest_cache::put_json(CACHE_KEY, &findings);
         Ok(update_packages_from(findings))
@@ -1013,6 +991,103 @@ fn update_packages_from(findings: Vec<(String, String, String)>) -> Vec<Package>
 }
 
 impl FlatpakBackend {
+    /// (app_id, new_version, display_name) findings across all remotes,
+    /// queried in parallel. Falls back to the single unnamed query when
+    /// remote enumeration fails, matching the previous behaviour.
+    async fn collect_update_findings(&self) -> Vec<(String, String, String)> {
+        let remotes = Self::enumerate_remotes().await;
+        let mut queries: Vec<(&str, &str)> = Vec::new();
+        for (name, installation) in &remotes {
+            queries.push((name.as_str(), installation.as_str()));
+        }
+        if queries.is_empty() {
+            queries.push(("", ""));
+        }
+
+        use futures::{stream::FuturesUnordered, StreamExt};
+        let mut findings: Vec<(String, String, String)> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut futures = queries
+            .into_iter()
+            .map(|(remote, installation)| Self::query_remote_updates(remote, installation))
+            .collect::<FuturesUnordered<_>>();
+        while let Some(rows) = futures.next().await {
+            for row in rows {
+                if seen.insert(row.0.clone()) {
+                    findings.push(row);
+                }
+            }
+        }
+        findings
+    }
+
+    /// `name<TAB>installation` per configured remote; both local and fast.
+    async fn enumerate_remotes() -> Vec<(String, String)> {
+        let output = Command::new("flatpak")
+            .args(["remotes", "--columns=name,installation"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+        let mut remotes = Vec::new();
+        if let Ok(output) = output {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let mut parts = line.split('\t');
+                if let (Some(name), Some(installation)) = (parts.next(), parts.next()) {
+                    let name = name.trim();
+                    let installation = installation.trim();
+                    if !name.is_empty() && matches!(installation, "system" | "user") {
+                        remotes.push((name.to_string(), installation.to_string()));
+                    }
+                }
+            }
+        }
+        remotes
+    }
+
+    async fn query_remote_updates(
+        remote: &str,
+        installation: &str,
+    ) -> Vec<(String, String, String)> {
+        let mut command = Command::new("flatpak");
+        command.args([
+            "remote-ls",
+            "--updates",
+            "--app",
+            "--columns=application,version,name",
+        ]);
+        match installation {
+            "system" | "user" => {
+                command.arg(format!("--{installation}"));
+            }
+            _ => {}
+        }
+        if !remote.is_empty() {
+            command.arg(remote);
+        }
+        let output = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+        let mut rows = Vec::new();
+        if let Ok(output) = output {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() >= 3 && !parts[0].is_empty() && parts[0] != "application" {
+                    rows.push((
+                        parts[0].to_string(),
+                        parts[1].to_string(),
+                        parts[2].to_string(),
+                    ));
+                }
+            }
+        }
+        rows
+    }
+
     async fn get_app_origin(&self, name: &str) -> Result<String> {
         let output = Command::new("flatpak")
             .args(["info", "--show-origin", name])

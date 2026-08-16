@@ -372,7 +372,7 @@ impl PackageBackend for NpmBackend {
             .build()
             .context("failed to build npm registry client")?;
 
-        const CONCURRENCY: usize = 16;
+        const CONCURRENCY: usize = 32;
         let findings: Vec<Option<(String, String, Option<String>)>> = futures::stream::iter(
             installed
                 .into_iter()

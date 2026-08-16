@@ -187,7 +187,10 @@ impl PackageBackend for PipBackend {
             .build()
             .context("failed to build PyPI client")?;
 
-        const CONCURRENCY: usize = 16;
+        // Empirically: 16-way HTTP/1.1 ≈ 19 serial rounds; a 64-way
+        // connection burst gets CDN-throttled and is slower. Over HTTP/2
+        // (one multiplexed connection) a high stream count is cheap.
+        const CONCURRENCY: usize = 64;
         let findings: Vec<Option<(String, String, String, String)>> =
             futures::stream::iter(installed.into_iter().filter_map(|package| {
                 if package.version.is_empty() {
