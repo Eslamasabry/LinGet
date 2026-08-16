@@ -156,13 +156,14 @@ fn run_tui(runtime: tokio::runtime::Runtime) {
         product::APP_VERSION
     );
 
-    // This path is reached both by `linget tui --next` and by a bare `linget`
-    // invocation, which never goes through clap — so read the flag directly.
-    let next = std::env::args().any(|arg| arg == "--next");
-    let result = if next {
-        runtime.block_on(cli::tui_next::run())
-    } else {
+    // This path is reached both by `linget tui --classic` and by a bare
+    // `linget` invocation, which never goes through clap — so read the flag
+    // directly. The reimagined TUI is the default; --classic opts out.
+    let classic = std::env::args().any(|arg| arg == "--classic");
+    let result = if classic {
         runtime.block_on(cli::tui::run())
+    } else {
+        runtime.block_on(cli::tui_next::run())
     };
 
     if let Err(e) = result {
@@ -241,7 +242,7 @@ mod tests {
             ["linget", "tui", "-h"].as_slice(),
             ["linget", "gui", "--help"].as_slice(),
             ["linget", "tui", "--version"].as_slice(),
-            ["linget", "tui", "--next", "--help"].as_slice(),
+            ["linget", "tui", "--classic", "--help"].as_slice(),
         ] {
             assert_eq!(
                 detect_run_mode_from(args.iter().copied()),
@@ -254,7 +255,7 @@ mod tests {
     #[test]
     fn launching_a_ui_still_works_with_other_flags() {
         assert_eq!(
-            detect_run_mode_from(["linget", "tui", "--next"].iter().copied()),
+            detect_run_mode_from(["linget", "tui", "--classic"].iter().copied()),
             RunMode::Tui
         );
         assert_eq!(

@@ -163,9 +163,9 @@ pub enum Commands {
 
     /// Launch interactive TUI mode
     Tui {
-        /// Launch the reimagined next-generation TUI
-        #[arg(long = "next")]
-        next: bool,
+        /// Launch the previous-generation TUI instead of the default one
+        #[arg(long = "classic")]
+        classic: bool,
     },
 
     /// Launch the optional graphical user interface
@@ -406,11 +406,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             commands::permissions::run(pm, &app_id, action, &writer).await
         }
         Commands::Runtimes => commands::permissions::list_runtimes(pm, &writer).await,
-        Commands::Tui { next } => {
-            if next {
-                tui_next::run().await
-            } else {
+        Commands::Tui { classic } => {
+            if classic {
                 tui::run().await
+            } else {
+                tui_next::run().await
             }
         }
         Commands::Gui => {

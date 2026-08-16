@@ -163,6 +163,19 @@ pub fn commands_for(app: &App) -> Vec<PaletteCommand> {
     commands
 }
 
+/// Commands filtered by the palette query. Case-insensitive substring match
+/// on the title; an empty query shows everything.
+pub fn filtered_for(app: &App, query: &str) -> Vec<PaletteCommand> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return commands_for(app);
+    }
+    commands_for(app)
+        .into_iter()
+        .filter(|command| command.title.to_lowercase().contains(&needle))
+        .collect()
+}
+
 pub async fn run(app: &mut App, action: PaletteAction) -> Result<()> {
     match action {
         PaletteAction::QueueUpdate => {

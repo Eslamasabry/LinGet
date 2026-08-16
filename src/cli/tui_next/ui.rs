@@ -116,7 +116,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_command_bar(frame, app, chunks[4]);
 
     match &app.overlay {
-        Some(Overlay::Palette) => draw_palette(frame, app),
+        Some(Overlay::Palette { query }) => draw_palette(frame, app, query),
         Some(Overlay::Help) => draw_help(frame),
         Some(Overlay::Confirm { title, body, .. }) => {
             draw_confirm(frame, title, body);
@@ -262,11 +262,12 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     app.visible_rows = height;
     ensure_visible(app, height);
 
-    // Adaptive columns: names shrink to the widest visible name, metadata to
-    // the widest visible meta string; versions inherit everything in between,
-    // which is where the information density actually matters.
+    // Adaptive columns, with a guaranteed floor for versions. Names are
+    // recognizable from head+tail when middle-truncated; a version pair like
+    // `3.0.13-0ubuntu3.11 → 3.0.13-0ubuntu3.12` is not. So versions claim a
+    // fixed slice first and the name column shrinks into whatever remains.
     let visible_end = (app.scroll + height).min(app.rows.len());
-    let name_width = app.rows[app.scroll..visible_end]
+    let name_max = app.rows[app.scroll..visible_end]
         .iter()
         .filter_map(|row| match row {
             Row::Item { id } => app
@@ -275,9 +276,8 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
             Row::Header { .. } => None,
         })
         .max()
-        .unwrap_or(20)
-        .clamp(16, 46) as u16;
-    let meta_width = app.rows[app.scroll..visible_end]
+        .unwrap_or(20);
+    let meta_max = app.rows[app.scroll..visible_end]
         .iter()
         .filter_map(|row| match row {
             Row::Item { id } => app
@@ -286,8 +286,15 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
             Row::Header { .. } => None,
         })
         .max()
-        .unwrap_or(10)
-        .clamp(8, 30) as u16;
+        .unwrap_or(10);
+    let meta_width = meta_max.clamp(8, 20);
+    // Column budget: markers(4) + name + gap(2) + versions + gap(2) + meta.
+    let fixed = 4 + 2 + meta_width + 2;
+    let spare = (list_area.width as usize).saturating_sub(fixed);
+    let desired_versions = 40.min(spare.saturating_sub(16));
+    let name_ceiling = spare.saturating_sub(desired_versions).clamp(16, 46);
+    let name_width = name_max.clamp(16, name_ceiling) as u16;
+    let meta_width = meta_width as u16;
 
     let mut lines: Vec<Line> = Vec::with_capacity(height);
     let mut row_index = app.scroll;
@@ -456,21 +463,30 @@ fn package_row(
     spans.extend(name_spans);
     spans.push(Span::styled(" ".repeat(name_pad + 2), base));
 
-    // Versions: old → new. The name column is shrunk to its content, so full
-    // version strings fit in the common case; middle-truncate only as a last
-    // resort so the differing tail survives.
+    // Versions: old → new. The new version is what the user is deciding
+    // about, so it takes the larger share of the column. Equal versions mean
+    // a rebuild or commit-only update — printing the same string twice would
+    // read as a rendering bug.
     if package.status == PackageStatus::UpdateAvailable {
-        let half = versions_width.saturating_sub(3) / 2;
-        let old = truncate_middle(&package.version, half);
+        let total = versions_width.saturating_sub(3);
+        let old_w = (total * 2 / 5).max(6);
+        let new_w = total.saturating_sub(old_w).max(8);
+        let old = truncate_middle(&package.version, old_w);
         let new_raw = package.available_version.as_deref().unwrap_or("");
-        let new = truncate_middle(new_raw, half);
+        let new = if new_raw.is_empty() {
+            "?".to_string()
+        } else if new_raw == package.version {
+            "new build".to_string()
+        } else {
+            truncate_middle(new_raw, new_w)
+        };
         spans.push(Span::styled(
-            format!("{:>width$}", old, width = half),
+            format!("{:>width$}", old, width = old_w),
             if is_cursor { cursor_style() } else { dim() },
         ));
         spans.push(Span::styled(" → ".to_string(), meta));
         spans.push(Span::styled(
-            format!("{:<width$}", new, width = half),
+            format!("{:<width$}", new, width = new_w),
             if is_cursor { cursor_style() } else { amber() },
         ));
     } else {
@@ -520,11 +536,14 @@ fn expansion_lines(package: &Package, width: u16) -> Vec<Line<'static>> {
     }
 
     let version_text = match package.status {
-        PackageStatus::UpdateAvailable => format!(
-            "{}  →  {}",
-            package.version,
-            package.available_version.as_deref().unwrap_or("?")
-        ),
+        PackageStatus::UpdateAvailable => {
+            let new = package.available_version.as_deref().unwrap_or("?");
+            if new == package.version {
+                format!("{}  →  new build (same version)", package.version)
+            } else {
+                format!("{}  →  {}", package.version, new)
+            }
+        }
         _ => package.version.clone(),
     };
     lines.push(Line::from(vec![
@@ -585,11 +604,14 @@ fn draw_dock(frame: &mut Frame, package: &Package, area: Rect) {
         lines.push(Line::from(""));
     }
     let version_text = match package.status {
-        PackageStatus::UpdateAvailable => format!(
-            " {}  →  {}",
-            package.version,
-            package.available_version.as_deref().unwrap_or("?")
-        ),
+        PackageStatus::UpdateAvailable => {
+            let new = package.available_version.as_deref().unwrap_or("?");
+            if new == package.version {
+                format!(" {}  →  new build (same version)", package.version)
+            } else {
+                format!(" {}  →  {}", package.version, new)
+            }
+        }
         _ => format!(" {}", package.version),
     };
     lines.push(Line::from(Span::styled(version_text, amber())));
@@ -1012,14 +1034,32 @@ fn overlay_card(frame: &mut Frame, area: Rect, title: &str) -> Rect {
     inner
 }
 
-fn draw_palette(frame: &mut Frame, app: &App) {
+fn draw_palette(frame: &mut Frame, app: &App, query: &str) {
     dim_backdrop(frame);
-    let commands = palette::commands_for(app);
-    let height = (commands.len() as u16 + 2).min(frame.area().height.saturating_sub(2));
-    let area = centered(frame, 56, height);
-    let inner = overlay_card(frame, area, ":");
+    let commands = palette::filtered_for(app, query);
+    let area = frame.area();
+    let width = area.width.saturating_sub(6).max(30);
+    let height = (commands.len() as u16 + 5).min(area.height.saturating_sub(2));
+    let card = Rect {
+        x: 3,
+        y: 1,
+        width,
+        height,
+    };
+    let inner = overlay_card(frame, card, ": commands");
 
-    let mut lines = Vec::new();
+    let mut lines = vec![Line::from(vec![
+        Span::styled(":".to_string(), accent()),
+        Span::styled(format!(" {query}█"), fg()),
+    ])];
+    lines.push(Line::from(""));
+
+    if commands.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no matching command · esc closes",
+            dim(),
+        )));
+    }
     for (index, command) in commands.iter().enumerate() {
         let is_cursor = index == app.palette_cursor;
         let style = if is_cursor { cursor_style() } else { fg() };
@@ -1029,12 +1069,17 @@ fn draw_palette(frame: &mut Frame, app: &App) {
             "  ".to_string()
         };
         let mut spans = vec![
-            Span::styled(number, if is_cursor { cursor_style() } else { faint() }),
+            Span::styled(
+                number.clone(),
+                if is_cursor { cursor_style() } else { faint() },
+            ),
             Span::styled(command.title.clone(), style),
         ];
         if !command.hint.is_empty() {
-            let used: usize = spans.iter().map(|s| s.content.len()).sum();
-            let pad = (inner.width as usize).saturating_sub(used + command.hint.len() + 1);
+            let used = UnicodeWidthStr::width(number.as_str())
+                + UnicodeWidthStr::width(command.title.as_str());
+            let hint_w = UnicodeWidthStr::width(command.hint);
+            let pad = (inner.width as usize).saturating_sub(used + hint_w + 1);
             spans.push(Span::styled(" ".repeat(pad), style));
             spans.push(Span::styled(
                 command.hint.to_string(),

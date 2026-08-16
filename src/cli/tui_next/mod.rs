@@ -2,7 +2,8 @@
 //!
 //! A blank-sheet redesign of `cli::tui`: one column of focus, urgency-tiered
 //! sections, inline expansion, a queue drawer, and a palette-first key model.
-//! Runs alongside the classic TUI via `linget tui --next`.
+//! This is the default TUI; the classic one is available via
+//! `linget tui --classic`.
 
 mod app;
 mod palette;

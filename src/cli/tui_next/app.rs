@@ -86,7 +86,9 @@ pub enum ConfirmAction {
 
 #[derive(Debug)]
 pub enum Overlay {
-    Palette,
+    Palette {
+        query: String,
+    },
     Help,
     Confirm {
         title: String,
@@ -448,7 +450,9 @@ impl App {
             }
             KeyCode::Char(':') => {
                 self.palette_cursor = 0;
-                self.overlay = Some(Overlay::Palette);
+                self.overlay = Some(Overlay::Palette {
+                    query: String::new(),
+                });
             }
             KeyCode::Char('?') => {
                 self.overlay = Some(Overlay::Help);
@@ -524,45 +528,57 @@ impl App {
 
     async fn handle_overlay_key(&mut self, key: KeyEvent, overlay: Overlay) -> Result<()> {
         match overlay {
-            Overlay::Palette => match key.code {
-                KeyCode::Esc => {}
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.palette_cursor = self.palette_cursor.saturating_sub(1);
-                    self.overlay = Some(Overlay::Palette);
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.palette_cursor = self.palette_cursor.saturating_add(1).min(
-                        crate::cli::tui_next::palette::commands_for(self)
-                            .len()
-                            .saturating_sub(1),
-                    );
-                    self.overlay = Some(Overlay::Palette);
-                }
-                KeyCode::Enter => {
-                    let commands = crate::cli::tui_next::palette::commands_for(self);
-                    if let Some(command) = commands.get(self.palette_cursor) {
-                        let action = command.action;
-                        crate::cli::tui_next::palette::run(self, action).await?;
+            Overlay::Palette { mut query } => {
+                let reopen = |app: &mut Self, query: String| {
+                    app.overlay = Some(Overlay::Palette { query });
+                };
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.palette_cursor = self.palette_cursor.saturating_sub(1);
+                        reopen(self, query);
                     }
-                }
-                KeyCode::Char(ch) => {
-                    let index = usize::try_from(ch.to_digit(10).unwrap_or(0)).unwrap_or(0);
-                    if (1..=9).contains(&index) {
-                        let commands = crate::cli::tui_next::palette::commands_for(self);
-                        if let Some(command) = commands.get(index - 1) {
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let len = crate::cli::tui_next::palette::filtered_for(self, &query).len();
+                        self.palette_cursor = (self.palette_cursor + 1).min(len.saturating_sub(1));
+                        reopen(self, query);
+                    }
+                    KeyCode::Enter => {
+                        let commands = crate::cli::tui_next::palette::filtered_for(self, &query);
+                        if let Some(command) = commands.get(self.palette_cursor) {
                             let action = command.action;
                             crate::cli::tui_next::palette::run(self, action).await?;
-                        } else {
-                            self.overlay = Some(Overlay::Palette);
                         }
-                    } else {
-                        self.overlay = Some(Overlay::Palette);
+                    }
+                    KeyCode::Backspace => {
+                        query.pop();
+                        self.palette_cursor = 0;
+                        reopen(self, query);
+                    }
+                    KeyCode::Char(ch) => {
+                        let index = usize::try_from(ch.to_digit(10).unwrap_or(0)).unwrap_or(0);
+                        if (1..=9).contains(&index) {
+                            let commands =
+                                crate::cli::tui_next::palette::filtered_for(self, &query);
+                            if let Some(command) = commands.get(index - 1) {
+                                let action = command.action;
+                                crate::cli::tui_next::palette::run(self, action).await?;
+                            } else {
+                                reopen(self, query);
+                            }
+                        } else {
+                            query.push(ch);
+                            let len =
+                                crate::cli::tui_next::palette::filtered_for(self, &query).len();
+                            self.palette_cursor = self.palette_cursor.min(len.saturating_sub(1));
+                            reopen(self, query);
+                        }
+                    }
+                    _ => {
+                        reopen(self, query);
                     }
                 }
-                _ => {
-                    self.overlay = Some(Overlay::Palette);
-                }
-            },
+            }
             // Help fits on one screen by design; any key closes it.
             Overlay::Help => {}
             Overlay::Confirm { action, .. } => match key.code {
@@ -1001,7 +1017,7 @@ impl App {
     }
 
     pub fn spinner_frame(&self) -> &'static str {
-        const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⦎", "⦏", "⧗", "⏳"];
+        const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         FRAMES[self.spinner % FRAMES.len()]
     }
 
