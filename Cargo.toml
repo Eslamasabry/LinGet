@@ -10,7 +10,8 @@ keywords = ["package-manager", "linux", "terminal", "tui"]
 categories = ["command-line-utilities"]
 
 [features]
-default = []
+default = ["web"]
+web = ["dep:axum"]
 gui = [
     "dep:gdk-pixbuf",
     "dep:gtk4",
@@ -21,6 +22,7 @@ gui = [
 ]
 
 [dependencies]
+axum = { version = "0.8", optional = true }
 # GTK4 0.9 (supports GTK 4.14) and libadwaita 0.7 (supports libadwaita 1.5)
 gtk4 = { version = "0.9", optional = true }
 gdk-pixbuf = { version = "0.20", optional = true }

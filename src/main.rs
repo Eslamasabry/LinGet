@@ -7,6 +7,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 enum RunMode {
     Gui,
     Tui,
+    Web,
     Cli,
 }
 
@@ -50,6 +51,8 @@ fn detect_run_mode_from(args: impl IntoIterator<Item = impl AsRef<str>>) -> RunM
         "gui" => RunMode::Gui,
         // Explicit TUI launch
         "tui" => RunMode::Tui,
+        // Web dashboard launch
+        "web" | "dashboard" => RunMode::Web,
         // CLI commands
         "list" | "search" | "install" | "remove" | "update" | "info" | "sources" | "check"
         | "completions" | "cohort-report" | "help" | "--help" | "-h" | "--version" | "-V"
@@ -113,7 +116,7 @@ fn init_logging(run_mode: RunMode) {
                 }
             }
         }
-        RunMode::Gui | RunMode::Cli => {
+        RunMode::Gui | RunMode::Web | RunMode::Cli => {
             tracing_subscriber::registry()
                 .with(fmt::layer().with_writer(std::io::stderr))
                 .with(filter)
@@ -141,6 +144,51 @@ fn run_gui(runtime: tokio::runtime::Runtime) {
 fn run_gui(runtime: tokio::runtime::Runtime) {
     drop(runtime);
     eprintln!("Error: {}", gui_unavailable_message());
+    std::process::exit(2);
+}
+
+#[cfg(feature = "web")]
+fn run_web(runtime: tokio::runtime::Runtime) {
+    tracing::info!(
+        "Starting {} v{} (web mode)",
+        product::APP_NAME,
+        product::APP_VERSION
+    );
+    let _guard = runtime.enter();
+
+    // `linget web` is dispatched before clap parsing (like the TUI), so the
+    // flags are read directly; unknown flags fall through to clap errors.
+    let mut bind = "0.0.0.0".to_string();
+    let mut port: u16 = 8390;
+    let mut args = std::env::args().skip(2);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--bind" => {
+                if let Some(value) = args.next() {
+                    bind = value;
+                }
+            }
+            "--port" => {
+                if let Some(value) = args.next() {
+                    port = value.parse().unwrap_or(port);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Err(e) = runtime.block_on(linget::web::run(&bind, port)) {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(feature = "web"))]
+fn run_web(runtime: tokio::runtime::Runtime) {
+    drop(runtime);
+    eprintln!(
+        "Error: web dashboard support is not included in this build. Rebuild with `--features web`, or run `linget` for the terminal interface."
+    );
     std::process::exit(2);
 }
 
@@ -225,6 +273,7 @@ fn main() {
     match run_mode {
         RunMode::Gui => run_gui(runtime),
         RunMode::Tui => run_tui(runtime),
+        RunMode::Web => run_web(runtime),
         RunMode::Cli => run_cli(runtime),
     }
 }

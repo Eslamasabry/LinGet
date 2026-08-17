@@ -5,6 +5,8 @@ pub mod cli;
 pub mod models;
 pub mod product;
 mod scheduler_runtime;
+#[cfg(feature = "web")]
+pub mod web;
 
 #[cfg(feature = "gui")]
 mod ui;

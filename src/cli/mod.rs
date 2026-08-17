@@ -171,6 +171,18 @@ pub enum Commands {
     /// Launch the optional graphical user interface
     Gui,
 
+    /// Serve the three.js web dashboard on the local network
+    #[command(alias = "dashboard")]
+    Web {
+        /// Address to bind (use 0.0.0.0 to reach this from a phone over tailscale)
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: String,
+
+        /// Port to listen on
+        #[arg(long, default_value_t = 8390)]
+        port: u16,
+    },
+
     /// Manage ignored packages (excluded from update checks)
     Ignore {
         #[command(subcommand)]
@@ -415,6 +427,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Gui => {
             unreachable!("GUI command should be handled in main.rs")
+        }
+        Commands::Web { .. } => {
+            unreachable!("Web command should be handled in main.rs")
         }
         Commands::Ignore { action } => commands::ignore::run(action, &writer).await,
         Commands::Backup { action } => commands::backup::run(pm, action, &writer).await,
