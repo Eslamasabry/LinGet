@@ -153,6 +153,56 @@ button.danger { border-color: rgba(224,90,90,0.5); color: var(--red); }
   #queue-drawer { left: 16px; right: auto; bottom: 16px; width: 420px; }
 }
 
+/* ---------------- results sheet ---------------- */
+
+#results {
+  left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom));
+  height: 58vh; display: flex; flex-direction: column; padding: 10px 12px 12px;
+}
+@media (min-width: 720px) {
+  #results { left: auto; right: 16px; top: 128px; bottom: 16px; width: 400px; height: auto; }
+}
+
+.results-head {
+  display: flex; align-items: center; justify-content: space-between;
+  color: var(--dim); font-size: 13px; padding: 2px 24px 8px 2px;
+  border-bottom: 1px solid var(--edge); flex: 0 0 auto;
+}
+
+#results-list { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
+
+.r-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 6px; border-bottom: 1px solid rgba(255,255,255,0.045);
+  cursor: pointer; border-radius: 8px;
+}
+.r-row:active { background: rgba(94,200,220,0.07); }
+@media (hover: hover) { .r-row:hover { background: rgba(94,200,220,0.05); } }
+
+.r-glyph { flex: 0 0 18px; text-align: center; font-size: 13px; }
+.r-glyph.security { color: var(--red); }
+.r-glyph.update { color: var(--amber); }
+.r-glyph.favorite { color: #f0c674; }
+.r-glyph.installed { color: var(--faint); }
+
+.r-main { flex: 1; min-width: 0; }
+.r-name {
+  font-size: 14px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.r-name .mark { color: var(--accent); }
+.r-sub {
+  color: var(--faint); font-size: 12px; margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.r-sub .new { color: var(--amber); }
+.r-sub .arrow { margin: 0 4px; }
+.r-act {
+  flex: 0 0 auto; padding: 6px 11px; font-size: 13px;
+}
+.r-row.active { background: rgba(94,200,220,0.09); }
+
 .drawer-title { font-weight: 700; font-size: 15px; margin-bottom: 10px; padding-right: 24px; }
 
 .q-entry { display: flex; align-items: baseline; gap: 8px; padding: 6px 0; font-size: 13.5px; border-bottom: 1px solid rgba(255,255,255,0.04); }

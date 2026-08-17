@@ -29,10 +29,19 @@
     </div>
     <div class="hud-row hud-controls">
       <input id="search" type="search" placeholder="search · src:npm" autocomplete="off" spellcheck="false">
+      <button id="list-btn" class="ghost" title="browse as list">☰</button>
       <button id="queue-btn" class="ghost">queue <span id="queue-badge" class="badge hidden"></span></button>
     </div>
     <div class="hud-row chips" id="chips"></div>
   </header>
+
+  <aside id="results" class="panel hidden">
+    <div class="results-head">
+      <span id="results-count"></span>
+      <button class="close" data-close="results">✕</button>
+    </div>
+    <div id="results-list"></div>
+  </aside>
 
   <aside id="detail" class="panel hidden">
     <button class="close" data-close="detail">✕</button>

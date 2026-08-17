@@ -552,6 +552,15 @@ async fn retry_failed(State(state): State<Arc<WebState>>) -> Result<Json<RetryRe
         if active.contains(&key) || !seen.insert(key) {
             continue;
         }
+        // Retrying cannot fix a policy refusal (PEP 668) — the error text
+        // says install via pipx or the distro package instead.
+        if let Some(error) = entry.error.as_deref() {
+            if crate::models::history::FailureCategory::classify(error)
+                == crate::models::history::FailureCategory::ExternallyManaged
+            {
+                continue;
+            }
+        }
         // Planless stable failures come from an older build; route them
         // through fresh planning instead of failing the plan guard again.
         if stable_transaction_source(entry.package_source) && entry.reviewed_plan_json.is_none() {

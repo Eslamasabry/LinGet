@@ -41,6 +41,7 @@ const state = {
   entryLogs: new Map(),  // entry id -> recent output lines
   logTail: [],           // { who, line, err } global tail for the drawer
   logTailDirty: false,
+  fly: null,             // camera ease {from, to, t}
 };
 
 // ---------------------------------------------------------------------
@@ -203,10 +204,10 @@ function pointColor(pkg) {
 
 function pointSize(pkg) {
   const security = pkg.is_security || pkg.update_category === 'Security';
-  if (security) return 3.4;
-  if (pkg.is_favorite) return 2.9;
-  if (pkg.status === 'UpdateAvailable') return 2.3;
-  return 1.55;
+  if (security) return 3.8;
+  if (pkg.is_favorite) return 3.3;
+  if (pkg.status === 'UpdateAvailable') return 2.8;
+  return 1.9;
 }
 
 // ---------------------------------------------------------------------
@@ -255,7 +256,42 @@ scene.add(galaxy);
 const UNIFORMS = {
   uTime: { value: 0 },
   uScale: { value: innerHeight / 2 },
+  uMap: { value: starTexture() },
 };
+
+/// A real star sprite: hot gaussian core with four diffraction spikes,
+/// drawn once on a canvas — plain round points read as noise at this size.
+function starTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+
+  const core = g.createRadialGradient(64, 64, 0, 64, 64, 60);
+  core.addColorStop(0.0, 'rgba(255,255,255,1)');
+  core.addColorStop(0.12, 'rgba(255,255,255,0.95)');
+  core.addColorStop(0.3, 'rgba(255,255,255,0.28)');
+  core.addColorStop(0.6, 'rgba(255,255,255,0.05)');
+  core.addColorStop(1.0, 'rgba(255,255,255,0)');
+  g.fillStyle = core;
+  g.fillRect(0, 0, 128, 128);
+
+  g.globalCompositeOperation = 'lighter';
+  for (const [x0, y0, x1, y1] of [
+    [64, 6, 64, 122],   // vertical spike
+    [6, 64, 122, 64],   // horizontal spike
+  ]) {
+    const spike = g.createLinearGradient(x0, y0, x1, y1);
+    spike.addColorStop(0, 'rgba(255,255,255,0)');
+    spike.addColorStop(0.5, 'rgba(255,255,255,0.55)');
+    spike.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = spike;
+    g.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0) || 3, Math.abs(y1 - y0) || 3);
+  }
+
+  const texture = new THREE.CanvasTexture(c);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
 
 const POINT_MATERIAL = new THREE.ShaderMaterial({
   uniforms: UNIFORMS,
@@ -267,13 +303,16 @@ const POINT_MATERIAL = new THREE.ShaderMaterial({
     attribute float aSize;
     attribute float aSeed;
     attribute float aAlpha;
+    attribute float aAngle;
     uniform float uTime;
     uniform float uScale;
     varying vec3 vColor;
     varying float vAlpha;
+    varying float vAngle;
     void main() {
       vColor = aColor;
       vAlpha = aAlpha;
+      vAngle = aAngle;
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
       float twinkle = 0.82 + 0.28 * sin(uTime * 1.7 + aSeed * 6.2831);
       gl_PointSize = aSize * twinkle * (uScale / -mv.z);
@@ -281,16 +320,20 @@ const POINT_MATERIAL = new THREE.ShaderMaterial({
     }
   `,
   fragmentShader: /* glsl */ `
+    uniform sampler2D uMap;
     varying vec3 vColor;
     varying float vAlpha;
+    varying float vAngle;
     void main() {
       vec2 uv = gl_PointCoord - 0.5;
-      float d = length(uv);
-      if (d > 0.5) discard;
-      float core = smoothstep(0.5, 0.0, d);
-      float glow = pow(core, 3.0);
-      float alpha = vAlpha * (glow * 0.85 + core * 0.15);
-      gl_FragColor = vec4(vColor * (0.55 + 1.45 * glow), alpha);
+      float s = sin(vAngle), c = cos(vAngle);
+      uv = mat2(c, -s, s, c) * uv + 0.5;
+      vec4 tex = texture2D(uMap, uv);
+      // Whitening hot center over the tinted corona gives each star a
+      // real photographic core instead of a flat disc.
+      float center = 1.0 - smoothstep(0.0, 0.22, length(uv - 0.5));
+      vec3 col = vColor * tex.rgb + vec3(center * 0.85 * tex.a);
+      gl_FragColor = vec4(col, tex.a * vAlpha);
     }
   `,
 });
@@ -302,12 +345,14 @@ function makePoints(count, build) {
   const size = new Float32Array(count);
   const seed = new Float32Array(count);
   const alpha = new Float32Array(count).fill(1);
-  build({ position, color, size, seed, alpha });
+  const angle = new Float32Array(count);
+  build({ position, color, size, seed, alpha, angle });
   geometry.setAttribute('position', new THREE.BufferAttribute(position, 3));
   geometry.setAttribute('aColor', new THREE.BufferAttribute(color, 3));
   geometry.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
   geometry.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
   geometry.setAttribute('aAlpha', new THREE.BufferAttribute(alpha, 1));
+  geometry.setAttribute('aAngle', new THREE.BufferAttribute(angle, 1));
   const points = new THREE.Points(geometry, POINT_MATERIAL);
   points.frustumCulled = false;
   return points;
@@ -317,20 +362,21 @@ function buildDust() {
   const existing = galaxy.getObjectByName('dust');
   if (existing) galaxy.remove(existing);
   const count = 1600;
-  const dust = makePoints(count, ({ position, color, size, seed }) => {
+  const dust = makePoints(count, ({ position, color, size, seed, angle }) => {
     const rand = rng(1234567);
     for (let i = 0; i < count; i++) {
       const radius = 6 + rand() * 34;
-      const angle = rand() * Math.PI * 2;
-      position[i * 3] = Math.cos(angle) * radius;
+      const anglePos = rand() * Math.PI * 2;
+      position[i * 3] = Math.cos(anglePos) * radius;
       position[i * 3 + 1] = (rand() - 0.5) * 16;
-      position[i * 3 + 2] = Math.sin(angle) * radius;
+      position[i * 3 + 2] = Math.sin(anglePos) * radius;
       const shade = 0.55 + rand() * 0.45;
       color[i * 3] = COLORS.dust.r * shade;
       color[i * 3 + 1] = COLORS.dust.g * shade;
       color[i * 3 + 2] = COLORS.dust.b * shade * 1.25;
       size[i] = 0.5 + rand() * 0.8;
       seed[i] = rand();
+      angle[i] = rand() * Math.PI;
     }
   });
   dust.name = 'dust';
@@ -347,7 +393,7 @@ function buildGalaxy() {
   halo.visible = false;
   state.focus = null;
 
-  state.points = makePoints(packages.length, ({ position, color, size, seed }) => {
+  state.points = makePoints(packages.length, ({ position, color, size, seed, angle }) => {
     packages.forEach((pkg, i) => {
       const spot = placePackage(pkg);
       position[i * 3] = spot.x;
@@ -358,7 +404,9 @@ function buildGalaxy() {
       color[i * 3 + 1] = tint.g;
       color[i * 3 + 2] = tint.b;
       size[i] = pointSize(pkg);
-      seed[i] = (hash32(pkg.id) % 1000) / 1000;
+      const star = hash32(pkg.id);
+      seed[i] = (star % 1000) / 1000;
+      angle[i] = ((star >> 10) % 6283) / 1000.0; // 0..2π-ish
     });
   });
   state.positionArray = state.points.geometry.getAttribute('position');
@@ -436,6 +484,32 @@ function select(pkg, index) {
   showPanel('detail');
 }
 
+/// Selects a package and eases the camera to it — used by the results sheet.
+function flyToPackage(index) {
+  const pkg = state.packageIndex[index];
+  if (!pkg) return;
+  state.selectedId = pkg.id;
+  state.selectedIndex = index;
+  halo.visible = true;
+  controls.autoRotate = false;
+
+  const world = new THREE.Vector3().fromBufferAttribute(state.positionArray, index);
+  galaxy.localToWorld(world);
+  state.focus = world.clone();
+  controls.target.copy(world);
+
+  // Stop at a comfortable distance along the current viewing direction.
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  if (dir.lengthSq() < 0.5) dir.set(0.4, 0.5, 0.8).normalize();
+  state.fly = {
+    from: camera.position.clone(),
+    to: world.clone().add(dir.multiplyScalar(9)),
+    t: 0,
+  };
+  renderDetail(pkg.id);
+  showPanel('detail');
+}
+
 function clearSelection() {
   state.selectedId = null;
   state.selectedIndex = null;
@@ -475,6 +549,128 @@ function applyFilters() {
     state.alphaArray.array[i] = packageMatches(packages[i]) ? 1 : 0.045;
   }
   state.alphaArray.needsUpdate = true;
+  renderResults();
+}
+
+// ---------------------------------------------------------------------
+// Results sheet — the galaxy is the overview, this is how you find things
+// ---------------------------------------------------------------------
+
+const RESULT_LIMIT = 150;
+
+function resultRank(pkg) {
+  if (pkg.is_security || pkg.update_category === 'Security') return 0;
+  if (pkg.status === 'UpdateAvailable') return 1;
+  if (pkg.is_favorite) return 2;
+  return 3;
+}
+
+function resultRows() {
+  const rows = [];
+  state.catalog.packages.forEach((pkg, index) => {
+    if (packageMatches(pkg)) rows.push({ pkg, index });
+  });
+  const needle = state.query.text;
+  rows.sort((a, b) => {
+    // Prefix matches float to the top within each tier.
+    const rankDiff = resultRank(a.pkg) - resultRank(b.pkg);
+    if (rankDiff !== 0) return rankDiff;
+    if (needle) {
+      const aPrefix = a.pkg.name.toLowerCase().startsWith(needle) ? 0 : 1;
+      const bPrefix = b.pkg.name.toLowerCase().startsWith(needle) ? 0 : 1;
+      if (aPrefix !== bPrefix) return aPrefix - bPrefix;
+    }
+    return a.pkg.name.localeCompare(b.pkg.name);
+  });
+  return rows;
+}
+
+function highlightName(name, needle) {
+  if (!needle) return escapeHTML(name);
+  const idx = name.toLowerCase().indexOf(needle);
+  if (idx < 0) return escapeHTML(name);
+  return escapeHTML(name.slice(0, idx))
+    + '<span class="mark">' + escapeHTML(name.slice(idx, idx + needle.length)) + '</span>'
+    + escapeHTML(name.slice(idx + needle.length));
+}
+
+function resultSubLine(pkg) {
+  const source = pkg.source.toLowerCase();
+  const size = pkg.size != null ? ' · ' + humanSize(pkg.size) : '';
+  if (pkg.status === 'UpdateAvailable') {
+    const next = pkg.available_version || '?';
+    const version = next === pkg.version
+      ? `${pkg.version} · new build`
+      : `${pkg.version}<span class="arrow">→</span><span class="new">${next}</span>`;
+    return `${source} · ${version}${size}`;
+  }
+  return `${source} · ${pkg.version}${size}`;
+}
+
+function renderResults() {
+  const sheet = $('results');
+  if (!sheet || sheet.classList.contains('hidden')) return;
+
+  const rows = resultRows();
+  const total = rows.length;
+  const shown = Math.min(total, RESULT_LIMIT);
+  $('results-count').textContent = total === 0
+    ? 'no matches'
+    : shown === total
+      ? `${total} package${total === 1 ? '' : 's'}`
+      : `${shown} of ${total} packages`;
+
+  const list = $('results-list');
+  list.innerHTML = '';
+  for (const { pkg, index } of rows.slice(0, RESULT_LIMIT)) {
+    const security = pkg.is_security || pkg.update_category === 'Security';
+    const glyphClass = security ? 'security' : pkg.status === 'UpdateAvailable' ? 'update' : pkg.is_favorite ? 'favorite' : 'installed';
+    const glyph = security ? '⚠' : pkg.status === 'UpdateAvailable' ? '↑' : pkg.is_favorite ? '★' : '·';
+
+    const row = document.createElement('div');
+    row.className = 'r-row' + (state.selectedId === pkg.id ? ' active' : '');
+
+    const g = document.createElement('span');
+    g.className = `r-glyph ${glyphClass}`;
+    g.textContent = glyph;
+
+    const main = document.createElement('div');
+    main.className = 'r-main';
+    const name = document.createElement('div');
+    name.className = 'r-name';
+    name.innerHTML = highlightName(pkg.name, state.query.text);
+    const sub = document.createElement('div');
+    sub.className = 'r-sub';
+    sub.innerHTML = resultSubLine(pkg);
+    main.appendChild(name);
+    main.appendChild(sub);
+
+    row.appendChild(g);
+    row.appendChild(main);
+
+    if (pkg.status === 'UpdateAvailable') {
+      const update = document.createElement('button');
+      update.className = 'r-act accent';
+      update.textContent = '↑';
+      update.title = 'queue update';
+      update.addEventListener('click', (event) => {
+        event.stopPropagation();
+        enqueue('update', [pkg.id]);
+      });
+      row.appendChild(update);
+    }
+
+    row.addEventListener('click', () => {
+      flyToPackage(index);
+      hidePanel('results');
+    });
+    list.appendChild(row);
+  }
+}
+
+function openResults() {
+  showPanel('results');
+  renderResults();
 }
 
 // ---------------------------------------------------------------------
@@ -517,6 +713,7 @@ function renderChips() {
         return;
       }
       state.filter = chip.id;
+      renderResults();
       bar.querySelectorAll('.chip').forEach(el => el.classList.remove('on'));
       button.classList.add('on');
       applyFilters();
@@ -626,7 +823,7 @@ function renderQueue() {
     if (entry.error) {
       const err = document.createElement('div');
       err.className = 'q-error';
-      err.textContent = entry.error.split('\n')[0].slice(0, 120);
+      err.textContent = errorBrief(entry);
       list.appendChild(err);
     }
     const log = entryLog(entry.id);
@@ -729,6 +926,21 @@ function connectEventStream() {
   });
 }
 
+/// One actionable line per failure. Policy refusals get the real fix
+/// instead of pip's multi-sentence wall of text.
+function errorBrief(entry) {
+  const error = entry.error || '';
+  const lower = error.toLowerCase();
+  if (lower.includes('externally managed') || lower.includes('pep 668')) {
+    const name = entry.package_name;
+    return `python is distro-managed — try "pipx install ${name}" or "apt install python3-${name.replace(/[-_]/g, '-')}"`;
+  }
+  if (lower.includes('ebadengine') || lower.includes('runtime requirements')) {
+    return 'this version needs a newer runtime (node/python) than installed';
+  }
+  return error.split('\n')[0].slice(0, 140);
+}
+
 function escapeHTML(text) {
   const div = document.createElement('div');
   div.textContent = text;
@@ -789,9 +1001,17 @@ $('search').addEventListener('input', (event) => {
   }
   state.query.text = words.join(' ');
   applyFilters();
+  // Typing opens the results sheet — dimming dots alone is not finding
+  // anything, the list is.
+  if (state.query.text || state.query.source) openResults();
 });
 
 $('refresh').addEventListener('click', refreshCatalog);
+$('list-btn').addEventListener('click', () => {
+  const open = !$('results').classList.contains('hidden');
+  if (open) hidePanel('results');
+  else openResults();
+});
 $('queue-btn').addEventListener('click', () => {
   const open = !$('queue-drawer').classList.contains('hidden');
   if (open) hidePanel('queue-drawer');
@@ -812,10 +1032,18 @@ const focusTarget = new THREE.Vector3();
 function animate() {
   requestAnimationFrame(animate);
   if (paused) return;
-  const time = clock.getElapsedTime();
+  const dt = clock.getDelta();
+  const time = clock.elapsedTime;
   UNIFORMS.uTime.value = time;
 
   if (!REDUCED_MOTION) galaxy.rotation.y = time * 0.004;
+
+  if (state.fly) {
+    state.fly.t = Math.min(1, state.fly.t + dt / 0.9);
+    const k = state.fly.t * state.fly.t * (3 - 2 * state.fly.t);
+    camera.position.lerpVectors(state.fly.from, state.fly.to, k);
+    if (state.fly.t >= 1) state.fly = null;
+  }
 
   // The halo and camera focus track the selected point as the galaxy turns.
   if (selectedWorldPosition(focusTarget)) {

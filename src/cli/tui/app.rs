@@ -5067,7 +5067,11 @@ impl App {
                 continue;
             }
             match category {
-                FailureCategory::NotFound => guidance_only += 1,
+                // Retrying cannot fix a PEP 668 refusal — the distro policy
+                // is the failure — so these are guidance-only.
+                FailureCategory::NotFound | FailureCategory::ExternallyManaged => {
+                    guidance_only += 1
+                }
                 FailureCategory::Permissions
                 | FailureCategory::Network
                 | FailureCategory::Conflict

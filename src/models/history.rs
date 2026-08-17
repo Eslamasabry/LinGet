@@ -304,13 +304,22 @@ pub enum FailureCategory {
     Network,
     NotFound,
     Conflict,
+    /// PEP 668: the distro marks the Python environment as externally
+    /// managed, so pip refuses by policy — not a permission problem. The
+    /// fixes are specific (pipx / apt / a venv), so it gets its own class.
+    ExternallyManaged,
     Unknown,
 }
 
 impl FailureCategory {
     pub fn classify(error_text: &str) -> Self {
         let normalized = error_text.to_ascii_lowercase();
-        if normalized.contains("lock")
+        if normalized.contains("externally managed")
+            || normalized.contains("externally-managed-environment")
+            || normalized.contains("pep 668")
+        {
+            Self::ExternallyManaged
+        } else if normalized.contains("lock")
             || normalized.contains("conflict")
             || normalized.contains("ebadengine")
             || normalized.contains("unsupported engine")
@@ -324,8 +333,6 @@ impl FailureCategory {
         {
             Self::Conflict
         } else if normalized.contains("permission denied")
-            || normalized.contains("externally managed")
-            || normalized.contains("externally-managed-environment")
             || normalized.contains("not permitted")
             || normalized.contains("operation not permitted")
             || normalized.contains("must be root")
@@ -373,6 +380,7 @@ impl FailureCategory {
             Self::Network => "Network",
             Self::NotFound => "Not Found",
             Self::Conflict => "Conflict",
+            Self::ExternallyManaged => "Externally Managed Python",
             Self::Unknown => "Unknown",
         }
     }
@@ -383,6 +391,7 @@ impl FailureCategory {
             Self::Network => "E_NETWORK",
             Self::NotFound => "E_NOT_FOUND",
             Self::Conflict => "E_CONFLICT",
+            Self::ExternallyManaged => "E_EXTERNALLY_MANAGED",
             Self::Unknown => "E_UNKNOWN",
         }
     }
@@ -393,6 +402,10 @@ impl FailureCategory {
             Self::Network => "Reconnect or refresh package metadata before retrying.",
             Self::NotFound => "Verify the package name, version, and source before retrying.",
             Self::Conflict => "Resolve package locks or dependency conflicts before retrying.",
+            Self::ExternallyManaged => {
+                "This Python is managed by the distro (PEP 668). Install CLI tools with pipx \
+                 instead, or use the distro package (apt install python3-<name>)."
+            }
             Self::Unknown => "Review the provider error output, then retry or apply guided fixes.",
         }
     }
@@ -406,6 +419,9 @@ impl FailureCategory {
             }
             Self::Conflict => {
                 "Use M to clear locks or conflicts, then R to retry. [M] resolve lock/conflict"
+            }
+            Self::ExternallyManaged => {
+                "Reinstall with pipx (M) or the apt package, then clear this task. [M] pipx install"
             }
             Self::Unknown => "Retry with R, then use M if you need guided recovery. [R] retry",
         }
@@ -750,9 +766,21 @@ mod tests {
             FailureCategory::classify("permission denied while invoking pkexec"),
             FailureCategory::Permissions
         );
+    }
+
+    #[test]
+    fn pep_668_refusals_classify_as_externally_managed() {
+        // A policy refusal is not a permission problem: retrying cannot fix
+        // it, and the remediation must point at pipx / the distro package.
         assert_eq!(
             FailureCategory::classify("pip refused to modify an externally managed environment"),
-            FailureCategory::Permissions
+            FailureCategory::ExternallyManaged
+        );
+        assert_eq!(
+            FailureCategory::classify(
+                "note: If you believe this is a mistake... see PEP 668 for the detailed specification."
+            ),
+            FailureCategory::ExternallyManaged
         );
     }
 
