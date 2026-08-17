@@ -6,7 +6,7 @@
 //! `linget tui --classic`.
 
 mod app;
-mod cache;
+pub(crate) mod cache;
 mod palette;
 mod ui;
 
