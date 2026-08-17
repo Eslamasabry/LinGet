@@ -201,10 +201,20 @@ async fn health() -> &'static str {
 
 #[derive(Serialize)]
 struct CatalogPackage {
+    /// Stable `source:name` identity — Package::id() is a method, not a
+    /// serialized field, so the API must send it explicitly.
+    id: String,
     #[serde(flatten)]
     package: Package,
     is_favorite: bool,
     is_security: bool,
+}
+
+#[derive(Serialize)]
+struct CatalogCounts {
+    updates: usize,
+    security: usize,
+    installed: usize,
 }
 
 #[derive(Serialize)]
@@ -218,7 +228,7 @@ struct ProviderCount {
 struct CatalogResponse {
     refreshing: bool,
     generated_at: Option<chrono::DateTime<chrono::Local>>,
-    counts: (usize, usize, usize),
+    counts: CatalogCounts,
     providers: Vec<ProviderCount>,
     packages: Vec<CatalogPackage>,
 }
@@ -244,6 +254,11 @@ async fn catalog(State(state): State<Arc<WebState>>) -> Json<CatalogResponse> {
             _ => {}
         }
     }
+    let counts = CatalogCounts {
+        updates,
+        security,
+        installed,
+    };
     let mut providers: Vec<ProviderCount> = by_source
         .into_iter()
         .map(|(source, count)| ProviderCount {
@@ -257,11 +272,12 @@ async fn catalog(State(state): State<Arc<WebState>>) -> Json<CatalogResponse> {
     Json(CatalogResponse {
         refreshing: state.refreshing.load(Ordering::Relaxed),
         generated_at: *state.generated_at.read().await,
-        counts: (updates, security, installed),
+        counts,
         providers,
         packages: packages
             .iter()
             .map(|package| CatalogPackage {
+                id: package.id(),
                 package: package.clone(),
                 is_favorite: favorites.contains(&package.id()),
                 is_security: package.status == PackageStatus::UpdateAvailable

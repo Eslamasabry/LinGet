@@ -59,6 +59,15 @@ async function fetchJSON(url, options) {
 async function loadCatalog() {
   const data = await fetchJSON('/api/catalog');
   state.catalog = data;
+  // Cold start with no cache yet: keep the boot screen and retry rather
+  // than painting an empty galaxy that reads as "up to date".
+  if (!Array.isArray(data.packages) || data.packages.length === 0) {
+    $('boot-text').textContent = data.refreshing
+      ? 'assembling the catalog — first check running'
+      : 'catalog is empty — tap ↻ to check sources';
+    setTimeout(() => loadCatalog().catch(() => {}), 2500);
+    return;
+  }
   buildGalaxy();
   renderStats();
   renderChips();
