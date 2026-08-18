@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="color-scheme" content="dark">
-  <title>linget · galaxy</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3l3.2 9.8L29 16l-9.8 3.2L16 29l-3.2-9.8L3 16l9.8-3.2z' fill='%235ec8dc'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0a0d13">
+  <title>linget</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3l3.2 9.8L29 16l-9.8 3.2L16 29l-3.2-9.8L3 16l9.8-3.2z' fill='%2356c8dc'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/style.css">
   <script type="importmap">
   {
@@ -17,61 +18,98 @@
   </script>
 </head>
 <body>
-  <canvas id="scene"></canvas>
-  <div id="vignette"></div>
-  <div id="nebula"></div>
 
-  <header id="hud">
-    <div class="hud-row hud-top">
-      <div class="brand"><span class="mark">◆</span> linget</div>
-      <div class="stats" id="stats"></div>
-      <button id="refresh" class="ghost" title="refresh catalog">↻</button>
-    </div>
-    <div class="hud-row hud-controls">
-      <input id="search" type="search" placeholder="search · src:npm" autocomplete="off" spellcheck="false">
-      <button id="list-btn" class="ghost" title="browse as list">☰</button>
-      <button id="queue-btn" class="ghost">queue <span id="queue-badge" class="badge hidden"></span></button>
-    </div>
-    <div class="hud-row chips" id="chips"></div>
-  </header>
+  <main id="app">
 
-  <aside id="results" class="panel hidden">
-    <div class="results-head">
-      <span id="results-count"></span>
-      <button class="close" data-close="results">✕</button>
-    </div>
-    <div id="results-list"></div>
-  </aside>
+    <div id="offline" class="offline" hidden>connection lost — retrying</div>
 
-  <aside id="detail" class="panel hidden">
-    <button class="close" data-close="detail">✕</button>
-    <div class="detail-name" id="d-name"></div>
-    <div class="detail-meta" id="d-meta"></div>
-    <div class="detail-desc" id="d-desc"></div>
-    <div class="detail-versions" id="d-versions"></div>
-    <div class="detail-facts" id="d-facts"></div>
-    <div class="detail-actions" id="d-actions"></div>
-    <div class="changelog hidden" id="d-changelog"></div>
-  </aside>
+    <!-- ======================= BROWSE ======================= -->
+    <section id="view-browse" class="view">
+      <header id="topbar">
+        <div class="topbar-row">
+          <div class="brand">linget</div>
+          <div id="stats" class="stats"></div>
+          <button id="refresh" class="icon-btn" aria-label="refresh catalog">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+          </button>
+        </div>
+        <div class="topbar-row">
+          <div class="search-wrap">
+            <svg class="search-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input id="search" type="search" placeholder="search packages · src:npm" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <div id="chips" class="chips"></div>
+      </header>
 
-  <aside id="queue-drawer" class="panel hidden">
-    <button class="close" data-close="queue-drawer">✕</button>
-    <div class="drawer-title">queue</div>
-    <div id="queue-list"></div>
-    <div class="log-tail hidden" id="queue-log-wrap">
-      <div class="log-tail-title">live output</div>
-      <div id="queue-log"></div>
-    </div>
-    <div class="drawer-actions">
-      <button id="retry" class="ghost">retry failed</button>
-    </div>
-  </aside>
+      <div id="list" class="scroll">
+        <div id="skeleton" class="skeleton"></div>
+      </div>
+    </section>
 
-  <div id="toast" class="hidden"></div>
-  <div id="boot">
-    <div class="boot-spin"></div>
-    <div class="boot-text" id="boot-text">assembling the catalog</div>
-  </div>
+    <!-- ======================= GALAXY ======================= -->
+    <section id="view-galaxy" class="view" hidden>
+      <canvas id="scene"></canvas>
+      <div class="galaxy-hint">drag to orbit · pinch to zoom · tap a star</div>
+      <div id="galaxy-legend" class="galaxy-legend">
+        <span><i class="dot" style="--c:#e06060"></i>security</span>
+        <span><i class="dot" style="--c:#e6b450"></i>updates</span>
+        <span><i class="dot" style="--c:#8b94a6"></i>installed</span>
+      </div>
+    </section>
+
+    <!-- ======================= QUEUE ======================= -->
+    <section id="view-queue" class="view" hidden>
+      <header class="view-head">
+        <div class="view-title">Queue</div>
+        <button id="retry" class="btn subtle">retry failed</button>
+      </header>
+      <div id="queue-body" class="scroll">
+        <div id="queue-list"></div>
+        <div id="queue-log-wrap" class="log-tile" hidden>
+          <div class="log-title">live output</div>
+          <div id="queue-log"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= TAB BAR ======================= -->
+    <nav id="tabbar">
+      <button class="tab on" data-tab="browse">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        <span>browse</span>
+      </button>
+      <button class="tab" data-tab="galaxy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l1.9 6.1L20 11l-6.1 1.9L12 19l-1.9-6.1L4 11l6.1-1.9z"/></svg>
+        <span>galaxy</span>
+      </button>
+      <button class="tab" data-tab="queue">
+        <span class="tab-ic-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M4 12h10M4 17h6"/><path d="M18 9v8"/><path d="M15.5 12.5 18 15l2.5-2.5" opacity="0" /></svg>
+          <i id="queue-badge" class="tab-badge" hidden></i>
+        </span>
+        <span>queue</span>
+      </button>
+    </nav>
+  </main>
+
+  <!-- ======================= DETAIL SHEET ======================= -->
+  <div id="sheet-backdrop" hidden></div>
+  <section id="sheet" class="sheet" hidden>
+    <div class="sheet-grab"></div>
+    <button class="sheet-close" aria-label="close">✕</button>
+    <div class="sheet-scroll">
+      <div id="d-name" class="d-name"></div>
+      <div id="d-meta" class="d-meta"></div>
+      <div id="d-versions" class="d-versions"></div>
+      <div id="d-desc" class="d-desc"></div>
+      <div id="d-facts" class="d-facts"></div>
+      <div id="d-actions" class="d-actions"></div>
+      <div id="d-changelog" class="changelog" hidden></div>
+    </div>
+  </section>
+
+  <div id="toast" hidden></div>
 
   <script type="module" src="/app.js"></script>
 </body>
