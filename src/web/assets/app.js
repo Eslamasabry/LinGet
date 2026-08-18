@@ -703,19 +703,58 @@ function renderQueue() {
   renderLogTail();
 }
 
+/// Translates the transaction engine's diagnostic lines into user-facing
+/// ones. The engine logs its own review/verification chatter; showing it
+/// raw ("argv=[\"install\", ...]") reads as a crash dump.
+function humanizeLogLine(line) {
+  const cmd = line.match(/^Command: (\S+) argv=\[(.*)\]$/);
+  if (cmd) {
+    const args = cmd[2].split(',')
+      .map(part => part.trim().replace(/^"|"$/g, ''))
+      .filter(Boolean)
+      .join(' ');
+    return `→ ${cmd[1]} ${args}`;
+  }
+  const reviewed = line.match(/^Reviewed (\w+) plan \((\w+) fidelity\)$/);
+  if (reviewed) {
+    const level = reviewed[1].toLowerCase();
+    if (level === 'safe') return 'plan reviewed — safe to run';
+    if (level === 'caution') return 'plan reviewed — proceeding with care';
+    return `plan reviewed — ${level}`;
+  }
+  const receipt = line.match(/^Verification receipt: (\w+)/);
+  if (receipt) {
+    return receipt[1] === 'Verified'
+      ? '✓ verified — system matches the plan'
+      : `verification: ${receipt[1].toLowerCase()}`;
+  }
+  if (line === 'The queued plan differs from the reviewed plan'
+    || line === 'The reviewed plan expired') {
+    return line;
+  }
+  return line;
+}
+
 function entryLog(entryId) {
   const buffer = state.entryLogs.get(entryId);
   return buffer && buffer.length > 0 ? buffer[buffer.length - 1] : null;
 }
 
-function pushEntryLog(entryId, line) {
+function pushEntryLog(entryId, rawLine) {
+  const line = humanizeLogLine(rawLine);
   let buffer = state.entryLogs.get(entryId);
   if (!buffer) { buffer = []; state.entryLogs.set(entryId, buffer); }
-  buffer.push(line);
-  if (buffer.length > 24) buffer.shift();
+  // The plan/execute phases emit the same diagnostic lines; consecutive
+  // duplicates add noise, not information.
+  if (buffer[buffer.length - 1] !== line) {
+    buffer.push(line);
+    if (buffer.length > 24) buffer.shift();
+  }
 
   const entry = state.queueEntries.find(e => e.id === entryId);
   const who = entry ? entry.package_name : entryId.slice(0, 8);
+  const last = state.logTail[state.logTail.length - 1];
+  if (last && last.who === who && last.line === line) return;
   state.logTail.push({ who, line, err: /\b(error|failed|fatal)\b/i.test(line) });
   if (state.logTail.length > 120) state.logTail.splice(0, state.logTail.length - 120);
   state.logTailDirty = true;
